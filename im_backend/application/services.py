@@ -79,6 +79,47 @@ class IMService:
             sort=[("created_at", 1)],
         )
 
+    def list_agent_messages(self, agent_id: str) -> list[dict[str, Any]]:
+        self._bridge.ensure_agent_exists(agent_id)
+        rooms = self._store.find_many("im_rooms")
+        room_ids = {
+            room.get("room_id")
+            for room in rooms
+            if agent_id in (room.get("member_agent_ids") or [])
+        }
+        messages = [
+            message
+            for message in self._store.find_many("im_messages", sort=[("created_at", -1)])
+            if message.get("room_id") in room_ids
+            or message.get("sender_id") == agent_id
+            or agent_id in (message.get("mentions") or [])
+        ]
+        return messages[:50]
+
+    def list_room_tasks(self, room_id: str) -> list[dict[str, Any]]:
+        self.get_room(room_id)
+        tasks: list[dict[str, Any]] = []
+        for message in self.list_messages(room_id):
+            run_id = message.get("run_id")
+            if not run_id:
+                continue
+            run = self._store.find_one("runs", {"run_id": run_id}) or {}
+            tasks.append(
+                {
+                    "task_id": run_id,
+                    "run_id": run_id,
+                    "message_id": message.get("message_id"),
+                    "prompt": run.get("prompt") or self._message_text(message),
+                    "mode": run.get("mode") or message.get("metadata", {}).get("mode", ""),
+                    "status": run.get("status") or message.get("status", ""),
+                    "plan": run.get("plan", {}),
+                    "final": run.get("final", ""),
+                    "created_at": message.get("created_at"),
+                    "updated_at": run.get("updated_at") or message.get("updated_at"),
+                }
+            )
+        return sorted(tasks, key=lambda item: item.get("created_at") or 0, reverse=True)
+
     def get_message(self, message_id: str) -> dict[str, Any]:
         message = self._store.find_one("im_messages", {"message_id": message_id})
         if message is None:

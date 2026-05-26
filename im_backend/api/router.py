@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 
 from im_backend.api.core import (
+    get_current_user,
     get_agent_catalog,
     get_artifact_storage,
     get_im_service,
@@ -32,16 +33,28 @@ async def list_agents(service: AgentCatalogService = Depends(get_agent_catalog))
     return {"items": service.list_agents()}
 
 
+@router.get("/agents/{agent_id}/messages")
+async def list_agent_messages(agent_id: str, service: IMService = Depends(get_im_service)):
+    try:
+        return {"items": service.list_agent_messages(agent_id)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.post("/rooms")
-async def create_room(request: RoomCreateRequest, service: IMService = Depends(get_im_service)):
+async def create_room(
+    request: RoomCreateRequest,
+    current_user: dict = Depends(get_current_user),
+    service: IMService = Depends(get_im_service),
+):
     try:
         item = service.create_room(
             type=request.type,
             title=request.title,
             member_agent_ids=request.member_agent_ids,
-            created_by=request.created_by,
+            created_by=current_user["user_id"],
             avatar_url=request.avatar_url,
-            metadata=request.metadata,
+            metadata={**request.metadata, "created_by_username": current_user["username"]},
         )
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -69,17 +82,30 @@ async def list_messages(room_id: str, service: IMService = Depends(get_im_servic
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@router.get("/rooms/{room_id}/tasks")
+async def list_room_tasks(room_id: str, service: IMService = Depends(get_im_service)):
+    try:
+        return {"items": service.list_room_tasks(room_id)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.post("/rooms/{room_id}/messages")
 async def add_message(
     room_id: str,
     request: MessageCreateRequest,
+    current_user: dict = Depends(get_current_user),
     service: IMService = Depends(get_im_service),
 ):
     try:
+        sender_type = request.sender_type
+        sender_id = request.sender_id
+        if sender_type == "user":
+            sender_id = current_user["user_id"]
         item = service.add_message(
             room_id=room_id,
-            sender_type=request.sender_type,
-            sender_id=request.sender_id,
+            sender_type=sender_type,
+            sender_id=sender_id,
             content_parts=[part.model_dump() for part in request.content_parts],
             mentions=request.mentions,
             reply_to=request.reply_to,
@@ -97,8 +123,10 @@ async def add_message(
 async def dispatch_message(
     room_id: str,
     request: DispatchRequest,
+    current_user: dict = Depends(get_current_user),
     service: IMService = Depends(get_im_service),
 ):
+    _ = current_user
     try:
         item = await service.dispatch_message(
             room_id=room_id,
@@ -137,13 +165,14 @@ async def stream_room(
 async def record_action(
     message_id: str,
     request: MessageActionRequest,
+    current_user: dict = Depends(get_current_user),
     service: IMService = Depends(get_im_service),
 ):
     try:
         item = service.record_action(
             message_id=message_id,
             action_type=request.action_type,
-            actor_id=request.actor_id,
+            actor_id=current_user["user_id"],
             payload=request.payload,
         )
     except KeyError as exc:
@@ -151,11 +180,18 @@ async def record_action(
     return {"item": item}
 
 
+@router.get("/artifacts")
+async def list_artifacts(storage: ArtifactStorage = Depends(get_artifact_storage)):
+    return {"items": storage.list()}
+
+
 @router.post("/artifacts/upload")
 async def upload_artifact(
     request: ArtifactUploadRequest,
+    current_user: dict = Depends(get_current_user),
     storage: ArtifactStorage = Depends(get_artifact_storage),
 ):
+    _ = current_user
     try:
         content = base64.b64decode(request.content_base64)
     except Exception as exc:

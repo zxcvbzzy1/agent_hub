@@ -14,10 +14,11 @@ from api.core.dependencies import get_container  # type: ignore  # noqa: E402
 
 
 class AgentFlowBridge:
-    """Small facade around agent_flow services.
+    """Convenience facade around agent_flow services.
 
-    Keeping all agent_flow imports behind this adapter lets the IM backend stay
-    independently structured while still reusing the existing agent runtime.
+    im_backend may import stable agent_flow domain/application/infra modules
+    directly; this facade remains useful for shared container setup and common
+    runtime calls.
     """
 
     def __init__(self) -> None:

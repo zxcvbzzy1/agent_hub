@@ -50,3 +50,6 @@ class ArtifactStorage:
 
     def get(self, artifact_id: str) -> dict | None:
         return self._store.find_one("im_artifacts", {"artifact_id": artifact_id})
+
+    def list(self) -> list[dict]:
+        return self._store.find_many("im_artifacts", sort=[("created_at", -1)])

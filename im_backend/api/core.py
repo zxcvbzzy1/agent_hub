@@ -4,6 +4,10 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+from im_backend.application.auth_service import AuthError, AuthService
 from im_backend.application.event_stream import RoomEventStreamService
 from im_backend.application.services import AgentCatalogService, IMService
 from im_backend.infra.agent_flow_bridge.bridge import AgentFlowBridge
@@ -16,6 +20,7 @@ class IMContainer:
         self.bridge = AgentFlowBridge()
         self.store = self.bridge.store
         self.room_events = RoomEventStreamService(self.store)
+        self.auth = AuthService(self.store)
         self.im = IMService(
             store=self.store,
             bridge=self.bridge,
@@ -38,6 +43,10 @@ def get_im_service() -> IMService:
     return get_container().im
 
 
+def get_auth_service() -> AuthService:
+    return get_container().auth
+
+
 def get_agent_catalog() -> AgentCatalogService:
     return get_container().agents
 
@@ -48,3 +57,26 @@ def get_room_events() -> RoomEventStreamService:
 
 def get_artifact_storage() -> ArtifactStorage:
     return get_container().artifacts
+
+
+bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+    auth: AuthService = Depends(get_auth_service),
+) -> dict:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=401, detail="未登录")
+    try:
+        return auth.current_user(credentials.credentials)
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+
+def get_current_token(
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> str:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(status_code=401, detail="未登录")
+    return credentials.credentials

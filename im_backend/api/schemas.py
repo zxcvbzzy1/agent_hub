@@ -5,6 +5,19 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+class RegisterRequest(BaseModel):
+    username: str
+    email: str
+    password: str
+    display_name: str = ""
+    avatar_url: str = ""
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
 class ContentPartRequest(BaseModel):
     type: Literal["text", "code", "image", "file", "web_preview", "diff", "deploy", "event_ref"] = "text"
     text: str = ""

@@ -4,10 +4,11 @@ import { message } from 'ant-design-vue'
 import {
   BranchesOutlined,
   CheckOutlined,
-  CodeOutlined,
+  CloudUploadOutlined,
   CopyOutlined,
   DeploymentUnitOutlined,
   FileTextOutlined,
+  InfoCircleOutlined,
   PlusOutlined,
   RobotOutlined,
   SafetyCertificateOutlined,
@@ -15,16 +16,22 @@ import {
   TeamOutlined,
   UserOutlined,
 } from '@ant-design/icons-vue'
+import { useAuthStore } from '@/stores/auth'
 import { useIMStore } from '@/stores/im'
 
 const im = useIMStore()
+const auth = useAuthStore()
 const listRef = ref(null)
+const composerRef = ref(null)
 const creatingRoom = ref(false)
 const sending = ref(false)
-const composer = ref('请帮我设计一个 React Button 组件，并说明实现思路')
-const selectedMentions = ref([])
+const drawerOpen = ref(false)
+const createOpen = ref(false)
+const mentionOpen = ref(false)
+const composer = ref('')
+const mentions = ref([])
 const roomForm = reactive({
-  type: 'dm',
+  type: 'group',
   title: '',
   member_agent_ids: [],
 })
@@ -40,11 +47,16 @@ const currentMembers = computed(() => {
   return ids.map(agentById).filter(Boolean)
 })
 
-const visibleEvents = computed(() => {
-  return im.events
-    .filter((event) => !['message.created', 'room.created'].includes(event.name))
-    .slice(-12)
-    .reverse()
+const activeTitle = computed(() => {
+  if (im.currentRoom) return im.currentRoom.title
+  if (im.currentAgent) return im.currentAgent.name
+  return '选择 Agent 或群聊'
+})
+
+const activeSubtitle = computed(() => {
+  if (im.currentRoom?.type === 'group') return `${currentMembers.value.length} agents · PlanOrchestrator`
+  if (im.currentAgent) return `${agentKind(im.currentAgent.agent_id)} · ${im.currentAgent.agent_type}`
+  return '开始一次协作'
 })
 
 const roomAgentOptions = computed(() => {
@@ -54,11 +66,19 @@ const roomAgentOptions = computed(() => {
   }))
 })
 
-const mentionOptions = computed(() => {
-  return currentMembers.value.map((agent) => ({
-    label: agent.name,
-    value: agent.agent_id,
-  }))
+const mentionCandidates = computed(() => {
+  if (im.currentRoom?.type !== 'group' || !mentionOpen.value) return []
+  const lastAt = composer.value.lastIndexOf('@')
+  const query = lastAt >= 0 ? composer.value.slice(lastAt + 1).trim().toLowerCase() : ''
+  return currentMembers.value.filter((agent) => {
+    return !query || agent.name.toLowerCase().includes(query) || agent.agent_id.toLowerCase().includes(query)
+  })
+})
+
+const sideItems = computed(() => {
+  if (im.currentRoom?.type === 'group') return im.tasks
+  if (im.currentAgentId) return im.agentMessages
+  return []
 })
 
 function agentById(agentId) {
@@ -73,21 +93,26 @@ function agentKind(agentId) {
   return agentById(agentId)?.metadata?.agent_kind || 'native'
 }
 
-function avatarText(agentId, senderType = 'agent') {
-  if (senderType === 'user') return 'U'
-  if (senderType === 'system') return 'S'
-  return (agentName(agentId) || 'A').slice(0, 1).toUpperCase()
+function avatarText(value = '') {
+  return (value || 'A').slice(0, 1).toUpperCase()
+}
+
+function itemAvatar(item) {
+  if (item.type === 'group') return avatarText(item.title)
+  return avatarText(item.name)
 }
 
 function messageTitle(item) {
-  if (item.sender_type === 'user') return '你'
+  if (item.sender_type === 'user') {
+    return item.sender_id === auth.user?.user_id ? '你' : item.sender_id
+  }
   if (item.sender_type === 'system') return '系统'
   return agentName(item.sender_id)
 }
 
 function messageClass(item) {
   return {
-    mine: item.sender_type === 'user',
+    mine: item.sender_type === 'user' && item.sender_id === auth.user?.user_id,
     system: item.sender_type === 'system',
   }
 }
@@ -98,6 +123,11 @@ function shortId(value = '') {
 
 function formatTime(ts) {
   return ts ? new Date(ts * 1000).toLocaleTimeString() : ''
+}
+
+function latestMessageText(item) {
+  const part = item.content_parts?.find((entry) => entry.text || entry.diff || entry.title)
+  return part?.text || part?.diff || part?.title || item.prompt || item.final || '暂无内容'
 }
 
 async function createRoom() {
@@ -117,16 +147,35 @@ async function createRoom() {
       member_agent_ids: [...roomForm.member_agent_ids],
       metadata: { source: 'IM_front' },
     })
-    selectedMentions.value = []
+    createOpen.value = false
+    roomForm.title = ''
+    roomForm.type = 'group'
+    roomForm.member_agent_ids = []
     message.success('房间已创建')
   } finally {
     creatingRoom.value = false
   }
 }
 
+function handleInput(event) {
+  const value = event.target.value
+  composer.value = value
+  const lastAt = value.lastIndexOf('@')
+  mentionOpen.value = im.currentRoom?.type === 'group' && lastAt >= 0 && !value.slice(lastAt + 1).includes(' ')
+}
+
+function insertMention(agent) {
+  const lastAt = composer.value.lastIndexOf('@')
+  const before = lastAt >= 0 ? composer.value.slice(0, lastAt) : composer.value
+  composer.value = `${before}@${agent.name} `
+  if (!mentions.value.includes(agent.agent_id)) mentions.value.push(agent.agent_id)
+  mentionOpen.value = false
+  nextTick(() => composerRef.value?.focus?.())
+}
+
 async function send() {
-  if (!im.currentRoom) {
-    message.warning('请先创建或选择房间')
+  if (!im.currentRoom && !im.currentAgentId) {
+    message.warning('请选择 agent 或群聊')
     return
   }
   if (!composer.value.trim()) return
@@ -135,9 +184,8 @@ async function send() {
     await im.sendMessage(
       {
         sender_type: 'user',
-        sender_id: 'user',
         content_parts: [{ type: 'text', text: composer.value.trim() }],
-        mentions: [...selectedMentions.value],
+        mentions: [...mentions.value],
         metadata: { client: 'IM_front' },
       },
       {
@@ -148,7 +196,8 @@ async function send() {
       },
     )
     composer.value = ''
-    selectedMentions.value = []
+    mentions.value = []
+    mentionOpen.value = false
     await scrollToBottom()
   } finally {
     sending.value = false
@@ -158,9 +207,8 @@ async function send() {
 async function approveConfirmation(part) {
   const targetMessageId = part.metadata?.message_id
   if (!targetMessageId) return
-  await im.recordAction(part.metadata?.message_id || targetMessageId, {
+  await im.recordAction(targetMessageId, {
     action_type: 'approve',
-    actor_id: 'user',
     payload: part.metadata,
   })
   await im.dispatch(targetMessageId, {
@@ -191,78 +239,86 @@ watch(
 
 onMounted(async () => {
   await im.bootstrap()
-  const defaultExecutor = im.executorAgents.find((agent) => agent.agent_id === 'default_executor') || im.executorAgents[0]
   const defaultPlanner = im.plannerAgents.find((agent) => agent.agent_id === 'default_planner') || im.plannerAgents[0]
-  if (defaultExecutor) roomForm.member_agent_ids = [defaultExecutor.agent_id]
   if (defaultPlanner) dispatchOptions.planner_agent_id = defaultPlanner.agent_id
   await scrollToBottom()
 })
 </script>
 
 <template>
-  <main class="im-shell">
-    <aside class="room-rail">
-      <div class="brand-row">
-        <div class="brand-mark"><RobotOutlined /></div>
+  <main class="im-workspace">
+    <aside class="im-sidebar">
+      <div class="sidebar-head">
         <div>
-          <h1>Agent IM</h1>
-          <p>多 Agent 协作聊天</p>
+          <h2>会话</h2>
+          <span>{{ im.executorAgents.length }} agents · {{ im.rooms.length }} groups</span>
         </div>
+        <a-button type="primary" shape="circle" @click="createOpen = true">
+          <template #icon><PlusOutlined /></template>
+        </a-button>
       </div>
 
-      <section class="create-panel">
-        <a-segmented v-model:value="roomForm.type" :options="['dm', 'group']" block />
-        <a-input v-model:value="roomForm.title" placeholder="房间名称" />
-        <a-select
-          v-model:value="roomForm.member_agent_ids"
-          :mode="roomForm.type === 'group' ? 'multiple' : undefined"
-          :options="roomAgentOptions"
-          placeholder="选择 agent"
-          show-search
-        />
-        <a-button type="primary" block :loading="creatingRoom" @click="createRoom">
-          <template #icon><PlusOutlined /></template>
-          创建房间
-        </a-button>
+      <section class="nav-section">
+        <div class="section-title">Agents</div>
+        <button
+          v-for="agent in im.executorAgents"
+          :key="agent.agent_id"
+          class="nav-card"
+          :class="{ active: im.currentAgentId === agent.agent_id && im.currentRoom?.type !== 'group' }"
+          @click="im.selectAgent(agent.agent_id)"
+        >
+          <a-avatar :src="agent.metadata?.avatar_url">{{ itemAvatar(agent) }}</a-avatar>
+          <span class="presence"></span>
+          <div>
+            <strong>{{ agent.name }}</strong>
+            <small>{{ agentKind(agent.agent_id) }}</small>
+          </div>
+        </button>
       </section>
 
-      <a-list class="room-list" :data-source="im.rooms" :loading="im.loading">
-        <template #renderItem="{ item }">
-          <a-list-item
-            class="room-item"
-            :class="{ active: item.room_id === im.currentRoom?.room_id }"
-            @click="im.selectRoom(item.room_id)"
-          >
-            <a-list-item-meta>
-              <template #avatar>
-                <a-avatar :class="item.type">
-                  <TeamOutlined v-if="item.type === 'group'" />
-                  <UserOutlined v-else />
-                </a-avatar>
-              </template>
-              <template #title>{{ item.title }}</template>
-              <template #description>
-                {{ item.type }} · {{ item.member_agent_ids.length }} agents
-              </template>
-            </a-list-item-meta>
-          </a-list-item>
-        </template>
-      </a-list>
+      <section class="nav-section">
+        <div class="section-title">Agent 群</div>
+        <button
+          v-for="room in im.rooms.filter((item) => item.type === 'group')"
+          :key="room.room_id"
+          class="nav-card"
+          :class="{ active: im.currentRoom?.room_id === room.room_id }"
+          @click="im.selectRoom(room.room_id)"
+        >
+          <a-avatar :src="room.avatar_url"><TeamOutlined /></a-avatar>
+          <div>
+            <strong>{{ room.title }}</strong>
+            <small>{{ room.member_agent_ids.length }} members</small>
+          </div>
+        </button>
+      </section>
+
+      <section class="side-feed">
+        <div class="section-title">{{ im.currentRoom?.type === 'group' ? '编排任务' : '消息列表' }}</div>
+        <a-empty v-if="!sideItems.length" description="暂无记录" />
+        <button v-for="item in sideItems" :key="item.message_id || item.task_id" class="feed-item">
+          <strong>{{ item.status || item.mode || 'message' }}</strong>
+          <span>{{ latestMessageText(item) }}</span>
+          <small>{{ formatTime(item.created_at) }}</small>
+        </button>
+      </section>
     </aside>
 
-    <section class="chat-column">
-      <header class="chat-header">
-        <div>
-          <h2>{{ im.currentRoom?.title || '选择一个房间' }}</h2>
-          <p>
-            <span v-for="agent in currentMembers" :key="agent.agent_id">
-              {{ agent.name }} · {{ agent.metadata?.agent_kind || 'native' }}
-            </span>
-          </p>
+    <section class="chat-main">
+      <header class="chat-hero">
+        <div class="hero-title">
+          <a-avatar :size="44">
+            <TeamOutlined v-if="im.currentRoom?.type === 'group'" />
+            <RobotOutlined v-else />
+          </a-avatar>
+          <div>
+            <h1>{{ activeTitle }}</h1>
+            <p>{{ activeSubtitle }}</p>
+          </div>
         </div>
         <a-space>
           <a-switch v-model:checked="dispatchOptions.auto_start" />
-          <span class="switch-label">自动启动</span>
+          <span class="muted">自动启动</span>
         </a-space>
       </header>
 
@@ -274,7 +330,7 @@ onMounted(async () => {
           class="message-row"
           :class="messageClass(item)"
         >
-          <a-avatar class="message-avatar">{{ avatarText(item.sender_id, item.sender_type) }}</a-avatar>
+          <a-avatar class="message-avatar">{{ avatarText(messageTitle(item)) }}</a-avatar>
           <div class="message-bubble">
             <div class="message-meta">
               <strong>{{ messageTitle(item) }}</strong>
@@ -329,18 +385,23 @@ onMounted(async () => {
       </div>
 
       <footer class="composer">
-        <a-select
-          v-model:value="selectedMentions"
-          mode="multiple"
-          :options="mentionOptions"
-          placeholder="@ 指定 agent，留空则按房间规则调度"
-        />
-        <a-textarea
-          v-model:value="composer"
-          :auto-size="{ minRows: 2, maxRows: 6 }"
-          placeholder="输入消息，支持 @agent 指派；群聊留空 @ 时由 PlanOrchestrator 编排"
-          @pressEnter.ctrl.prevent="send"
-        />
+        <div class="mention-wrap">
+          <div v-if="mentionCandidates.length" class="mention-popover">
+            <button v-for="agent in mentionCandidates" :key="agent.agent_id" @click="insertMention(agent)">
+              <a-avatar :size="24">{{ avatarText(agent.name) }}</a-avatar>
+              <span>{{ agent.name }}</span>
+              <small>{{ agentKind(agent.agent_id) }}</small>
+            </button>
+          </div>
+          <a-textarea
+            ref="composerRef"
+            :value="composer"
+            :auto-size="{ minRows: 2, maxRows: 6 }"
+            placeholder="输入消息。群聊里输入 @ 可选择群内 agent"
+            @input="handleInput"
+            @pressEnter.ctrl.prevent="send"
+          />
+        </div>
         <div class="composer-actions">
           <a-space>
             <a-select v-model:value="dispatchOptions.planner_agent_id" class="planner-select">
@@ -356,38 +417,81 @@ onMounted(async () => {
           </a-button>
         </div>
       </footer>
+
+      <a-button class="floating-info" type="primary" shape="circle" @click="drawerOpen = true">
+        <template #icon><InfoCircleOutlined /></template>
+      </a-button>
     </section>
 
-    <aside class="inspector">
-      <section class="panel">
-        <h3>房间 Agent</h3>
-        <a-list :data-source="currentMembers">
+    <a-modal v-model:open="createOpen" title="创建 Agent 会话" :footer="null">
+      <a-form layout="vertical" @finish="createRoom">
+        <a-form-item label="类型">
+          <a-segmented v-model:value="roomForm.type" :options="['dm', 'group']" block />
+        </a-form-item>
+        <a-form-item label="名称">
+          <a-input v-model:value="roomForm.title" placeholder="留空则自动命名" />
+        </a-form-item>
+        <a-form-item label="Agent">
+          <a-select
+            v-model:value="roomForm.member_agent_ids"
+            :mode="roomForm.type === 'group' ? 'multiple' : undefined"
+            :options="roomAgentOptions"
+            placeholder="选择 agent"
+            show-search
+          />
+        </a-form-item>
+        <a-button type="primary" html-type="submit" block :loading="creatingRoom">创建</a-button>
+      </a-form>
+    </a-modal>
+
+    <a-drawer v-model:open="drawerOpen" title="上下文信息" width="420">
+      <section class="drawer-section">
+        <h3>{{ im.currentRoom?.type === 'group' ? '群内 Agent' : 'Agent 信息' }}</h3>
+        <a-list :data-source="im.currentRoom?.type === 'group' ? currentMembers : [im.currentAgent].filter(Boolean)">
           <template #renderItem="{ item }">
             <a-list-item>
               <a-list-item-meta>
-                <template #avatar>
-                  <a-avatar>{{ avatarText(item.agent_id) }}</a-avatar>
-                </template>
+                <template #avatar><a-avatar :src="item.metadata?.avatar_url">{{ avatarText(item.name) }}</a-avatar></template>
                 <template #title>{{ item.name }}</template>
                 <template #description>
                   {{ item.agent_id }} · {{ item.metadata?.agent_kind || 'native' }}
                 </template>
               </a-list-item-meta>
-              <a-tag>{{ item.agent_type }}</a-tag>
             </a-list-item>
           </template>
         </a-list>
       </section>
 
-      <section class="panel event-panel">
-        <h3>实时事件</h3>
-        <a-empty v-if="!visibleEvents.length" description="暂无事件" />
-        <div v-for="event in visibleEvents" :key="event.event_id" class="event-line">
-          <a-tag color="blue">{{ event.name }}</a-tag>
-          <span>{{ formatTime(event.created_at) }}</span>
-          <pre>{{ JSON.stringify(event.payload, null, 2) }}</pre>
-        </div>
+      <section class="drawer-section">
+        <h3>上传文件</h3>
+        <a-empty v-if="!im.artifacts.length" description="暂无文件" />
+        <a-list :data-source="im.artifacts">
+          <template #renderItem="{ item }">
+            <a-list-item>
+              <a-list-item-meta>
+                <template #avatar><FileTextOutlined /></template>
+                <template #title>{{ item.filename }}</template>
+                <template #description>{{ item.content_type || 'file' }} · {{ item.size }} bytes</template>
+              </a-list-item-meta>
+            </a-list-item>
+          </template>
+        </a-list>
       </section>
-    </aside>
+
+      <section v-if="im.currentRoom?.type === 'group'" class="drawer-section">
+        <h3>最近任务</h3>
+        <a-list :data-source="im.tasks.slice(0, 6)">
+          <template #renderItem="{ item }">
+            <a-list-item>
+              <a-list-item-meta>
+                <template #avatar><CloudUploadOutlined /></template>
+                <template #title>{{ item.status || item.mode }}</template>
+                <template #description>{{ item.prompt }}</template>
+              </a-list-item-meta>
+            </a-list-item>
+          </template>
+        </a-list>
+      </section>
+    </a-drawer>
   </main>
 </template>

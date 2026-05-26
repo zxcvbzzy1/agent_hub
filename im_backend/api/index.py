@@ -4,8 +4,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
 
 from im_backend.api.core import get_container
+from im_backend.api.auth_router import router as auth_router
 from im_backend.api.router import router as im_router
 
 
@@ -24,6 +26,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.include_router(auth_router)
     app.include_router(im_router)
 
     @app.get("/health")
