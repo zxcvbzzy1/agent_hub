@@ -10,6 +10,7 @@ import {
   FileTextOutlined,
   InfoCircleOutlined,
   PlusOutlined,
+  RightOutlined,
   RobotOutlined,
   SafetyCertificateOutlined,
   SendOutlined,
@@ -49,6 +50,7 @@ const currentMembers = computed(() => {
 
 const activeTitle = computed(() => {
   if (im.currentRoom) return im.currentRoom.title
+  if (im.currentConversation) return im.currentConversation.title
   if (im.currentAgent) return im.currentAgent.name
   return '选择 Agent 或群聊'
 })
@@ -77,7 +79,7 @@ const mentionCandidates = computed(() => {
 
 const sideItems = computed(() => {
   if (im.currentRoom?.type === 'group') return im.tasks
-  if (im.currentAgentId) return im.agentMessages
+  if (im.currentAgentId) return im.conversations
   return []
 })
 
@@ -126,8 +128,29 @@ function formatTime(ts) {
 }
 
 function latestMessageText(item) {
-  const part = item.content_parts?.find((entry) => entry.text || entry.diff || entry.title)
+  const source = item.last_message || item
+  const part = source.content_parts?.find((entry) => entry.text || entry.diff || entry.title)
   return part?.text || part?.diff || part?.title || item.prompt || item.final || '暂无内容'
+}
+
+function sideItemTitle(item) {
+  if (im.currentRoom?.type === 'group') return item.status || item.mode || '编排任务'
+  return item.title || `${agentName(item.agent_id)} 对话`
+}
+
+function sideItemTime(item) {
+  return item.updated_at || item.last_message?.created_at || item.created_at
+}
+
+async function openSideItem(item) {
+  if (im.currentRoom?.type === 'group') return
+  if (item.conversation_id) await im.selectConversation(item.conversation_id)
+}
+
+async function newConversation() {
+  if (!im.currentAgentId) return
+  await im.createConversation(im.currentAgentId)
+  await scrollToBottom()
 }
 
 async function createRoom() {
@@ -135,15 +158,11 @@ async function createRoom() {
     message.warning('请选择 agent')
     return
   }
-  if (roomForm.type === 'dm' && roomForm.member_agent_ids.length !== 1) {
-    message.warning('单聊只能选择一个 agent')
-    return
-  }
   creatingRoom.value = true
   try {
     await im.createRoom({
-      type: roomForm.type,
-      title: roomForm.title || (roomForm.type === 'dm' ? agentName(roomForm.member_agent_ids[0]) : 'Agent 群聊'),
+      type: 'group',
+      title: roomForm.title || 'Agent 群聊',
       member_agent_ids: [...roomForm.member_agent_ids],
       metadata: { source: 'IM_front' },
     })
@@ -189,7 +208,7 @@ async function send() {
         metadata: { client: 'IM_front' },
       },
       {
-        auto_start: dispatchOptions.auto_start,
+        auto_start: im.currentRoom?.type === 'group' ? dispatchOptions.auto_start : true,
         planner_agent_id: dispatchOptions.planner_agent_id,
         context_id: dispatchOptions.context_id,
         max_replan_rounds: dispatchOptions.max_replan_rounds,
@@ -251,7 +270,7 @@ onMounted(async () => {
       <div class="sidebar-head">
         <div>
           <h2>会话</h2>
-          <span>{{ im.executorAgents.length }} agents · {{ im.rooms.length }} groups</span>
+          <span>{{ im.executorAgents.length }} agents · {{ im.groupRooms.length }} groups</span>
         </div>
         <a-button type="primary" shape="circle" @click="createOpen = true">
           <template #icon><PlusOutlined /></template>
@@ -279,11 +298,11 @@ onMounted(async () => {
       <section class="nav-section">
         <div class="section-title">Agent 群</div>
         <button
-          v-for="room in im.rooms.filter((item) => item.type === 'group')"
+          v-for="room in im.groupRooms"
           :key="room.room_id"
           class="nav-card"
           :class="{ active: im.currentRoom?.room_id === room.room_id }"
-          @click="im.selectRoom(room.room_id)"
+          @click="im.selectGroupRoom(room.room_id)"
         >
           <a-avatar :src="room.avatar_url"><TeamOutlined /></a-avatar>
           <div>
@@ -294,18 +313,35 @@ onMounted(async () => {
       </section>
 
       <section class="side-feed">
-        <div class="section-title">{{ im.currentRoom?.type === 'group' ? '编排任务' : '消息列表' }}</div>
+        <div class="side-feed-head">
+          <div class="section-title">{{ im.currentRoom?.type === 'group' ? '编排任务' : '对话列表' }}</div>
+          <a-button
+            v-if="im.currentAgentId && im.currentRoom?.type !== 'group'"
+            type="text"
+            size="small"
+            @click="newConversation"
+          >
+            <template #icon><PlusOutlined /></template>
+            新对话
+          </a-button>
+        </div>
         <a-empty v-if="!sideItems.length" description="暂无记录" />
-        <button v-for="item in sideItems" :key="item.message_id || item.task_id" class="feed-item">
-          <strong>{{ item.status || item.mode || 'message' }}</strong>
+        <button
+          v-for="item in sideItems"
+          :key="item.conversation_id || item.message_id || item.task_id"
+          class="feed-item"
+          :class="{ active: item.conversation_id && item.conversation_id === im.currentConversation?.conversation_id }"
+          @click="openSideItem(item)"
+        >
+          <strong>{{ sideItemTitle(item) }}</strong>
           <span>{{ latestMessageText(item) }}</span>
-          <small>{{ formatTime(item.created_at) }}</small>
+          <small>{{ formatTime(sideItemTime(item)) }}</small>
         </button>
       </section>
     </aside>
 
     <section class="chat-main">
-      <header class="chat-hero">
+      <header class="chat-hero" @click="drawerOpen = true">
         <div class="hero-title">
           <a-avatar :size="44">
             <TeamOutlined v-if="im.currentRoom?.type === 'group'" />
@@ -316,10 +352,17 @@ onMounted(async () => {
             <p>{{ activeSubtitle }}</p>
           </div>
         </div>
-        <a-space>
-          <a-switch v-model:checked="dispatchOptions.auto_start" />
-          <span class="muted">自动启动</span>
-        </a-space>
+        <div class="hero-actions">
+          <a-space v-if="im.currentRoom?.type === 'group'" @click.stop>
+            <a-switch v-model:checked="dispatchOptions.auto_start" />
+            <span class="muted">自动启动</span>
+          </a-space>
+          <span class="hero-info-chip">
+            <InfoCircleOutlined />
+            查看信息
+            <RightOutlined />
+          </span>
+        </div>
       </header>
 
       <div ref="listRef" class="message-list">
@@ -336,7 +379,9 @@ onMounted(async () => {
               <strong>{{ messageTitle(item) }}</strong>
               <span>{{ formatTime(item.created_at) }}</span>
               <a-tag v-if="item.status !== 'sent'" size="small">{{ item.status }}</a-tag>
-              <a-tag v-if="item.run_id" size="small" color="blue">run {{ shortId(item.run_id) }}</a-tag>
+              <a-tag v-if="item.run_id && im.currentRoom?.type === 'group'" size="small" color="blue">
+                run {{ shortId(item.run_id) }}
+              </a-tag>
             </div>
 
             <div v-for="(part, index) in item.content_parts" :key="`${item.message_id}-${index}`" class="part">
@@ -397,13 +442,13 @@ onMounted(async () => {
             ref="composerRef"
             :value="composer"
             :auto-size="{ minRows: 2, maxRows: 6 }"
-            placeholder="输入消息。群聊里输入 @ 可选择群内 agent"
+            :placeholder="im.currentRoom?.type === 'group' ? '输入消息。输入 @ 可选择群内 agent' : '输入消息，当前会话历史会注入给这个 agent'"
             @input="handleInput"
             @pressEnter.ctrl.prevent="send"
           />
         </div>
         <div class="composer-actions">
-          <a-space>
+          <a-space v-if="im.currentRoom?.type === 'group'">
             <a-select v-model:value="dispatchOptions.planner_agent_id" class="planner-select">
               <a-select-option v-for="agent in im.plannerAgents" :key="agent.agent_id" :value="agent.agent_id">
                 {{ agent.name }}
@@ -418,35 +463,34 @@ onMounted(async () => {
         </div>
       </footer>
 
-      <a-button class="floating-info" type="primary" shape="circle" @click="drawerOpen = true">
-        <template #icon><InfoCircleOutlined /></template>
-      </a-button>
     </section>
 
-    <a-modal v-model:open="createOpen" title="创建 Agent 会话" :footer="null">
-      <a-form layout="vertical" @finish="createRoom">
-        <a-form-item label="类型">
-          <a-segmented v-model:value="roomForm.type" :options="['dm', 'group']" block />
-        </a-form-item>
+    <a-modal v-model:open="createOpen" title="创建 Agent 群聊" :footer="null">
+      <a-form layout="vertical">
         <a-form-item label="名称">
-          <a-input v-model:value="roomForm.title" placeholder="留空则自动命名" />
+          <a-input v-model:value="roomForm.title" placeholder="留空则自动命名为 Agent 群聊" />
         </a-form-item>
-        <a-form-item label="Agent">
+        <a-form-item label="群成员 Agent">
           <a-select
             v-model:value="roomForm.member_agent_ids"
-            :mode="roomForm.type === 'group' ? 'multiple' : undefined"
+            mode="multiple"
             :options="roomAgentOptions"
             placeholder="选择 agent"
             show-search
           />
         </a-form-item>
-        <a-button type="primary" html-type="submit" block :loading="creatingRoom">创建</a-button>
+        <a-button type="primary" html-type="submit" block :loading="creatingRoom" @click="createRoom">创建</a-button>
       </a-form>
     </a-modal>
 
     <a-drawer v-model:open="drawerOpen" title="上下文信息" width="420">
       <section class="drawer-section">
         <h3>{{ im.currentRoom?.type === 'group' ? '群内 Agent' : 'Agent 信息' }}</h3>
+        <div v-if="im.currentRoom?.type === 'group'" class="orchestrator-card">
+          <strong>{{ im.currentRoom?.metadata?.orchestrator || 'PlanOrchestrator' }}</strong>
+          <span>Planner · {{ agentName(im.currentRoom?.metadata?.planner_agent_id || 'default_planner') }}</span>
+          <small>{{ currentMembers.length }} executor agents</small>
+        </div>
         <a-list :data-source="im.currentRoom?.type === 'group' ? currentMembers : [im.currentAgent].filter(Boolean)">
           <template #renderItem="{ item }">
             <a-list-item>
@@ -455,6 +499,24 @@ onMounted(async () => {
                 <template #title>{{ item.name }}</template>
                 <template #description>
                   {{ item.agent_id }} · {{ item.metadata?.agent_kind || 'native' }}
+                </template>
+              </a-list-item-meta>
+            </a-list-item>
+          </template>
+        </a-list>
+      </section>
+
+      <section v-if="im.currentRoom?.type !== 'group'" class="drawer-section">
+        <h3>该 Agent 的对话</h3>
+        <a-empty v-if="!im.conversations.length" description="暂无对话" />
+        <a-list :data-source="im.conversations">
+          <template #renderItem="{ item }">
+            <a-list-item>
+              <a-list-item-meta>
+                <template #avatar><RobotOutlined /></template>
+                <template #title>{{ item.title || '未命名对话' }}</template>
+                <template #description>
+                  {{ latestMessageText(item) }} · {{ item.message_count || 0 }} 条消息
                 </template>
               </a-list-item-meta>
             </a-list-item>

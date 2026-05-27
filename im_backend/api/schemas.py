@@ -34,10 +34,16 @@ class ContentPartRequest(BaseModel):
 
 
 class RoomCreateRequest(BaseModel):
-    type: Literal["dm", "group"] = "dm"
+    type: Literal["group"] = "group"
     title: str = ""
     member_agent_ids: list[str] = Field(default_factory=list)
     created_by: str = "user"
+    avatar_url: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentConversationCreateRequest(BaseModel):
+    title: str = ""
     avatar_url: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -61,6 +67,11 @@ class DispatchRequest(BaseModel):
     max_replan_rounds: int = 3
     auto_start: bool = True
     approved: bool = False
+
+
+class ReplyRequest(BaseModel):
+    message_id: str
+    auto_start: bool = True
 
 
 class MessageActionRequest(BaseModel):

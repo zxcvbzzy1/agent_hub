@@ -7,6 +7,24 @@ export const imApi = {
   agentMessages(agentId) {
     return http.get(`/api/im/agents/${agentId}/messages`)
   },
+  agentConversations(agentId) {
+    return http.get(`/api/im/agents/${agentId}/conversations`)
+  },
+  createAgentConversation(agentId, payload) {
+    return http.post(`/api/im/agents/${agentId}/conversations`, payload)
+  },
+  conversation(conversationId) {
+    return http.get(`/api/im/conversations/${conversationId}`)
+  },
+  conversationMessages(conversationId) {
+    return http.get(`/api/im/conversations/${conversationId}/messages`)
+  },
+  addConversationMessage(conversationId, payload) {
+    return http.post(`/api/im/conversations/${conversationId}/messages`, payload)
+  },
+  replyConversation(conversationId, payload) {
+    return http.post(`/api/im/conversations/${conversationId}/reply`, payload)
+  },
   rooms() {
     return http.get('/api/im/rooms')
   },

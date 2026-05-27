@@ -6,11 +6,13 @@ export const useIMStore = defineStore('im', {
   state: () => ({
     agents: [],
     rooms: [],
-    currentRoom: null,
     currentAgentId: '',
+    currentConversation: null,
+    currentGroupRoom: null,
+    currentRoom: null,
     mode: 'empty',
     messages: [],
-    agentMessages: [],
+    conversations: [],
     tasks: [],
     artifacts: [],
     events: [],
@@ -24,6 +26,9 @@ export const useIMStore = defineStore('im', {
     plannerAgents(state) {
       return state.agents.filter((agent) => agent.agent_type === 'planner')
     },
+    groupRooms(state) {
+      return state.rooms.filter((room) => room.type === 'group')
+    },
     currentAgent(state) {
       return state.agents.find((agent) => agent.agent_id === state.currentAgentId) || null
     },
@@ -33,8 +38,8 @@ export const useIMStore = defineStore('im', {
       this.loading = true
       try {
         await Promise.all([this.fetchAgents(), this.fetchRooms(), this.fetchArtifacts()])
-        if (this.rooms[0]) {
-          await this.selectRoom(this.rooms[0].room_id)
+        if (this.groupRooms[0]) {
+          await this.selectGroupRoom(this.groupRooms[0].room_id)
         } else if (this.executorAgents[0]) {
           await this.selectAgent(this.executorAgents[0].agent_id)
         }
@@ -54,7 +59,16 @@ export const useIMStore = defineStore('im', {
       const response = await imApi.artifacts()
       this.artifacts = response.items || []
     },
-    async fetchTasks(roomId = this.currentRoom?.room_id) {
+    async fetchConversations(agentId = this.currentAgentId) {
+      if (!agentId) {
+        this.conversations = []
+        return []
+      }
+      const response = await imApi.agentConversations(agentId)
+      this.conversations = response.items || []
+      return this.conversations
+    },
+    async fetchTasks(roomId = this.currentGroupRoom?.room_id) {
       if (!roomId) {
         this.tasks = []
         return []
@@ -63,106 +77,123 @@ export const useIMStore = defineStore('im', {
       this.tasks = response.items || []
       return this.tasks
     },
-    async fetchAgentMessages(agentId = this.currentAgentId) {
-      if (!agentId) {
-        this.agentMessages = []
-        return []
-      }
-      const response = await imApi.agentMessages(agentId)
-      this.agentMessages = response.items || []
-      return this.agentMessages
-    },
     async createRoom(payload) {
       const response = await imApi.createRoom(payload)
       await this.fetchRooms()
-      await this.selectRoom(response.item.room_id)
+      if (response.item.type === 'group') {
+        await this.selectGroupRoom(response.item.room_id)
+      }
+      return response.item
+    },
+    async createConversation(agentId = this.currentAgentId, title = '') {
+      if (!agentId) return null
+      const agent = this.agents.find((item) => item.agent_id === agentId)
+      const response = await imApi.createAgentConversation(agentId, {
+        title: title || `${agent?.name || 'Agent'} 对话`,
+        metadata: { source: 'IM_front' },
+      })
+      await Promise.all([this.fetchRooms(), this.fetchConversations(agentId)])
+      await this.selectConversation(response.item.conversation_id)
       return response.item
     },
     async selectAgent(agentId) {
-      const existingRoom = this.rooms.find((room) => {
-        return room.type === 'dm' && room.member_agent_ids?.length === 1 && room.member_agent_ids[0] === agentId
-      })
-      if (existingRoom) {
-        await this.selectRoom(existingRoom.room_id)
-        this.currentAgentId = agentId
-      } else {
-        this.currentAgentId = agentId
-        this.currentRoom = null
-        this.messages = []
-        this.events = []
-        this.mode = 'agent'
-        if (this.source) {
-          this.source.close()
-          this.source = null
-        }
+      this.currentAgentId = agentId
+      this.currentConversation = null
+      this.currentGroupRoom = null
+      this.currentRoom = null
+      this.messages = []
+      this.events = []
+      this.tasks = []
+      this.mode = 'agent'
+      this.closeStream()
+      const conversations = await this.fetchConversations(agentId)
+      if (conversations[0]) {
+        await this.selectConversation(conversations[0].conversation_id)
       }
-      await this.fetchAgentMessages(agentId)
     },
-    async selectRoom(roomId) {
+    async selectConversation(conversationId) {
+      const [conversationResponse, messageResponse] = await Promise.all([
+        imApi.conversation(conversationId),
+        imApi.conversationMessages(conversationId),
+      ])
+      this.currentConversation = conversationResponse.item
+      this.currentGroupRoom = null
+      this.currentRoom = null
+      this.currentAgentId = conversationResponse.item.agent_id || this.currentAgentId
+      this.mode = 'dm'
+      this.messages = messageResponse.items || []
+      this.events = []
+      this.tasks = []
+      this.connectConversation(conversationId)
+      await this.fetchConversations(this.currentAgentId)
+    },
+    async selectGroupRoom(roomId) {
       const [roomResponse, messageResponse] = await Promise.all([
         imApi.room(roomId),
         imApi.messages(roomId),
       ])
+      this.currentGroupRoom = roomResponse.item
+      this.currentConversation = null
       this.currentRoom = roomResponse.item
-      this.currentAgentId =
-        this.currentRoom.type === 'dm' ? this.currentRoom.member_agent_ids?.[0] || '' : ''
-      this.mode = this.currentRoom.type
+      this.currentAgentId = ''
+      this.mode = 'group'
       this.messages = messageResponse.items || []
       this.events = []
+      this.conversations = []
       this.connectRoom(roomId)
-      if (this.currentRoom.type === 'group') {
-        await this.fetchTasks(roomId)
-      } else if (this.currentAgentId) {
-        await this.fetchAgentMessages(this.currentAgentId)
-      }
+      await this.fetchTasks(roomId)
     },
-    async ensureDmRoom(agentId) {
-      const existing = this.rooms.find((room) => {
-        return room.type === 'dm' && room.member_agent_ids?.length === 1 && room.member_agent_ids[0] === agentId
-      })
-      if (existing) {
-        await this.selectRoom(existing.room_id)
-        return existing
+    async sendMessage(payload, options = {}) {
+      if (this.mode === 'agent' && this.currentAgentId) {
+        await this.createConversation(this.currentAgentId)
       }
-      const agent = this.agents.find((item) => item.agent_id === agentId)
-      return this.createRoom({
-        type: 'dm',
-        title: agent?.name || 'Agent 单聊',
-        member_agent_ids: [agentId],
-        metadata: { source: 'IM_front', auto_dm: true },
-      })
-    },
-    async sendMessage(payload, dispatchPayload) {
-      if (!this.currentRoom && this.currentAgentId) {
-        await this.ensureDmRoom(this.currentAgentId)
-      }
-      const response = await imApi.addMessage(this.currentRoom.room_id, payload)
+      if (!this.currentRoom && !this.currentConversation) throw new Error('请先选择或创建会话')
+      const isGroup = this.mode === 'group' && this.currentRoom
+      const response = isGroup
+        ? await imApi.addMessage(this.currentRoom.room_id, payload)
+        : await imApi.addConversationMessage(this.currentConversation.conversation_id, payload)
       const messageItem = response.item
-      if (dispatchPayload) {
+      if (isGroup) {
         await imApi.dispatch(this.currentRoom.room_id, {
           message_id: messageItem.message_id,
-          ...dispatchPayload,
+          ...options,
+        })
+      } else {
+        await imApi.replyConversation(this.currentConversation.conversation_id, {
+          message_id: messageItem.message_id,
+          auto_start: options.auto_start ?? true,
         })
       }
       return messageItem
     },
     async dispatch(messageId, payload = {}) {
-      return imApi.dispatch(this.currentRoom.room_id, { message_id: messageId, ...payload })
+      return imApi.dispatch(this.currentGroupRoom.room_id, { message_id: messageId, ...payload })
     },
     async recordAction(messageId, payload) {
       return imApi.action(messageId, payload)
     },
-    connectRoom(roomId) {
+    closeStream() {
       if (this.source) {
         this.source.close()
         this.source = null
       }
-      const source = new EventSource(`${API_BASE_URL}/api/im/rooms/${roomId}/stream`)
+    },
+    connectRoom(roomId) {
+      this.connectStream(`/api/im/rooms/${roomId}/stream`)
+    },
+    connectConversation(conversationId) {
+      this.connectStream(`/api/im/conversations/${conversationId}/stream`)
+    },
+    connectStream(path) {
+      this.closeStream()
+      const source = new EventSource(`${API_BASE_URL}${path}`)
       source.onmessage = (event) => this.consumeEvent(JSON.parse(event.data))
       const eventNames = [
         'room.created',
         'message.created',
         'run.created',
+        'agent.reply.pending',
+        'agent.reply.finished',
         'confirmation.requested',
         'message.action',
         'agent.delta',
@@ -188,7 +219,7 @@ export const useIMStore = defineStore('im', {
           this.messages.push(messageItem)
         }
         if (this.currentRoom?.type === 'group') this.fetchTasks().catch(() => {})
-        if (this.currentAgentId) this.fetchAgentMessages().catch(() => {})
+        if (this.currentAgentId) this.fetchConversations().catch(() => {})
       }
       if (event.name === 'run.created' && this.currentRoom?.type === 'group') {
         this.fetchTasks().catch(() => {})

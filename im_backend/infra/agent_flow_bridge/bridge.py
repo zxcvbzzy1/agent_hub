@@ -4,11 +4,10 @@ import os
 from typing import Any
 
 from im_backend.infra.agent_flow_bridge.pathing import ensure_agent_flow_path
+from im_backend.infra.env import load_backend_env
 
+load_backend_env()
 ensure_agent_flow_path()
-os.environ.setdefault("GLM_API", "im-backend-placeholder")
-os.environ.setdefault("DEEPSEEK_API", "im-backend-placeholder")
-os.environ.setdefault("MINIMAX_API", "im-backend-placeholder")
 
 from api.core.dependencies import get_container  # type: ignore  # noqa: E402
 
@@ -37,6 +36,9 @@ class AgentFlowBridge:
 
     def get_agent_record(self, agent_id: str) -> dict[str, Any] | None:
         return self._container.agents.get_agent_record(agent_id)
+
+    def get_agent(self, agent_id: str):
+        return self._container.agents.get_agent(agent_id)
 
     def ensure_agent_exists(self, agent_id: str) -> dict[str, Any]:
         record = self.get_agent_record(agent_id)

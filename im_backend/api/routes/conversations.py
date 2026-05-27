@@ -1,0 +1,93 @@
+from __future__ import annotations
+
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
+
+from im_backend.api.core import get_current_user, get_im_service, get_room_events
+from im_backend.api.schemas import MessageCreateRequest, ReplyRequest
+from im_backend.application.event_stream import RoomEventStreamService
+from im_backend.application.services import IMService
+
+
+router = APIRouter()
+
+
+@router.get("/conversations/{conversation_id}")
+async def get_conversation(conversation_id: str, service: IMService = Depends(get_im_service)):
+    try:
+        return {"item": service.get_conversation(conversation_id)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/conversations/{conversation_id}/messages")
+async def list_conversation_messages(conversation_id: str, service: IMService = Depends(get_im_service)):
+    try:
+        return {"items": service.list_conversation_messages(conversation_id)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/conversations/{conversation_id}/messages")
+async def add_conversation_message(
+    conversation_id: str,
+    request: MessageCreateRequest,
+    current_user: dict = Depends(get_current_user),
+    service: IMService = Depends(get_im_service),
+):
+    try:
+        sender_type = request.sender_type
+        sender_id = request.sender_id
+        if sender_type == "user":
+            sender_id = current_user["user_id"]
+        item = service.add_conversation_message(
+            conversation_id=conversation_id,
+            sender_type=sender_type,
+            sender_id=sender_id,
+            content_parts=[part.model_dump() for part in request.content_parts],
+            reply_to=request.reply_to,
+            quote_of=request.quote_of,
+            status=request.status,
+            metadata=request.metadata,
+        )
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"item": item}
+
+
+@router.post("/conversations/{conversation_id}/reply")
+async def reply_to_conversation_message(
+    conversation_id: str,
+    request: ReplyRequest,
+    current_user: dict = Depends(get_current_user),
+    service: IMService = Depends(get_im_service),
+):
+    _ = current_user
+    try:
+        item = await service.reply_to_conversation_message(
+            conversation_id=conversation_id,
+            message_id=request.message_id,
+            auto_start=request.auto_start,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"item": item}
+
+
+@router.get("/conversations/{conversation_id}/stream")
+async def stream_conversation(
+    conversation_id: str,
+    service: IMService = Depends(get_im_service),
+    events: RoomEventStreamService = Depends(get_room_events),
+):
+    try:
+        service.get_conversation(conversation_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return StreamingResponse(
+        events.stream(conversation_id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )

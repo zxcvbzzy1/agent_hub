@@ -7,6 +7,10 @@ from pathlib import Path
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
+from im_backend.infra.env import load_backend_env
+
+load_backend_env()
+
 from im_backend.application.auth_service import AuthError, AuthService
 from im_backend.application.event_stream import RoomEventStreamService
 from im_backend.application.services import AgentCatalogService, IMService

@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from im_backend.application.conversation_service import ConversationService
 from im_backend.application.event_stream import RoomEventStreamService
 from im_backend.domain.models import (
     AgentRuntimeProfile,
@@ -31,6 +32,13 @@ class IMService:
         self._events = room_events
         self._default_workdir = str(Path(default_workdir).expanduser().resolve())
         self._tasks: dict[str, asyncio.Task] = {}
+        self._agent_locks: dict[str, asyncio.Lock] = {}
+        self.conversations = ConversationService(
+            store=store,
+            bridge=bridge,
+            events=room_events,
+            default_workdir=default_workdir,
+        )
 
     def create_room(
         self,
@@ -45,10 +53,18 @@ class IMService:
         member_agent_ids = member_agent_ids or []
         if type not in {"dm", "group"}:
             raise ValueError("room type 必须是 dm 或 group")
-        if type == "dm" and len(member_agent_ids) != 1:
-            raise ValueError("dm 房间必须包含且只包含一个 agent")
+        if type != "group":
+            raise ValueError("room 只用于 agent 群聊；单聊请创建 conversation")
         for agent_id in member_agent_ids:
             self._bridge.ensure_agent_exists(agent_id)
+
+        room_metadata = metadata or {}
+        room_metadata = {
+            "planner_agent_id": "default_planner",
+            "orchestrator": "PlanOrchestrator",
+            "execution_mode": "plan",
+            **room_metadata,
+        }
 
         room = Room.create(
             type=type,
@@ -56,14 +72,14 @@ class IMService:
             member_agent_ids=member_agent_ids,
             created_by=created_by,
             avatar_url=avatar_url,
-            metadata=metadata or {},
+            metadata=room_metadata,
         )
         record = self._store.insert_one("im_rooms", room.to_dict())
         self._events.publish(record["room_id"], "room.created", {"room": record})
         return record
 
     def list_rooms(self) -> list[dict[str, Any]]:
-        return self._store.find_many("im_rooms", sort=[("created_at", -1)])
+        return self._store.find_many("im_rooms", {"type": "group"}, sort=[("created_at", -1)])
 
     def get_room(self, room_id: str) -> dict[str, Any]:
         room = self._store.find_one("im_rooms", {"room_id": room_id})
@@ -72,32 +88,67 @@ class IMService:
         return room
 
     def list_messages(self, room_id: str) -> list[dict[str, Any]]:
-        self.get_room(room_id)
+        room = self.get_room(room_id)
+        if room.get("type") != "group":
+            raise ValueError("room 消息接口只服务群聊")
         return self._store.find_many(
             "im_messages",
             {"room_id": room_id},
             sort=[("created_at", 1)],
         )
 
+    def get_conversation(self, conversation_id: str) -> dict[str, Any]:
+        return self.conversations.get_conversation(conversation_id)
+
+    def list_conversation_messages(self, conversation_id: str) -> list[dict[str, Any]]:
+        return self.conversations.list_conversation_messages(conversation_id)
+
+    def list_agent_conversations(self, agent_id: str) -> list[dict[str, Any]]:
+        return self.conversations.list_agent_conversations(agent_id)
+
+    def create_agent_conversation(
+        self,
+        *,
+        agent_id: str,
+        created_by: str,
+        title: str = "",
+        avatar_url: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self.conversations.create_agent_conversation(
+            agent_id=agent_id,
+            created_by=created_by,
+            title=title,
+            avatar_url=avatar_url,
+            metadata=metadata,
+        )
+
     def list_agent_messages(self, agent_id: str) -> list[dict[str, Any]]:
         self._bridge.ensure_agent_exists(agent_id)
-        rooms = self._store.find_many("im_rooms")
-        room_ids = {
+        rooms = self._store.find_many("im_rooms", {"type": "group"})
+        group_room_ids = {
             room.get("room_id")
             for room in rooms
             if agent_id in (room.get("member_agent_ids") or [])
         }
+        conversation_ids = {
+            conversation.get("conversation_id")
+            for conversation in self._store.find_many("im_conversations", {"agent_id": agent_id})
+        }
         messages = [
             message
             for message in self._store.find_many("im_messages", sort=[("created_at", -1)])
-            if message.get("room_id") in room_ids
+            if message.get("room_id") in group_room_ids
+            or message.get("conversation_id") in conversation_ids
             or message.get("sender_id") == agent_id
             or agent_id in (message.get("mentions") or [])
         ]
         return messages[:50]
 
     def list_room_tasks(self, room_id: str) -> list[dict[str, Any]]:
-        self.get_room(room_id)
+        room = self.get_room(room_id)
+        if room.get("type") != "group":
+            raise ValueError("只有群聊 room 才有编排任务")
         tasks: list[dict[str, Any]] = []
         for message in self.list_messages(room_id):
             run_id = message.get("run_id")
@@ -141,6 +192,8 @@ class IMService:
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         room = self.get_room(room_id)
+        if room.get("type") != "group":
+            raise ValueError("room 消息只用于群聊；单聊请使用 conversation 消息接口")
         parts = [ContentPart.from_dict(part) for part in content_parts]
         if not parts:
             raise ValueError("content_parts 不能为空")
@@ -161,8 +214,32 @@ class IMService:
             metadata=metadata or {},
         )
         record = self._store.insert_one("im_messages", message.to_dict())
+        self._store.update_one("im_rooms", {"room_id": room_id}, {"updated_at": record["created_at"]})
         self._events.publish(room_id, "message.created", {"message": record})
         return record
+
+    def add_conversation_message(
+        self,
+        *,
+        conversation_id: str,
+        sender_type: str,
+        sender_id: str,
+        content_parts: list[dict[str, Any]],
+        reply_to: str = "",
+        quote_of: str = "",
+        status: str = "sent",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self.conversations.add_conversation_message(
+            conversation_id=conversation_id,
+            sender_type=sender_type,
+            sender_id=sender_id,
+            content_parts=content_parts,
+            reply_to=reply_to,
+            quote_of=quote_of,
+            status=status,
+            metadata=metadata,
+        )
 
     async def dispatch_message(
         self,
@@ -177,13 +254,14 @@ class IMService:
     ) -> dict[str, Any]:
         room = self.get_room(room_id)
         message = self.get_message(message_id)
+        if room.get("type") != "group":
+            raise ValueError("单聊不支持 dispatch，请使用 /reply")
         if message.get("room_id") != room_id:
             raise ValueError("message 不属于该 room")
         if message.get("sender_type") != "user":
             raise ValueError("只能派发 user 消息")
 
         prompt = self._message_text(message)
-        has_mentions = bool(message.get("mentions"))
         target_agent_ids = self._select_target_agents(room, message)
         profiles = [self._runtime_profile(agent_id) for agent_id in target_agent_ids]
         external_profiles = [profile for profile in profiles if profile.agent_kind in {"claude_code", "codex"}]
@@ -195,25 +273,6 @@ class IMService:
                 profiles=external_profiles,
                 prompt=prompt,
             )
-
-        if len(target_agent_ids) == 1 and (room.get("type") == "dm" or has_mentions):
-            profile = profiles[0]
-            if profile.agent_kind in {"claude_code", "codex"}:
-                return await self._dispatch_coding_agent(
-                    room_id=room_id,
-                    message_id=message_id,
-                    prompt=prompt,
-                    profile=profile,
-                )
-            run = self._create_agent_flow_run(
-                room=room,
-                message=message,
-                prompt=prompt,
-                mode="react",
-                executor_agent_id=profile.agent_id,
-                auto_start=auto_start,
-            )
-            return self._mark_dispatched(room_id, message_id, run)
 
         native_agent_ids = [
             profile.agent_id
@@ -227,13 +286,29 @@ class IMService:
             message=message,
             prompt=prompt,
             mode="plan",
-            planner_agent_id=planner_agent_id,
+            planner_agent_id=room.get("metadata", {}).get("planner_agent_id") or planner_agent_id,
             executor_agent_ids=native_agent_ids,
             context_id=context_id,
             max_replan_rounds=max_replan_rounds,
             auto_start=auto_start,
         )
         return self._mark_dispatched(room_id, message_id, run)
+
+    async def reply_to_conversation_message(
+        self,
+        *,
+        conversation_id: str,
+        message_id: str,
+        auto_start: bool = True,
+    ) -> dict[str, Any]:
+        return await self.conversations.reply_to_conversation_message(
+            conversation_id=conversation_id,
+            message_id=message_id,
+            auto_start=auto_start,
+        )
+
+    async def reply_to_dm_message(self, *, room_id: str, message_id: str, auto_start: bool = True) -> dict[str, Any]:
+        raise ValueError("单聊不再使用 room，请使用 /api/im/conversations/{conversation_id}/reply")
 
     def record_action(
         self,
@@ -252,8 +327,9 @@ class IMService:
             status="approved" if action_type == "approve" else "recorded",
         )
         record = self._store.insert_one("im_message_actions", action.to_dict())
+        stream_id = message.get("room_id") or message.get("conversation_id")
         self._events.publish(
-            message["room_id"],
+            stream_id,
             "message.action",
             {"message_id": message_id, "action": record},
         )
@@ -272,6 +348,26 @@ class IMService:
             return members[:1]
         return members
 
+    def _rebuild_agent_history(self, agent, *, conversation_id: str, before_message_id: str) -> None:
+        memory = agent.context_engine.get_memory()
+        memory.clear_field("tool_respond")
+        memory.clear_field("agent_history")
+        for history_message in self._conversation_history_before(conversation_id, before_message_id):
+            memory.store("agent_history", "dialogue", self._format_history_message(history_message))
+
+    def _conversation_history_before(self, conversation_id: str, message_id: str) -> list[dict[str, Any]]:
+        history: list[dict[str, Any]] = []
+        for message in self.list_conversation_messages(conversation_id):
+            if message.get("message_id") == message_id:
+                break
+            if message.get("sender_type") in {"user", "agent"}:
+                history.append(message)
+        return history
+
+    def _format_history_message(self, message: dict[str, Any]) -> str:
+        role = "用户" if message.get("sender_type") == "user" else "Agent"
+        return f"### 历史消息\n{role}：{self._message_text(message)}"
+
     def _runtime_profile(self, agent_id: str) -> AgentRuntimeProfile:
         record = self._bridge.ensure_agent_exists(agent_id)
         profile = AgentRuntimeProfile.from_agent_record(record)
@@ -283,7 +379,8 @@ class IMService:
         parts = [ContentPart.from_dict(part) for part in message.get("content_parts", [])]
         return Message(
             message_id=message["message_id"],
-            room_id=message["room_id"],
+            room_id=message.get("room_id", ""),
+            conversation_id=message.get("conversation_id", ""),
             sender_type=message["sender_type"],
             sender_id=message["sender_id"],
             content_parts=parts,
