@@ -42,6 +42,21 @@ class RoomCreateRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class RoomUpdateRequest(BaseModel):
+    title: str | None = None
+    avatar_url: str | None = None
+    member_agent_ids: list[str] | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class AgentCreateRequest(BaseModel):
+    name: str
+    agent_type: Literal["executor", "planner"] = "executor"
+    context_id: str = "default_executor"
+    role_prompt: str = ""
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class AgentConversationCreateRequest(BaseModel):
     title: str = ""
     avatar_url: str = ""

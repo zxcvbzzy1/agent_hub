@@ -5,13 +5,15 @@ import time
 from pathlib import Path
 from typing import Any
 
+from im_backend.application.agent_service import IMAgentService
+from im_backend.application.cleanup_service import IMCleanupService
 from im_backend.application.conversation_service import ConversationService
 from im_backend.application.event_stream import RoomEventStreamService
+from im_backend.application.message_action_service import MessageActionService
 from im_backend.domain.models import (
     AgentRuntimeProfile,
     ContentPart,
     Message,
-    MessageAction,
     Room,
 )
 from im_backend.infra.agent_flow_bridge.bridge import AgentFlowBridge
@@ -33,11 +35,15 @@ class IMService:
         self._default_workdir = str(Path(default_workdir).expanduser().resolve())
         self._tasks: dict[str, asyncio.Task] = {}
         self._agent_locks: dict[str, asyncio.Lock] = {}
+        self._cleanup = IMCleanupService(store)
+        self.agents = IMAgentService(bridge=bridge, cleanup=self._cleanup)
+        self.actions = MessageActionService(store=store, events=room_events)
         self.conversations = ConversationService(
             store=store,
             bridge=bridge,
             events=room_events,
             default_workdir=default_workdir,
+            cleanup=self._cleanup,
         )
 
     def create_room(
@@ -87,6 +93,48 @@ class IMService:
             raise KeyError(f"房间不存在: {room_id}")
         return room
 
+    def update_room(
+        self,
+        room_id: str,
+        *,
+        title: str | None = None,
+        avatar_url: str | None = None,
+        member_agent_ids: list[str] | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        room = self.get_room(room_id)
+        if room.get("type") != "group":
+            raise ValueError("只有群聊 room 支持更新")
+        updates: dict[str, Any] = {}
+        if title is not None:
+            updates["title"] = title
+        if avatar_url is not None:
+            updates["avatar_url"] = avatar_url
+        if member_agent_ids is not None:
+            for agent_id in member_agent_ids:
+                self._bridge.ensure_agent_exists(agent_id)
+            updates["member_agent_ids"] = member_agent_ids
+        if metadata is not None:
+            next_metadata = {**(room.get("metadata") or {}), **metadata}
+            planner_agent_id = next_metadata.get("planner_agent_id")
+            if planner_agent_id:
+                planner = self._bridge.ensure_agent_exists(planner_agent_id)
+                if planner.get("agent_type") != "planner":
+                    raise ValueError("planner_agent_id 必须指向 planner agent")
+            updates["metadata"] = next_metadata
+        if not updates:
+            return room
+        record = self._store.update_one("im_rooms", {"room_id": room_id}, updates)
+        self._events.publish(room_id, "room.updated", {"room": record})
+        return record or self.get_room(room_id)
+
+    def delete_room(self, room_id: str) -> dict[str, Any]:
+        room = self.get_room(room_id)
+        if room.get("type") != "group":
+            raise ValueError("room 删除只服务群聊")
+        stats = self._cleanup.delete_room(room_id)
+        return {"deleted": True, "room_id": room_id, "stats": stats}
+
     def list_messages(self, room_id: str) -> list[dict[str, Any]]:
         room = self.get_room(room_id)
         if room.get("type") != "group":
@@ -122,6 +170,35 @@ class IMService:
             avatar_url=avatar_url,
             metadata=metadata,
         )
+
+    def delete_conversation(self, conversation_id: str) -> dict[str, Any]:
+        return self.conversations.delete_conversation(conversation_id)
+
+    def list_agents(self) -> list[dict[str, Any]]:
+        return self.agents.list_agents()
+
+    def list_contexts(self) -> list[dict[str, Any]]:
+        return self.agents.list_contexts()
+
+    def create_agent(
+        self,
+        *,
+        name: str,
+        agent_type: str = "executor",
+        context_id: str = "default_executor",
+        role_prompt: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self.agents.create_agent(
+            name=name,
+            agent_type=agent_type,
+            context_id=context_id,
+            role_prompt=role_prompt,
+            metadata=metadata,
+        )
+
+    def delete_agent(self, agent_id: str) -> dict[str, Any]:
+        return self.agents.delete_agent(agent_id)
 
     def list_agent_messages(self, agent_id: str) -> list[dict[str, Any]]:
         self._bridge.ensure_agent_exists(agent_id)
@@ -171,11 +248,15 @@ class IMService:
             )
         return sorted(tasks, key=lambda item: item.get("created_at") or 0, reverse=True)
 
+    def list_room_run_ids(self, room_id: str) -> list[str]:
+        return [
+            message.get("run_id", "")
+            for message in self.list_messages(room_id)
+            if message.get("run_id")
+        ]
+
     def get_message(self, message_id: str) -> dict[str, Any]:
-        message = self._store.find_one("im_messages", {"message_id": message_id})
-        if message is None:
-            raise KeyError(f"消息不存在: {message_id}")
-        return message
+        return self.actions.get_message(message_id)
 
     def add_message(
         self,
@@ -318,22 +399,12 @@ class IMService:
         actor_id: str = "user",
         payload: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        message = self.get_message(message_id)
-        action = MessageAction.create(
+        return self.actions.record_action(
             message_id=message_id,
             action_type=action_type,
             actor_id=actor_id,
             payload=payload or {},
-            status="approved" if action_type == "approve" else "recorded",
         )
-        record = self._store.insert_one("im_message_actions", action.to_dict())
-        stream_id = message.get("room_id") or message.get("conversation_id")
-        self._events.publish(
-            stream_id,
-            "message.action",
-            {"message_id": message_id, "action": record},
-        )
-        return record
 
     def _select_target_agents(self, room: dict[str, Any], message: dict[str, Any]) -> list[str]:
         mentions = [
@@ -551,9 +622,4 @@ class IMService:
             self._events.publish(room_id, "agent.failed", {"run_id": run_id, "error": str(exc)})
 
 
-class AgentCatalogService:
-    def __init__(self, bridge: AgentFlowBridge) -> None:
-        self._bridge = bridge
-
-    def list_agents(self) -> list[dict[str, Any]]:
-        return self._bridge.list_agents()
+AgentCatalogService = IMAgentService

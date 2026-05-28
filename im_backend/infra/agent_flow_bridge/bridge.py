@@ -34,6 +34,9 @@ class AgentFlowBridge:
     def list_agents(self) -> list[dict[str, Any]]:
         return self._container.agents.list_agents()
 
+    def list_contexts(self) -> list[dict[str, Any]]:
+        return self._container.contexts.list_contexts()
+
     def get_agent_record(self, agent_id: str) -> dict[str, Any] | None:
         return self._container.agents.get_agent_record(agent_id)
 
@@ -62,6 +65,9 @@ class AgentFlowBridge:
             role_prompt=role_prompt,
             metadata=metadata or {},
         )
+
+    def delete_agent(self, agent_id: str) -> dict[str, Any]:
+        return self._container.agents.delete_agent(agent_id)
 
     def create_runtime_conversation(self, *, title: str, metadata: dict[str, Any]) -> dict[str, Any]:
         return self._container.conversations.create_conversation(title=title, metadata=metadata)
@@ -110,3 +116,9 @@ class AgentFlowBridge:
 
     def list_run_events(self, run_id: str) -> list[dict[str, Any]]:
         return self._container.events.list_events(run_id)
+
+    def register_agent_runtime_scope(self, agent_id: str, scope_id: str) -> None:
+        self._container.frontend_bridge.register_agent_run(agent_id, scope_id)
+
+    def unregister_agent_runtime_scope(self, agent_id: str, scope_id: str) -> None:
+        self._container.frontend_bridge.unregister_agent_run(agent_id, scope_id)

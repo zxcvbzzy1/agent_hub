@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from im_backend.api.core import get_current_user, get_im_service, get_room_events
-from im_backend.api.schemas import DispatchRequest, MessageCreateRequest, RoomCreateRequest
+from im_backend.api.schemas import DispatchRequest, MessageCreateRequest, RoomCreateRequest, RoomUpdateRequest
 from im_backend.application.event_stream import RoomEventStreamService
 from im_backend.application.services import IMService
 
@@ -43,6 +43,44 @@ async def get_room(room_id: str, service: IMService = Depends(get_im_service)):
         return {"item": service.get_room(room_id)}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.patch("/rooms/{room_id}")
+async def update_room(
+    room_id: str,
+    request: RoomUpdateRequest,
+    current_user: dict = Depends(get_current_user),
+    service: IMService = Depends(get_im_service),
+):
+    _ = current_user
+    try:
+        item = service.update_room(
+            room_id,
+            title=request.title,
+            avatar_url=request.avatar_url,
+            member_agent_ids=request.member_agent_ids,
+            metadata=request.metadata,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"item": item}
+
+
+@router.delete("/rooms/{room_id}")
+async def delete_room(
+    room_id: str,
+    current_user: dict = Depends(get_current_user),
+    service: IMService = Depends(get_im_service),
+):
+    _ = current_user
+    try:
+        return {"item": service.delete_room(room_id)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.get("/rooms/{room_id}/messages")
@@ -119,8 +157,8 @@ async def dispatch_message(
     return {"item": item}
 
 
-@router.get("/rooms/{room_id}/stream")
-async def stream_room(
+@router.get("/rooms/{room_id}/events")
+async def stream_room_events(
     room_id: str,
     service: IMService = Depends(get_im_service),
     events: RoomEventStreamService = Depends(get_room_events),
@@ -130,7 +168,11 @@ async def stream_room(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return StreamingResponse(
-        events.stream(room_id),
+        events.stream_merged(
+            room_id,
+            runtime_events=service._bridge.events,
+            runtime_ids_provider=lambda: service.list_room_run_ids(room_id),
+        ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )

@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from im_backend.application.event_stream import RoomEventStreamService
+from im_backend.application.cleanup_service import IMCleanupService
 from im_backend.domain.models import ContentPart, Conversation, Message
 from im_backend.infra.agent_flow_bridge.bridge import AgentFlowBridge
 
@@ -23,12 +24,14 @@ class ConversationService:
         bridge: AgentFlowBridge,
         events: RoomEventStreamService,
         default_workdir: str | Path,
+        cleanup: IMCleanupService | None = None,
     ) -> None:
         self._store = store
         self._bridge = bridge
         self._events = events
         self._default_workdir = str(Path(default_workdir).expanduser().resolve())
         self._agent_locks: dict[str, asyncio.Lock] = {}
+        self._cleanup = cleanup or IMCleanupService(store)
 
     def get_conversation(self, conversation_id: str) -> dict[str, Any]:
         conversation = self._store.find_one("im_conversations", {"conversation_id": conversation_id})
@@ -90,6 +93,11 @@ class ConversationService:
         record = self._store.insert_one("im_conversations", conversation.to_dict())
         self._events.publish(record["conversation_id"], "conversation.created", {"conversation": record})
         return record
+
+    def delete_conversation(self, conversation_id: str) -> dict[str, Any]:
+        self.get_conversation(conversation_id)
+        stats = self._cleanup.delete_conversation(conversation_id)
+        return {"deleted": True, "conversation_id": conversation_id, "stats": stats}
 
     def add_conversation_message(
         self,
@@ -153,23 +161,66 @@ class ConversationService:
             agent = self._bridge.get_agent(agent_id)
             self._rebuild_agent_history(agent, conversation_id=conversation_id, before_message_id=message_id)
             prompt = self._message_text(message)
-            await agent.start_with_history(prompt)
-            final = agent.states.get("final", "") or agent.states.get("finish_reason", "")
-            reply = self.add_conversation_message(
-                conversation_id=conversation_id,
-                sender_type="agent",
-                sender_id=agent_id,
-                content_parts=[{"type": "text", "text": final or "Agent 已完成回复"}],
-                status="finished",
-                metadata={"source": "direct_agent_reply", "reply_to": message_id},
-            )
-            self._store.update_one("im_messages", {"message_id": message_id}, {"status": "finished"})
+            self._bridge.register_agent_runtime_scope(agent_id, conversation_id)
             self._events.publish(
                 conversation_id,
-                "agent.reply.finished",
-                {"message_id": message_id, "agent_id": agent_id, "reply": reply},
+                "workflow.started",
+                {
+                    "scope_id": conversation_id,
+                    "conversation_id": conversation_id,
+                    "message_id": message_id,
+                    "agent_id": agent_id,
+                    "mode": "direct",
+                    "prompt": prompt,
+                },
             )
-            return {"type": "dm_reply", "message": reply}
+            try:
+                await agent.start_with_history(prompt)
+                final = agent.states.get("final", "") or agent.states.get("finish_reason", "")
+                reply = self.add_conversation_message(
+                    conversation_id=conversation_id,
+                    sender_type="agent",
+                    sender_id=agent_id,
+                    content_parts=[{"type": "text", "text": final or "Agent 已完成回复"}],
+                    status="finished",
+                    metadata={"source": "direct_agent_reply", "reply_to": message_id},
+                )
+                self._store.update_one("im_messages", {"message_id": message_id}, {"status": "finished"})
+                self._events.publish(
+                    conversation_id,
+                    "agent.reply.finished",
+                    {"message_id": message_id, "agent_id": agent_id, "reply": reply},
+                )
+                self._events.publish(
+                    conversation_id,
+                    "workflow.finished",
+                    {
+                        "scope_id": conversation_id,
+                        "conversation_id": conversation_id,
+                        "message_id": message_id,
+                        "agent_id": agent_id,
+                        "mode": "direct",
+                        "final": final,
+                    },
+                )
+                return {"type": "dm_reply", "message": reply}
+            except Exception as exc:
+                self._store.update_one("im_messages", {"message_id": message_id}, {"status": "failed"})
+                self._events.publish(
+                    conversation_id,
+                    "workflow.failed",
+                    {
+                        "scope_id": conversation_id,
+                        "conversation_id": conversation_id,
+                        "message_id": message_id,
+                        "agent_id": agent_id,
+                        "mode": "direct",
+                        "error": str(exc),
+                    },
+                )
+                raise
+            finally:
+                self._bridge.unregister_agent_runtime_scope(agent_id, conversation_id)
 
     def _get_message(self, message_id: str) -> dict[str, Any]:
         message = self._store.find_one("im_messages", {"message_id": message_id})

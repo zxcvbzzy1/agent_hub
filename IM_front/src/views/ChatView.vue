@@ -1,11 +1,12 @@
 <script setup>
 import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
-import { message } from 'ant-design-vue'
+import { Modal, message } from 'ant-design-vue'
 import {
   BranchesOutlined,
   CheckOutlined,
   CloudUploadOutlined,
   CopyOutlined,
+  DeleteOutlined,
   DeploymentUnitOutlined,
   FileTextOutlined,
   InfoCircleOutlined,
@@ -15,8 +16,17 @@ import {
   SafetyCertificateOutlined,
   SendOutlined,
   TeamOutlined,
-  UserOutlined,
+  UserAddOutlined,
 } from '@ant-design/icons-vue'
+import {
+  compactLlmEvents,
+  eventActor,
+  eventColor,
+  eventContent,
+  eventTitle,
+  eventTone,
+  runtimeEventNames,
+} from '@/utils/runtimeEvents'
 import { useAuthStore } from '@/stores/auth'
 import { useIMStore } from '@/stores/im'
 
@@ -28,17 +38,27 @@ const creatingRoom = ref(false)
 const sending = ref(false)
 const drawerOpen = ref(false)
 const createOpen = ref(false)
+const agentCreateOpen = ref(false)
+const creatingAgent = ref(false)
+const savingPlanner = ref(false)
 const mentionOpen = ref(false)
 const composer = ref('')
 const mentions = ref([])
+const drawerPlannerId = ref('default_planner')
 const roomForm = reactive({
   type: 'group',
   title: '',
   member_agent_ids: [],
 })
+const agentForm = reactive({
+  name: '',
+  agent_type: 'executor',
+  context_id: 'default_executor',
+  description: '',
+  role_prompt: '',
+})
 const dispatchOptions = reactive({
   auto_start: false,
-  planner_agent_id: 'default_planner',
   context_id: 'default_step',
   max_replan_rounds: 3,
 })
@@ -65,7 +85,17 @@ const roomAgentOptions = computed(() => {
   return im.executorAgents.map((agent) => ({
     label: `${agent.name} · ${agent.metadata?.agent_kind || 'native'}`,
     value: agent.agent_id,
-  }))
+}))
+})
+
+const contextOptions = computed(() => {
+  const expectedKind = agentForm.agent_type === 'planner' ? 'planner' : 'executor'
+  return im.contexts
+    .filter((context) => !context.kind || context.kind === expectedKind)
+    .map((context) => ({
+      label: `${context.name || context.context_id} · ${context.kind || 'context'}`,
+      value: context.context_id,
+    }))
 })
 
 const mentionCandidates = computed(() => {
@@ -81,6 +111,26 @@ const sideItems = computed(() => {
   if (im.currentRoom?.type === 'group') return im.tasks
   if (im.currentAgentId) return im.conversations
   return []
+})
+
+const displayEvents = computed(() => compactLlmEvents(im.events))
+
+const chatItems = computed(() => {
+  const messageItems = im.messages.map((item) => ({
+    key: `message-${item.message_id}`,
+    kind: 'message',
+    created_at: item.created_at || 0,
+    message: item,
+  }))
+  const eventItems = displayEvents.value
+    .filter((event) => runtimeEventNames.has(event.name))
+    .map((event) => ({
+      key: `event-${event.event_id || `${event.name}-${event.created_at}`}`,
+      kind: 'event',
+      created_at: event.created_at || 0,
+      event,
+    }))
+  return [...messageItems, ...eventItems].sort((a, b) => a.created_at - b.created_at)
 })
 
 function agentById(agentId) {
@@ -176,6 +226,93 @@ async function createRoom() {
   }
 }
 
+async function createAgent() {
+  if (!agentForm.name.trim()) {
+    message.warning('请输入 Agent 名称')
+    return
+  }
+  creatingAgent.value = true
+  try {
+    await im.createAgent({
+      name: agentForm.name.trim(),
+      agent_type: agentForm.agent_type,
+      context_id: agentForm.context_id || (agentForm.agent_type === 'planner' ? 'default_planner' : 'default_executor'),
+      role_prompt: agentForm.role_prompt,
+      metadata: {
+        description: agentForm.description,
+        capabilities: agentForm.description ? [agentForm.description] : [],
+      },
+    })
+    agentCreateOpen.value = false
+    agentForm.name = ''
+    agentForm.agent_type = 'executor'
+    agentForm.context_id = 'default_executor'
+    agentForm.description = ''
+    agentForm.role_prompt = ''
+    message.success('Agent 已创建')
+  } finally {
+    creatingAgent.value = false
+  }
+}
+
+function confirmDeleteAgent(agent) {
+  Modal.confirm({
+    title: `删除 Agent「${agent.name}」？`,
+    content: '将同步删除该 Agent 的单聊对话、相关消息、事件，并从 Agent 群中移除。',
+    okText: '删除',
+    okType: 'danger',
+    cancelText: '取消',
+    async onOk() {
+      await im.deleteAgent(agent.agent_id)
+      message.success('Agent 已删除')
+    },
+  })
+}
+
+function confirmDeleteConversation(item) {
+  Modal.confirm({
+    title: `删除对话「${item.title || '未命名对话'}」？`,
+    content: '该对话的消息历史和运行事件会被硬删除。',
+    okText: '删除',
+    okType: 'danger',
+    cancelText: '取消',
+    async onOk() {
+      await im.deleteConversation(item.conversation_id)
+      message.success('对话已删除')
+    },
+  })
+}
+
+function confirmDeleteRoom(room) {
+  Modal.confirm({
+    title: `解散 Agent 群「${room.title}」？`,
+    content: '群消息、IM 事件、关联 run 和 runtime events 会同步删除。',
+    okText: '解散',
+    okType: 'danger',
+    cancelText: '取消',
+    async onOk() {
+      await im.deleteRoom(room.room_id)
+      message.success('Agent 群已解散')
+    },
+  })
+}
+
+async function saveGroupPlanner() {
+  if (!im.currentRoom?.room_id) return
+  savingPlanner.value = true
+  try {
+    await im.updateRoom(im.currentRoom.room_id, {
+      metadata: {
+        ...(im.currentRoom.metadata || {}),
+        planner_agent_id: drawerPlannerId.value || 'default_planner',
+      },
+    })
+    message.success('Planner 已更新')
+  } finally {
+    savingPlanner.value = false
+  }
+}
+
 function handleInput(event) {
   const value = event.target.value
   composer.value = value
@@ -209,7 +346,7 @@ async function send() {
       },
       {
         auto_start: im.currentRoom?.type === 'group' ? dispatchOptions.auto_start : true,
-        planner_agent_id: dispatchOptions.planner_agent_id,
+        planner_agent_id: im.currentRoom?.metadata?.planner_agent_id || drawerPlannerId.value || 'default_planner',
         context_id: dispatchOptions.context_id,
         max_replan_rounds: dispatchOptions.max_replan_rounds,
       },
@@ -233,7 +370,7 @@ async function approveConfirmation(part) {
   await im.dispatch(targetMessageId, {
     approved: true,
     auto_start: true,
-    planner_agent_id: dispatchOptions.planner_agent_id,
+    planner_agent_id: im.currentRoom?.metadata?.planner_agent_id || drawerPlannerId.value || 'default_planner',
     context_id: dispatchOptions.context_id,
     max_replan_rounds: dispatchOptions.max_replan_rounds,
   })
@@ -252,14 +389,29 @@ async function scrollToBottom() {
 }
 
 watch(
-  () => im.messages.length,
+  () => chatItems.value.length,
   () => scrollToBottom(),
+)
+
+watch(
+  () => agentForm.agent_type,
+  (value) => {
+    agentForm.context_id = value === 'planner' ? 'default_planner' : 'default_executor'
+  },
+)
+
+watch(
+  () => im.currentRoom?.metadata?.planner_agent_id,
+  (value) => {
+    drawerPlannerId.value = value || 'default_planner'
+  },
+  { immediate: true },
 )
 
 onMounted(async () => {
   await im.bootstrap()
   const defaultPlanner = im.plannerAgents.find((agent) => agent.agent_id === 'default_planner') || im.plannerAgents[0]
-  if (defaultPlanner) dispatchOptions.planner_agent_id = defaultPlanner.agent_id
+  if (defaultPlanner && !drawerPlannerId.value) drawerPlannerId.value = defaultPlanner.agent_id
   await scrollToBottom()
 })
 </script>
@@ -272,9 +424,18 @@ onMounted(async () => {
           <h2>会话</h2>
           <span>{{ im.executorAgents.length }} agents · {{ im.groupRooms.length }} groups</span>
         </div>
-        <a-button type="primary" shape="circle" @click="createOpen = true">
-          <template #icon><PlusOutlined /></template>
-        </a-button>
+        <div class="sidebar-create-actions">
+          <a-tooltip title="创建 Agent">
+            <a-button type="primary" shape="circle" @click="agentCreateOpen = true">
+              <template #icon><UserAddOutlined /></template>
+            </a-button>
+          </a-tooltip>
+          <a-tooltip title="创建 Agent 群聊">
+            <a-button shape="circle" @click="createOpen = true">
+              <template #icon><PlusOutlined /></template>
+            </a-button>
+          </a-tooltip>
+        </div>
       </div>
 
       <section class="nav-section">
@@ -292,6 +453,16 @@ onMounted(async () => {
             <strong>{{ agent.name }}</strong>
             <small>{{ agentKind(agent.agent_id) }}</small>
           </div>
+          <a-button
+            v-if="!['default_executor', 'default_planner'].includes(agent.agent_id)"
+            class="nav-delete"
+            type="text"
+            danger
+            size="small"
+            @click.stop="confirmDeleteAgent(agent)"
+          >
+            <template #icon><DeleteOutlined /></template>
+          </a-button>
         </button>
       </section>
 
@@ -309,6 +480,9 @@ onMounted(async () => {
             <strong>{{ room.title }}</strong>
             <small>{{ room.member_agent_ids.length }} members</small>
           </div>
+          <a-button class="nav-delete" type="text" danger size="small" @click.stop="confirmDeleteRoom(room)">
+            <template #icon><DeleteOutlined /></template>
+          </a-button>
         </button>
       </section>
 
@@ -336,6 +510,16 @@ onMounted(async () => {
           <strong>{{ sideItemTitle(item) }}</strong>
           <span>{{ latestMessageText(item) }}</span>
           <small>{{ formatTime(sideItemTime(item)) }}</small>
+          <a-button
+            v-if="item.conversation_id"
+            class="feed-delete"
+            type="text"
+            danger
+            size="small"
+            @click.stop="confirmDeleteConversation(item)"
+          >
+            <template #icon><DeleteOutlined /></template>
+          </a-button>
         </button>
       </section>
     </aside>
@@ -366,67 +550,80 @@ onMounted(async () => {
       </header>
 
       <div ref="listRef" class="message-list">
-        <a-empty v-if="!im.messages.length" description="暂无消息" />
-        <article
-          v-for="item in im.messages"
-          :key="item.message_id"
-          class="message-row"
-          :class="messageClass(item)"
-        >
-          <a-avatar class="message-avatar">{{ avatarText(messageTitle(item)) }}</a-avatar>
-          <div class="message-bubble">
-            <div class="message-meta">
-              <strong>{{ messageTitle(item) }}</strong>
-              <span>{{ formatTime(item.created_at) }}</span>
-              <a-tag v-if="item.status !== 'sent'" size="small">{{ item.status }}</a-tag>
-              <a-tag v-if="item.run_id && im.currentRoom?.type === 'group'" size="small" color="blue">
-                run {{ shortId(item.run_id) }}
-              </a-tag>
-            </div>
+        <a-empty v-if="!chatItems.length" description="暂无消息" />
+        <template v-for="entry in chatItems" :key="entry.key">
+          <article
+            v-if="entry.kind === 'message'"
+            class="message-row"
+            :class="messageClass(entry.message)"
+          >
+            <a-avatar class="message-avatar">{{ avatarText(messageTitle(entry.message)) }}</a-avatar>
+            <div class="message-bubble">
+              <div class="message-meta">
+                <strong>{{ messageTitle(entry.message) }}</strong>
+                <span>{{ formatTime(entry.message.created_at) }}</span>
+                <a-tag v-if="entry.message.status !== 'sent'" size="small">{{ entry.message.status }}</a-tag>
+                <a-tag v-if="entry.message.run_id && im.currentRoom?.type === 'group'" size="small" color="blue">
+                  run {{ shortId(entry.message.run_id) }}
+                </a-tag>
+              </div>
 
-            <div v-for="(part, index) in item.content_parts" :key="`${item.message_id}-${index}`" class="part">
-              <p v-if="part.type === 'text'" class="text-part">{{ part.text }}</p>
-              <pre v-else-if="part.type === 'code'" class="code-part"><code>{{ part.text }}</code></pre>
-              <img v-else-if="part.type === 'image'" class="image-part" :src="part.url" :alt="part.name || 'image'" />
-              <a-button v-else-if="part.type === 'file'" :href="part.url" target="_blank">
-                <template #icon><FileTextOutlined /></template>
-                {{ part.name || '文件' }}
-              </a-button>
-              <a :href="part.url" target="_blank" v-else-if="part.type === 'web_preview'" class="web-card">
-                <strong>{{ part.title || part.url }}</strong>
-                <span>{{ part.description }}</span>
-              </a>
-              <div v-else-if="part.type === 'diff'" class="diff-card">
-                <div class="card-title">
-                  <BranchesOutlined />
-                  <span>{{ part.title || 'Diff' }}</span>
-                  <a-button size="small" type="text" @click="copyText(part.diff)">
-                    <template #icon><CopyOutlined /></template>
-                  </a-button>
+              <div v-for="(part, index) in entry.message.content_parts" :key="`${entry.message.message_id}-${index}`" class="part">
+                <p v-if="part.type === 'text'" class="text-part">{{ part.text }}</p>
+                <pre v-else-if="part.type === 'code'" class="code-part"><code>{{ part.text }}</code></pre>
+                <img v-else-if="part.type === 'image'" class="image-part" :src="part.url" :alt="part.name || 'image'" />
+                <a-button v-else-if="part.type === 'file'" :href="part.url" target="_blank">
+                  <template #icon><FileTextOutlined /></template>
+                  {{ part.name || '文件' }}
+                </a-button>
+                <a :href="part.url" target="_blank" v-else-if="part.type === 'web_preview'" class="web-card">
+                  <strong>{{ part.title || part.url }}</strong>
+                  <span>{{ part.description }}</span>
+                </a>
+                <div v-else-if="part.type === 'diff'" class="diff-card">
+                  <div class="card-title">
+                    <BranchesOutlined />
+                    <span>{{ part.title || 'Diff' }}</span>
+                    <a-button size="small" type="text" @click="copyText(part.diff)">
+                      <template #icon><CopyOutlined /></template>
+                    </a-button>
+                  </div>
+                  <pre><code>{{ part.diff }}</code></pre>
                 </div>
-                <pre><code>{{ part.diff }}</code></pre>
-              </div>
-              <div v-else-if="part.type === 'deploy'" class="deploy-card">
-                <div class="card-title">
-                  <DeploymentUnitOutlined />
-                  <span>{{ part.title || '操作卡片' }}</span>
+                <div v-else-if="part.type === 'deploy'" class="deploy-card">
+                  <div class="card-title">
+                    <DeploymentUnitOutlined />
+                    <span>{{ part.title || '操作卡片' }}</span>
+                  </div>
+                  <p>{{ part.description }}</p>
+                  <a-space v-if="part.metadata?.message_id">
+                    <a-button type="primary" size="small" @click="approveConfirmation(part)">
+                      <template #icon><CheckOutlined /></template>
+                      批准
+                    </a-button>
+                    <a-tag color="orange">
+                      <SafetyCertificateOutlined />
+                      人工确认
+                    </a-tag>
+                  </a-space>
                 </div>
-                <p>{{ part.description }}</p>
-                <a-space v-if="part.metadata?.message_id">
-                  <a-button type="primary" size="small" @click="approveConfirmation(part)">
-                    <template #icon><CheckOutlined /></template>
-                    批准
-                  </a-button>
-                  <a-tag color="orange">
-                    <SafetyCertificateOutlined />
-                    人工确认
-                  </a-tag>
-                </a-space>
+                <a-tag v-else color="default">{{ part.type }}</a-tag>
               </div>
-              <a-tag v-else color="default">{{ part.type }}</a-tag>
             </div>
-          </div>
-        </article>
+          </article>
+
+          <article v-else class="message-row event-row">
+            <a-avatar class="message-avatar">{{ avatarText(eventActor(entry.event, agentName)) }}</a-avatar>
+            <div class="message-bubble event-bubble" :class="eventTone(entry.event.name)">
+              <div class="message-meta">
+                <strong>{{ eventActor(entry.event, agentName) }}</strong>
+                <a-tag :color="eventColor(entry.event.name)" size="small">{{ eventTitle(entry.event) }}</a-tag>
+                <span>{{ formatTime(entry.event.created_at) }}</span>
+              </div>
+              <pre class="event-content">{{ eventContent(entry.event, agentName) }}</pre>
+            </div>
+          </article>
+        </template>
       </div>
 
       <footer class="composer">
@@ -449,11 +646,6 @@ onMounted(async () => {
         </div>
         <div class="composer-actions">
           <a-space v-if="im.currentRoom?.type === 'group'">
-            <a-select v-model:value="dispatchOptions.planner_agent_id" class="planner-select">
-              <a-select-option v-for="agent in im.plannerAgents" :key="agent.agent_id" :value="agent.agent_id">
-                {{ agent.name }}
-              </a-select-option>
-            </a-select>
             <a-input-number v-model:value="dispatchOptions.max_replan_rounds" :min="0" :max="10" />
           </a-space>
           <a-button type="primary" :loading="sending" @click="send">
@@ -483,6 +675,40 @@ onMounted(async () => {
       </a-form>
     </a-modal>
 
+    <a-modal v-model:open="agentCreateOpen" title="创建 Agent" :footer="null">
+      <a-form layout="vertical">
+        <a-form-item label="名称">
+          <a-input v-model:value="agentForm.name" placeholder="例如：前端组件工程师" />
+        </a-form-item>
+        <a-form-item label="类型">
+          <a-segmented
+            v-model:value="agentForm.agent_type"
+            :options="[
+              { label: 'Executor', value: 'executor' },
+              { label: 'Planner', value: 'planner' },
+            ]"
+          />
+        </a-form-item>
+        <a-form-item label="Context">
+          <a-select
+            v-model:value="agentForm.context_id"
+            :options="contextOptions"
+            :placeholder="agentForm.agent_type === 'planner' ? 'default_planner' : 'default_executor'"
+            show-search
+          />
+        </a-form-item>
+        <a-form-item label="能力描述">
+          <a-input v-model:value="agentForm.description" placeholder="擅长方向、可承担任务或工具范围" />
+        </a-form-item>
+        <a-form-item label="Role Prompt">
+          <a-textarea v-model:value="agentForm.role_prompt" :auto-size="{ minRows: 4, maxRows: 8 }" />
+        </a-form-item>
+        <a-button type="primary" html-type="submit" block :loading="creatingAgent" @click="createAgent">
+          创建 Agent
+        </a-button>
+      </a-form>
+    </a-modal>
+
     <a-drawer v-model:open="drawerOpen" title="上下文信息" width="420">
       <section class="drawer-section">
         <h3>{{ im.currentRoom?.type === 'group' ? '群内 Agent' : 'Agent 信息' }}</h3>
@@ -490,6 +716,18 @@ onMounted(async () => {
           <strong>{{ im.currentRoom?.metadata?.orchestrator || 'PlanOrchestrator' }}</strong>
           <span>Planner · {{ agentName(im.currentRoom?.metadata?.planner_agent_id || 'default_planner') }}</span>
           <small>{{ currentMembers.length }} executor agents</small>
+        </div>
+        <div v-if="im.currentRoom?.type === 'group'" class="planner-config">
+          <label>Plan Agent</label>
+          <a-space-compact block>
+            <a-select v-model:value="drawerPlannerId" class="drawer-planner-select">
+              <a-select-option v-for="agent in im.plannerAgents" :key="agent.agent_id" :value="agent.agent_id">
+                {{ agent.name }}
+              </a-select-option>
+            </a-select>
+            <a-button type="primary" :loading="savingPlanner" @click="saveGroupPlanner">更换</a-button>
+          </a-space-compact>
+          <small>群聊 dispatch 会读取这里配置的 planner。</small>
         </div>
         <a-list :data-source="im.currentRoom?.type === 'group' ? currentMembers : [im.currentAgent].filter(Boolean)">
           <template #renderItem="{ item }">

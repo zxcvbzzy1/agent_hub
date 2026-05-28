@@ -76,8 +76,21 @@ async def reply_to_conversation_message(
     return {"item": item}
 
 
-@router.get("/conversations/{conversation_id}/stream")
-async def stream_conversation(
+@router.delete("/conversations/{conversation_id}")
+async def delete_conversation(
+    conversation_id: str,
+    current_user: dict = Depends(get_current_user),
+    service: IMService = Depends(get_im_service),
+):
+    _ = current_user
+    try:
+        return {"item": service.delete_conversation(conversation_id)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/conversations/{conversation_id}/events")
+async def stream_conversation_events(
     conversation_id: str,
     service: IMService = Depends(get_im_service),
     events: RoomEventStreamService = Depends(get_room_events),
@@ -87,7 +100,11 @@ async def stream_conversation(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return StreamingResponse(
-        events.stream(conversation_id),
+        events.stream_merged(
+            conversation_id,
+            runtime_events=service._bridge.events,
+            runtime_ids_provider=lambda: [conversation_id],
+        ),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )

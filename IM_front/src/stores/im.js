@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { API_BASE_URL } from '@/api/http'
 import { imApi } from '@/api/im'
+import { sseEventNames } from '@/utils/runtimeEvents'
 
 export const useIMStore = defineStore('im', {
   state: () => ({
@@ -15,6 +16,7 @@ export const useIMStore = defineStore('im', {
     conversations: [],
     tasks: [],
     artifacts: [],
+    contexts: [],
     events: [],
     loading: false,
     source: null,
@@ -37,7 +39,7 @@ export const useIMStore = defineStore('im', {
     async bootstrap() {
       this.loading = true
       try {
-        await Promise.all([this.fetchAgents(), this.fetchRooms(), this.fetchArtifacts()])
+        await Promise.all([this.fetchAgents(), this.fetchRooms(), this.fetchArtifacts(), this.fetchContexts()])
         if (this.groupRooms[0]) {
           await this.selectGroupRoom(this.groupRooms[0].room_id)
         } else if (this.executorAgents[0]) {
@@ -58,6 +60,10 @@ export const useIMStore = defineStore('im', {
     async fetchArtifacts() {
       const response = await imApi.artifacts()
       this.artifacts = response.items || []
+    },
+    async fetchContexts() {
+      const response = await imApi.contexts()
+      this.contexts = response.items || []
     },
     async fetchConversations(agentId = this.currentAgentId) {
       if (!agentId) {
@@ -85,6 +91,55 @@ export const useIMStore = defineStore('im', {
       }
       return response.item
     },
+    async updateRoom(roomId, payload) {
+      const response = await imApi.updateRoom(roomId, payload)
+      await this.fetchRooms()
+      if (this.currentGroupRoom?.room_id === roomId) {
+        this.currentGroupRoom = response.item
+        this.currentRoom = response.item
+      }
+      return response.item
+    },
+    async deleteRoom(roomId) {
+      await imApi.deleteRoom(roomId)
+      if (this.currentGroupRoom?.room_id === roomId) {
+        this.closeStream()
+        this.currentGroupRoom = null
+        this.currentRoom = null
+        this.messages = []
+        this.events = []
+        this.tasks = []
+        this.mode = 'empty'
+      }
+      await this.fetchRooms()
+      if (this.mode === 'empty') {
+        if (this.groupRooms[0]) await this.selectGroupRoom(this.groupRooms[0].room_id)
+        else if (this.executorAgents[0]) await this.selectAgent(this.executorAgents[0].agent_id)
+      }
+    },
+    async createAgent(payload) {
+      const response = await imApi.createAgent(payload)
+      await Promise.all([this.fetchAgents(), this.fetchContexts()])
+      await this.selectAgent(response.item.agent_id)
+      return response.item
+    },
+    async deleteAgent(agentId) {
+      await imApi.deleteAgent(agentId)
+      if (this.currentAgentId === agentId) {
+        this.closeStream()
+        this.currentAgentId = ''
+        this.currentConversation = null
+        this.messages = []
+        this.events = []
+        this.conversations = []
+        this.mode = 'empty'
+      }
+      await Promise.all([this.fetchAgents(), this.fetchRooms()])
+      if (this.mode === 'empty') {
+        if (this.groupRooms[0]) await this.selectGroupRoom(this.groupRooms[0].room_id)
+        else if (this.executorAgents[0]) await this.selectAgent(this.executorAgents[0].agent_id)
+      }
+    },
     async createConversation(agentId = this.currentAgentId, title = '') {
       if (!agentId) return null
       const agent = this.agents.find((item) => item.agent_id === agentId)
@@ -95,6 +150,21 @@ export const useIMStore = defineStore('im', {
       await Promise.all([this.fetchRooms(), this.fetchConversations(agentId)])
       await this.selectConversation(response.item.conversation_id)
       return response.item
+    },
+    async deleteConversation(conversationId) {
+      await imApi.deleteConversation(conversationId)
+      const agentId = this.currentAgentId
+      if (this.currentConversation?.conversation_id === conversationId) {
+        this.closeStream()
+        this.currentConversation = null
+        this.messages = []
+        this.events = []
+        this.mode = agentId ? 'agent' : 'empty'
+      }
+      await this.fetchConversations(agentId)
+      if (this.currentAgentId && this.conversations[0]) {
+        await this.selectConversation(this.conversations[0].conversation_id)
+      }
     },
     async selectAgent(agentId) {
       this.currentAgentId = agentId
@@ -179,29 +249,16 @@ export const useIMStore = defineStore('im', {
       }
     },
     connectRoom(roomId) {
-      this.connectStream(`/api/im/rooms/${roomId}/stream`)
+      this.connectStream(`/api/im/rooms/${roomId}/events`)
     },
     connectConversation(conversationId) {
-      this.connectStream(`/api/im/conversations/${conversationId}/stream`)
+      this.connectStream(`/api/im/conversations/${conversationId}/events`)
     },
     connectStream(path) {
       this.closeStream()
       const source = new EventSource(`${API_BASE_URL}${path}`)
       source.onmessage = (event) => this.consumeEvent(JSON.parse(event.data))
-      const eventNames = [
-        'room.created',
-        'message.created',
-        'run.created',
-        'agent.reply.pending',
-        'agent.reply.finished',
-        'confirmation.requested',
-        'message.action',
-        'agent.delta',
-        'agent.final',
-        'agent.failed',
-        'workflow.finished',
-      ]
-      for (const name of eventNames) {
+      for (const name of sseEventNames) {
         source.addEventListener(name, (event) => this.consumeEvent(JSON.parse(event.data)))
       }
       source.onerror = () => {
