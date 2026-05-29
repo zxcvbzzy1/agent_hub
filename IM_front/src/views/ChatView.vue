@@ -15,17 +15,22 @@ import {
   RobotOutlined,
   SafetyCertificateOutlined,
   SendOutlined,
+  StopOutlined,
   TeamOutlined,
   UserAddOutlined,
 } from '@ant-design/icons-vue'
 import {
+  buildConversationTraces,
+  buildGroupTimelineItems,
   compactLlmEvents,
   eventActor,
   eventColor,
   eventContent,
   eventTitle,
   eventTone,
+  isPrimaryOutputEvent,
   runtimeEventNames,
+  traceDuration,
 } from '@/utils/runtimeEvents'
 import { useAuthStore } from '@/stores/auth'
 import { useIMStore } from '@/stores/im'
@@ -45,6 +50,7 @@ const mentionOpen = ref(false)
 const composer = ref('')
 const mentions = ref([])
 const drawerPlannerId = ref('default_planner')
+const traceOpenOverrides = ref({})
 const roomForm = reactive({
   type: 'group',
   title: '',
@@ -115,22 +121,60 @@ const sideItems = computed(() => {
 
 const displayEvents = computed(() => compactLlmEvents(im.events))
 
+const runningGroupTask = computed(() => {
+  if (im.currentRoom?.type !== 'group') return null
+  return [...im.tasks]
+    .filter((task) => task.run_id && ['running', 'pending', 'sent'].includes(task.status))
+    .sort((a, b) => (b.updated_at || b.created_at || 0) - (a.updated_at || a.created_at || 0))[0] || null
+})
+
+const runningConversationMessage = computed(() => {
+  if (im.currentRoom?.type === 'group') return null
+  return [...im.messages]
+    .filter((item) => item.sender_type === 'user' && item.status === 'running')
+    .sort((a, b) => (b.created_at || 0) - (a.created_at || 0))[0] || null
+})
+
+const canInterrupt = computed(() => {
+  return im.currentRoom?.type === 'group' ? Boolean(runningGroupTask.value) : Boolean(runningConversationMessage.value)
+})
+
 const chatItems = computed(() => {
-  const messageItems = im.messages.map((item) => ({
-    key: `message-${item.message_id}`,
+  if (im.currentRoom?.type === 'group') {
+    return buildGroupTimelineItems({
+      messages: im.messages,
+      events: displayEvents.value.filter((event) => runtimeEventNames.has(event.name)),
+    })
+  }
+  const traces = buildConversationTraces({
+    messages: im.messages,
+    events: displayEvents.value.filter((event) => runtimeEventNames.has(event.name)),
+    conversationId: im.currentConversation?.conversation_id || '',
+    agentId: im.currentConversation?.agent_id || im.currentAgentId,
+  })
+  const traceItems = traces.map((trace) => ({
+    key: `trace-${trace.key}`,
+    kind: 'trace',
+    created_at: trace.insert_before_message_id
+      ? (im.messages.find((message) => message.message_id === trace.insert_before_message_id)?.created_at || trace.created_at) - 0.0001
+      : trace.created_at,
+    trace,
+  }))
+  const messageItems = im.messages.map((message) => ({
+    key: `message-${message.message_id}`,
     kind: 'message',
-    created_at: item.created_at || 0,
-    message: item,
+    created_at: message.created_at || 0,
+    message,
   }))
   const eventItems = displayEvents.value
-    .filter((event) => runtimeEventNames.has(event.name))
+    .filter((event) => runtimeEventNames.has(event.name) && isPrimaryOutputEvent(event, 'dm'))
     .map((event) => ({
       key: `event-${event.event_id || `${event.name}-${event.created_at}`}`,
       kind: 'event',
       created_at: event.created_at || 0,
       event,
     }))
-  return [...messageItems, ...eventItems].sort((a, b) => a.created_at - b.created_at)
+  return [...messageItems, ...traceItems, ...eventItems].sort((a, b) => a.created_at - b.created_at)
 })
 
 function agentById(agentId) {
@@ -181,6 +225,83 @@ function latestMessageText(item) {
   const source = item.last_message || item
   const part = source.content_parts?.find((entry) => entry.text || entry.diff || entry.title)
   return part?.text || part?.diff || part?.title || item.prompt || item.final || '暂无内容'
+}
+
+function isTraceOpen(trace) {
+  if (Object.prototype.hasOwnProperty.call(traceOpenOverrides.value, trace.key)) {
+    return traceOpenOverrides.value[trace.key]
+  }
+  return !trace.resolved
+}
+
+function toggleTrace(trace) {
+  traceOpenOverrides.value = {
+    ...traceOpenOverrides.value,
+    [trace.key]: !isTraceOpen(trace),
+  }
+}
+
+function traceActorName(trace) {
+  if (trace.actor_id === 'workflow') return '系统流程'
+  if (trace.actor_id === 'system') return '运行过程'
+  if (trace.actor_id === 'planner') return agentName(im.currentRoom?.metadata?.planner_agent_id || 'default_planner')
+  return agentName(trace.actor_id)
+}
+
+function traceTitle(trace) {
+  return trace.title || eventTitle(trace.latest_event || {})
+}
+
+function traceStatusText(trace) {
+  return trace.resolved ? `已完成 · ${traceDuration(trace)}` : `运行中 · ${traceDuration(trace)}`
+}
+
+function traceCanStop(trace) {
+  if (trace.resolved) return false
+  if (im.currentRoom?.type === 'group') return Boolean(trace.scope && trace.scope !== 'scope')
+  return Boolean(runningConversationMessage.value)
+}
+
+function confirmInterruptActive() {
+  if (!canInterrupt.value) return
+  const isGroup = im.currentRoom?.type === 'group'
+  Modal.confirm({
+    title: isGroup ? '中断群聊编排？' : '中断单聊回复？',
+    content: isGroup
+      ? '将取消当前正在运行的 PlanOrchestrator run，并把对应用户消息标记为 cancelled。'
+      : '将取消当前 Agent 回复任务，并把对应用户消息标记为 cancelled。',
+    okText: '中断运行',
+    okType: 'danger',
+    cancelText: '继续等待',
+    async onOk() {
+      if (isGroup) {
+        await im.cancelActiveRun(runningGroupTask.value?.run_id)
+      } else {
+        await im.cancelActiveReply(runningConversationMessage.value?.message_id)
+      }
+      message.warning('已发送中断请求')
+    },
+  })
+}
+
+function confirmInterruptTrace(trace) {
+  if (!traceCanStop(trace)) return
+  const isGroup = im.currentRoom?.type === 'group'
+  Modal.confirm({
+    title: isGroup ? '中断该运行轨迹对应的 run？' : '中断该回复？',
+    content: '中断后后续输出会停止写入，当前消息会标记为 cancelled。',
+    okText: '中断',
+    okType: 'danger',
+    cancelText: '取消',
+    async onOk() {
+      if (isGroup) {
+        await im.cancelActiveRun(trace.scope)
+      } else {
+        await im.cancelActiveReply(runningConversationMessage.value?.message_id)
+      }
+      message.warning('已发送中断请求')
+    },
+  })
 }
 
 function sideItemTitle(item) {
@@ -537,6 +658,15 @@ onMounted(async () => {
           </div>
         </div>
         <div class="hero-actions">
+          <a-button
+            v-if="canInterrupt"
+            danger
+            class="hero-stop"
+            @click.stop="confirmInterruptActive"
+          >
+            <template #icon><StopOutlined /></template>
+            中断运行
+          </a-button>
           <a-space v-if="im.currentRoom?.type === 'group'" @click.stop>
             <a-switch v-model:checked="dispatchOptions.auto_start" />
             <span class="muted">自动启动</span>
@@ -608,6 +738,58 @@ onMounted(async () => {
                   </a-space>
                 </div>
                 <a-tag v-else color="default">{{ part.type }}</a-tag>
+              </div>
+            </div>
+          </article>
+
+          <article v-else-if="entry.kind === 'trace'" class="trace-card" :class="{ open: isTraceOpen(entry.trace) }">
+            <button class="trace-summary" @click="toggleTrace(entry.trace)">
+              <span class="trace-rail"></span>
+              <a-avatar class="trace-avatar">{{ avatarText(traceActorName(entry.trace)) }}</a-avatar>
+              <div class="trace-main">
+                <strong>{{ traceActorName(entry.trace) }}</strong>
+                <span>{{ traceTitle(entry.trace) }}</span>
+              </div>
+              <div class="trace-stats">
+                <a-tag :color="eventColor(entry.trace.latest_event?.name)" size="small">
+                  {{ entry.trace.event_count || entry.trace.events.length }} events
+                </a-tag>
+                <small>{{ traceStatusText(entry.trace) }}</small>
+              </div>
+              <a-button
+                v-if="traceCanStop(entry.trace)"
+                class="trace-stop"
+                danger
+                type="text"
+                size="small"
+                @click.stop="confirmInterruptTrace(entry.trace)"
+              >
+                <template #icon><StopOutlined /></template>
+              </a-button>
+              <RightOutlined class="trace-chevron" />
+            </button>
+
+            <div v-if="isTraceOpen(entry.trace)" class="trace-expanded">
+              <div v-if="entry.trace.step?.result_observation" class="trace-observation">
+                {{ entry.trace.step.result_observation }}
+              </div>
+              <div class="trace-timeline">
+                <div
+                  v-for="event in entry.trace.events"
+                  :key="event.event_id || `${event.name}-${event.created_at}`"
+                  class="trace-node"
+                  :class="eventTone(event.name)"
+                >
+                  <span class="trace-dot"></span>
+                  <div class="trace-node-body">
+                    <div class="trace-node-head">
+                      <strong>{{ eventTitle(event) }}</strong>
+                      <a-tag :color="eventColor(event.name)" size="small">{{ event.name }}</a-tag>
+                      <span>{{ formatTime(event.created_at) }}</span>
+                    </div>
+                    <pre>{{ eventContent(event, agentName) }}</pre>
+                  </div>
+                </div>
               </div>
             </div>
           </article>

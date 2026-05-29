@@ -1,7 +1,8 @@
 export const runtimeEventNames = new Set([
-  // 'workflow.started',
+  'workflow.started',
   'workflow.finished',
   'workflow.failed',
+  'run.cancelled',
   'llm.streaming',
   'llm.completed',
   'agent.think',
@@ -15,6 +16,10 @@ export const runtimeEventNames = new Set([
   'planner.plan.generated',
   'planner.replan.reasoning',
   'planner.final',
+  'plan.step.observed',
+  'plan.step.failed',
+  'plan.wave.completed',
+  'wave.completed',
   'human.confirmation.requested',
   'human.confirmation.resolved',
 ])
@@ -24,11 +29,13 @@ export const sseEventNames = [
   'room.updated',
   'message.created',
   'run.created',
+  'run.cancelled',
   'agent.reply.pending',
+  'agent.reply.started',
   'agent.reply.finished',
   'confirmation.requested',
   'message.action',
-  // 'workflow.started',
+  'workflow.started',
   'workflow.failed',
   'llm.started',
   'llm.delta',
@@ -45,9 +52,13 @@ export const sseEventNames = [
   'planner.plan.generated',
   'planner.replan.reasoning',
   'planner.final',
+  'plan.step.observed',
+  'plan.step.failed',
+  'plan.wave.completed',
+  'wave.completed',
   'human.confirmation.requested',
   // 'human.confirmation.resolved',
-  // 'workflow.finished',
+  'workflow.finished',
 ]
 
 export function compactLlmEvents(events) {
@@ -81,8 +92,268 @@ export function compactLlmEvents(events) {
   return compacted.sort((a, b) => (a.created_at || 0) - (b.created_at || 0))
 }
 
+export function eventRunScope(event) {
+  const payload = event?.payload || {}
+  return payload.run_id || event?.run_id || payload.scope_id || payload.conversation_id || event?.scope_id || 'scope'
+}
+
+export function eventActorId(event) {
+  const payload = event?.payload || {}
+  if (payload.agent_id) return payload.agent_id
+  if (payload.executor_id) return payload.executor_id
+  if (payload.planner_id) return payload.planner_id
+  if (payload.step?.executor_id) return payload.step.executor_id
+  if (event?.name?.startsWith('planner.')) return payload.planner_agent_id || 'planner'
+  if (event?.name?.startsWith('workflow.')) return payload.agent_id || 'workflow'
+  return 'system'
+}
+
+export function isPrimaryOutputEvent(event, mode = 'group') {
+  const name = event?.name || ''
+  if (name.includes('failed') || name.includes('cancelled') || name.startsWith('human.confirmation')) return true
+  if (mode === 'group') {
+    return name === 'planner.plan.generated' || name === 'planner.replan.reasoning' || name === 'planner.final' || name === 'agent.final'
+  }
+  return false
+}
+
+export function isTraceEvent(event) {
+  const name = event?.name || ''
+  return (
+    name === 'llm.streaming' ||
+    name === 'llm.completed' ||
+    name === 'agent.think' ||
+    name === 'agent.tool.reasoning' ||
+    name.startsWith('tool.') ||
+    name === 'planner.replan.reasoning' ||
+    name === 'workflow.started' ||
+    name === 'workflow.finished'
+  )
+}
+
+export function isTraceBoundaryEvent(event) {
+  return ['plan.step.observed', 'plan.step.failed', 'planner.plan.generated', 'planner.final', 'agent.final', 'agent.failed', 'workflow.failed'].includes(event?.name)
+}
+
+export function traceDuration(trace) {
+  const start = trace?.created_at || 0
+  const end = trace?.updated_at || start
+  const seconds = Math.max(0, end - start)
+  if (seconds < 1) return '<1 秒'
+  if (seconds < 10) return `${seconds.toFixed(1)} 秒`
+  return `${Math.round(seconds)} 秒`
+}
+
+function createTrace({ key, scope, actorId, title = '运行轨迹', createdAt = 0, resolved = false, boundary = null }) {
+  return {
+    key,
+    scope,
+    actor_id: actorId,
+    title,
+    events: [],
+    created_at: createdAt,
+    updated_at: createdAt,
+    latest_event: null,
+    resolved,
+    boundary,
+    event_count: 0,
+  }
+}
+
+function addTraceEvent(trace, event) {
+  trace.events.push(event)
+  trace.events.sort((a, b) => (a.created_at || 0) - (b.created_at || 0))
+  trace.created_at = trace.events[0]?.created_at || trace.created_at || event.created_at || 0
+  trace.updated_at = trace.events[trace.events.length - 1]?.created_at || trace.updated_at || event.created_at || 0
+  trace.latest_event = trace.events[trace.events.length - 1] || event
+  trace.event_count = trace.events.length
+}
+
+function recentUserBefore(messages, timestamp) {
+  return [...messages]
+    .filter((message) => message.sender_type === 'user' && (message.created_at || 0) <= timestamp)
+    .sort((a, b) => (b.created_at || 0) - (a.created_at || 0))[0]
+}
+
+export function buildConversationTraces({ messages = [], events = [], conversationId = '', agentId = '' }) {
+  const traces = []
+  const scopedEvents = events.filter((event) => {
+    const payload = event.payload || {}
+    return eventRunScope(event) === conversationId || payload.conversation_id === conversationId || eventRunScope(event) === 'scope'
+  })
+
+  const agentReplies = messages
+    .filter((message) => message.sender_type === 'agent' && (!agentId || message.sender_id === agentId))
+    .sort((a, b) => (a.created_at || 0) - (b.created_at || 0))
+
+  for (const reply of agentReplies) {
+    const replyTo = reply.metadata?.reply_to
+    const userMessage = replyTo
+      ? messages.find((message) => message.message_id === replyTo)
+      : recentUserBefore(messages, reply.created_at || 0)
+    const start = userMessage?.created_at || 0
+    const end = reply.created_at || 0
+    const traceEvents = scopedEvents.filter((event) => {
+      const actorId = eventActorId(event)
+      const ts = event.created_at || 0
+      return isTraceEvent(event) && actorId === reply.sender_id && ts >= start && ts <= end
+    })
+    if (!traceEvents.length) continue
+    const trace = createTrace({
+      key: `conversation:${conversationId}:reply:${reply.message_id}`,
+      scope: conversationId,
+      actorId: reply.sender_id,
+      title: '单聊回复过程',
+      createdAt: traceEvents[0]?.created_at || start,
+      resolved: true,
+      boundary: reply,
+    })
+    for (const event of traceEvents) addTraceEvent(trace, event)
+    trace.insert_before_message_id = reply.message_id
+    traces.push(trace)
+  }
+
+  const covered = new Set(traces.flatMap((trace) => trace.events.map((event) => event.event_id)))
+  const openEvents = scopedEvents.filter((event) => isTraceEvent(event) && !covered.has(event.event_id))
+  const openBuckets = new Map()
+  for (const event of openEvents) {
+    const actorId = eventActorId(event)
+    if (agentId && actorId !== agentId) continue
+    const key = `conversation:${conversationId}:open:${actorId}`
+    const trace = openBuckets.get(key) || createTrace({
+      key,
+      scope: conversationId,
+      actorId,
+      title: '正在回复',
+      createdAt: event.created_at || 0,
+      resolved: false,
+    })
+    addTraceEvent(trace, event)
+    openBuckets.set(key, trace)
+  }
+  return [...traces, ...openBuckets.values()]
+}
+
+export function buildGroupTimelineItems({ messages = [], events = [] }) {
+  const items = []
+  const sortedEvents = [...events].sort((a, b) => (a.created_at || 0) - (b.created_at || 0))
+  const buckets = new Map()
+  const consumedEventIds = new Set()
+
+  function bucketKey(scope, actorId) {
+    return `${scope}:${actorId}`
+  }
+
+  function getBucket(event, actorId = eventActorId(event)) {
+    const scope = eventRunScope(event)
+    const key = bucketKey(scope, actorId)
+    const bucket = buckets.get(key) || createTrace({
+      key: `trace:${key}:${event.created_at || Date.now()}`,
+      scope,
+      actorId,
+      title: '运行过程',
+      createdAt: event.created_at || 0,
+      resolved: false,
+    })
+    buckets.set(key, bucket)
+    return bucket
+  }
+
+  function closeBucket(scope, actorId, boundary, title) {
+    const key = bucketKey(scope, actorId)
+    const bucket = buckets.get(key)
+    if (!bucket || !bucket.events.length) return null
+    bucket.resolved = true
+    bucket.boundary = boundary
+    bucket.title = title || bucket.title
+    bucket.updated_at = boundary.created_at || bucket.updated_at
+    buckets.delete(key)
+    return bucket
+  }
+
+  for (const event of sortedEvents) {
+    if (event.name === 'planner.replan.reasoning') {
+      addTraceEvent(getBucket(event), event)
+      consumedEventIds.add(event.event_id)
+      items.push({
+        key: `event-${event.event_id || `${event.name}-${event.created_at}`}`,
+        kind: 'event',
+        created_at: event.created_at || 0,
+        event,
+      })
+      continue
+    }
+
+    if (isTraceEvent(event)) {
+      addTraceEvent(getBucket(event), event)
+      consumedEventIds.add(event.event_id)
+      continue
+    }
+
+    if (event.name === 'plan.step.observed') {
+      const step = event.payload?.step || {}
+      const actorId = step.executor_id || eventActorId(event)
+      const scope = eventRunScope(event)
+      const trace = closeBucket(scope, actorId, event, `[${step.step_id || '-'}] ${step.title || '执行计划步骤'}`)
+      if (trace) {
+        trace.step = step
+        items.push({
+          key: `trace-${trace.key}-${event.event_id || event.created_at}`,
+          kind: 'trace',
+          created_at: event.created_at || trace.created_at,
+          trace,
+        })
+      }
+      consumedEventIds.add(event.event_id)
+      continue
+    }
+
+    if (event.name === 'planner.plan.generated' || event.name === 'planner.final') {
+      const actorId = eventActorId(event)
+      const trace = closeBucket(eventRunScope(event), actorId, event, event.name === 'planner.final' ? 'Planner 总结过程' : '计划生成过程')
+      if (trace) {
+        items.push({
+          key: `trace-${trace.key}-${event.event_id || event.created_at}`,
+          kind: 'trace',
+          created_at: event.created_at || trace.created_at,
+          trace,
+        })
+      }
+    }
+
+    if (isPrimaryOutputEvent(event, 'group')) {
+      items.push({
+        key: `event-${event.event_id || `${event.name}-${event.created_at}`}`,
+        kind: 'event',
+        created_at: event.created_at || 0,
+        event,
+      })
+      consumedEventIds.add(event.event_id)
+    }
+  }
+
+  for (const bucket of buckets.values()) {
+    if (!bucket.events.length) continue
+    items.push({
+      key: `trace-${bucket.key}`,
+      kind: 'trace',
+      created_at: bucket.created_at || 0,
+      trace: bucket,
+    })
+  }
+
+  const messageItems = messages.map((message) => ({
+    key: `message-${message.message_id}`,
+    kind: 'message',
+    created_at: message.created_at || 0,
+    message,
+  }))
+
+  return [...messageItems, ...items].sort((a, b) => a.created_at - b.created_at)
+}
+
 export function eventColor(name = '') {
-  if (name.includes('failed')) return 'red'
+  if (name.includes('failed') || name.includes('cancelled')) return 'red'
   if (name.includes('finished')) return 'green'
   if (name.startsWith('human.confirmation')) return 'orange'
   if (name.startsWith('llm.')) return 'cyan'
@@ -94,7 +365,7 @@ export function eventColor(name = '') {
 }
 
 export function eventTone(name = '') {
-  if (name.includes('failed')) return 'danger'
+  if (name.includes('failed') || name.includes('cancelled')) return 'danger'
   if (name.includes('finished')) return 'success'
   if (name.startsWith('human.confirmation')) return 'warning'
   if (name.startsWith('planner.')) return 'planner'
@@ -118,6 +389,7 @@ export function eventTitle(event) {
   if (event.name === 'workflow.started') return '开始执行'
   if (event.name === 'workflow.finished') return '执行完成'
   if (event.name === 'workflow.failed') return '执行失败'
+  if (event.name === 'run.cancelled') return '运行已中断'
   return event.name
 }
 

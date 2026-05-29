@@ -5,8 +5,8 @@ from fastapi.responses import StreamingResponse
 
 from im_backend.api.core import get_current_user, get_im_service, get_room_events
 from im_backend.api.schemas import DispatchRequest, MessageCreateRequest, RoomCreateRequest, RoomUpdateRequest
-from im_backend.application.event_stream import RoomEventStreamService
-from im_backend.application.services import IMService
+from im_backend.application.services.events import RoomEventStreamService
+from im_backend.application.services.facade import IMService
 
 
 router = APIRouter()
@@ -149,6 +149,26 @@ async def dispatch_message(
             max_replan_rounds=request.max_replan_rounds,
             auto_start=request.auto_start,
             approved=request.approved,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"item": item}
+
+
+@router.post("/rooms/{room_id}/runs/{run_id}/cancel")
+async def cancel_room_run(
+    room_id: str,
+    run_id: str,
+    current_user: dict = Depends(get_current_user),
+    service: IMService = Depends(get_im_service),
+):
+    try:
+        item = service.cancel_room_run(
+            room_id=room_id,
+            run_id=run_id,
+            actor_id=current_user["user_id"],
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

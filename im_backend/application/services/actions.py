@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from im_backend.application.event_stream import RoomEventStreamService
+from im_backend.application.services.events import RoomEventStreamService
 from im_backend.domain.models import MessageAction
 
 

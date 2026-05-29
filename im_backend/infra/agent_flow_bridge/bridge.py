@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os
+from pathlib import Path
 from typing import Any
 
 from im_backend.infra.agent_flow_bridge.pathing import ensure_agent_flow_path
@@ -9,7 +9,20 @@ from im_backend.infra.env import load_backend_env
 load_backend_env()
 ensure_agent_flow_path()
 
-from api.core.dependencies import get_container  # type: ignore  # noqa: E402
+from application.events.bridge import FrontendEventBridge  # type: ignore  # noqa: E402
+from application.events.human_confirmation import HumanConfirmationService  # type: ignore  # noqa: E402
+from application.services.agents import AgentFactoryService  # type: ignore  # noqa: E402
+from application.services.contexts import ContextService  # type: ignore  # noqa: E402
+from application.services.conversations import ConversationService  # type: ignore  # noqa: E402
+from application.services.events import EventStreamService  # type: ignore  # noqa: E402
+from application.services.runs import RunOrchestrationService  # type: ignore  # noqa: E402
+from application.services.tools import ToolRegistryService  # type: ignore  # noqa: E402
+from domain.runtime_hooks import (  # type: ignore  # noqa: E402
+    register_human_approval_provider,
+    register_run_context_provider,
+    register_tool_event_observer,
+)
+from infra.config import factory, llm_client  # type: ignore  # noqa: E402
 
 
 class AgentFlowBridge:
@@ -20,28 +33,42 @@ class AgentFlowBridge:
     runtime calls.
     """
 
-    def __init__(self) -> None:
-        self._container = get_container()
+    def __init__(self, *, store, repo_root: str | Path) -> None:
+        self._store = store
+        self._root_dir = Path(repo_root).resolve()
+        self.events = EventStreamService(self._store)
+        self.frontend_bridge = FrontendEventBridge(self.events, factory)
+        self.human_confirmations = HumanConfirmationService(self.events)
+        register_tool_event_observer(self.frontend_bridge)
+        register_human_approval_provider(self.human_confirmations)
+        register_run_context_provider(self.frontend_bridge)
+        self.tools = ToolRegistryService(self._store, self._root_dir / "agent_flow")
+        self.contexts = ContextService(self._store)
+        self.agents = AgentFactoryService(self._store, self.contexts, llm_client, self.events)
+        self.runs = RunOrchestrationService(
+            self._store,
+            self.agents,
+            self.contexts,
+            self.events,
+            self.frontend_bridge,
+        )
+        self.conversations = ConversationService(self._store)
 
     @property
     def store(self):
-        return self._container.store
-
-    @property
-    def events(self):
-        return self._container.events
+        return self._store
 
     def list_agents(self) -> list[dict[str, Any]]:
-        return self._container.agents.list_agents()
+        return self.agents.list_agents()
 
     def list_contexts(self) -> list[dict[str, Any]]:
-        return self._container.contexts.list_contexts()
+        return self.contexts.list_contexts()
 
     def get_agent_record(self, agent_id: str) -> dict[str, Any] | None:
-        return self._container.agents.get_agent_record(agent_id)
+        return self.agents.get_agent_record(agent_id)
 
     def get_agent(self, agent_id: str):
-        return self._container.agents.get_agent(agent_id)
+        return self.agents.get_agent(agent_id)
 
     def ensure_agent_exists(self, agent_id: str) -> dict[str, Any]:
         record = self.get_agent_record(agent_id)
@@ -58,7 +85,7 @@ class AgentFlowBridge:
         role_prompt: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return self._container.agents.create_agent(
+        return self.agents.create_agent(
             name=name,
             agent_type=agent_type,
             context_id=context_id,
@@ -67,10 +94,10 @@ class AgentFlowBridge:
         )
 
     def delete_agent(self, agent_id: str) -> dict[str, Any]:
-        return self._container.agents.delete_agent(agent_id)
+        return self.agents.delete_agent(agent_id)
 
     def create_runtime_conversation(self, *, title: str, metadata: dict[str, Any]) -> dict[str, Any]:
-        return self._container.conversations.create_conversation(title=title, metadata=metadata)
+        return self.conversations.create_conversation(title=title, metadata=metadata)
 
     def add_runtime_message(
         self,
@@ -80,7 +107,7 @@ class AgentFlowBridge:
         content: str,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return self._container.conversations.add_message(
+        return self.conversations.add_message(
             conversation_id=conversation_id,
             role=role,
             content=content,
@@ -101,7 +128,7 @@ class AgentFlowBridge:
         message_id: str | None = None,
         auto_start: bool = True,
     ) -> dict[str, Any]:
-        return self._container.runs.create_run(
+        return self.runs.create_run(
             prompt=prompt,
             mode=mode,
             executor_agent_id=executor_agent_id,
@@ -114,11 +141,14 @@ class AgentFlowBridge:
             auto_start=auto_start,
         )
 
+    def cancel_run(self, run_id: str) -> dict[str, Any]:
+        return self.runs.cancel_run(run_id)
+
     def list_run_events(self, run_id: str) -> list[dict[str, Any]]:
-        return self._container.events.list_events(run_id)
+        return self.events.list_events(run_id)
 
     def register_agent_runtime_scope(self, agent_id: str, scope_id: str) -> None:
-        self._container.frontend_bridge.register_agent_run(agent_id, scope_id)
+        self.frontend_bridge.register_agent_run(agent_id, scope_id)
 
     def unregister_agent_runtime_scope(self, agent_id: str, scope_id: str) -> None:
-        self._container.frontend_bridge.unregister_agent_run(agent_id, scope_id)
+        self.frontend_bridge.unregister_agent_run(agent_id, scope_id)

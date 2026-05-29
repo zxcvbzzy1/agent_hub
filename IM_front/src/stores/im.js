@@ -83,6 +83,19 @@ export const useIMStore = defineStore('im', {
       this.tasks = response.items || []
       return this.tasks
     },
+    async refreshMessages() {
+      if (this.currentRoom?.type === 'group') {
+        const response = await imApi.messages(this.currentRoom.room_id)
+        this.messages = response.items || []
+        return this.messages
+      }
+      if (this.currentConversation?.conversation_id) {
+        const response = await imApi.conversationMessages(this.currentConversation.conversation_id)
+        this.messages = response.items || []
+        return this.messages
+      }
+      return []
+    },
     async createRoom(payload) {
       const response = await imApi.createRoom(payload)
       await this.fetchRooms()
@@ -228,16 +241,37 @@ export const useIMStore = defineStore('im', {
           message_id: messageItem.message_id,
           ...options,
         })
+        await this.fetchTasks()
       } else {
         await imApi.replyConversation(this.currentConversation.conversation_id, {
           message_id: messageItem.message_id,
           auto_start: options.auto_start ?? true,
         })
+        await this.refreshMessages()
+        await this.fetchConversations()
       }
       return messageItem
     },
     async dispatch(messageId, payload = {}) {
       return imApi.dispatch(this.currentGroupRoom.room_id, { message_id: messageId, ...payload })
+    },
+    async cancelActiveRun(runId) {
+      if (!this.currentGroupRoom?.room_id || !runId) return null
+      const response = await imApi.cancelRoomRun(this.currentGroupRoom.room_id, runId)
+      this.messages = this.messages.map((messageItem) => (
+        messageItem.run_id === runId ? { ...messageItem, status: 'cancelled' } : messageItem
+      ))
+      await Promise.all([this.fetchTasks(), this.refreshMessages()])
+      return response.item
+    },
+    async cancelActiveReply(messageId) {
+      if (!this.currentConversation?.conversation_id || !messageId) return null
+      const response = await imApi.cancelConversationMessage(this.currentConversation.conversation_id, messageId)
+      this.messages = this.messages.map((messageItem) => (
+        messageItem.message_id === messageId ? { ...messageItem, status: 'cancelled' } : messageItem
+      ))
+      await Promise.all([this.refreshMessages(), this.fetchConversations()])
+      return response.item
     },
     async recordAction(messageId, payload) {
       return imApi.action(messageId, payload)
@@ -280,6 +314,33 @@ export const useIMStore = defineStore('im', {
       }
       if (event.name === 'run.created' && this.currentRoom?.type === 'group') {
         this.fetchTasks().catch(() => {})
+      }
+      if (event.name === 'agent.reply.started') {
+        const messageId = event.payload?.message_id
+        this.messages = this.messages.map((messageItem) => (
+          messageItem.message_id === messageId ? { ...messageItem, status: 'running' } : messageItem
+        ))
+      }
+      if (event.name === 'run.cancelled') {
+        const runId = event.payload?.run_id
+        const messageId = event.payload?.message_id
+        this.messages = this.messages.map((messageItem) => (
+          messageItem.run_id === runId || messageItem.message_id === messageId
+            ? { ...messageItem, status: 'cancelled' }
+            : messageItem
+        ))
+        if (this.currentRoom?.type === 'group') this.fetchTasks().catch(() => {})
+      }
+      if (event.name === 'workflow.failed' && event.payload?.cancelled) {
+        const runId = event.payload?.run_id
+        const messageId = event.payload?.message_id
+        this.messages = this.messages.map((messageItem) => (
+          messageItem.run_id === runId || messageItem.message_id === messageId
+            ? { ...messageItem, status: 'cancelled' }
+            : messageItem
+        ))
+        if (this.currentRoom?.type === 'group') this.fetchTasks().catch(() => {})
+        if (this.currentAgentId) this.fetchConversations().catch(() => {})
       }
     },
   },

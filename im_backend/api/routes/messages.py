@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from im_backend.api.core import get_current_user, get_im_service
 from im_backend.api.schemas import MessageActionRequest
-from im_backend.application.services import IMService
+from im_backend.application.services.facade import IMService
 
 
 router = APIRouter()

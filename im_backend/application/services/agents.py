@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from im_backend.application.cleanup_service import IMCleanupService
+from im_backend.application.services.cleanup import IMCleanupService
 from im_backend.infra.agent_flow_bridge.bridge import AgentFlowBridge
 
 
@@ -52,7 +52,3 @@ class IMAgentService:
             "agent_flow": agent_flow_result,
             "im_stats": im_stats,
         }
-
-
-class AgentCatalogService(IMAgentService):
-    """Compatibility alias for existing API dependencies."""

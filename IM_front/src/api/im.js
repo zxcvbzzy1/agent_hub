@@ -34,6 +34,9 @@ export const imApi = {
   replyConversation(conversationId, payload) {
     return http.post(`/api/im/conversations/${conversationId}/reply`, payload)
   },
+  cancelConversationMessage(conversationId, messageId) {
+    return http.post(`/api/im/conversations/${conversationId}/messages/${messageId}/cancel`)
+  },
   deleteConversation(conversationId) {
     return http.delete(`/api/im/conversations/${conversationId}`)
   },
@@ -63,6 +66,9 @@ export const imApi = {
   },
   dispatch(roomId, payload) {
     return http.post(`/api/im/rooms/${roomId}/dispatch`, payload)
+  },
+  cancelRoomRun(roomId, runId) {
+    return http.post(`/api/im/rooms/${roomId}/runs/${runId}/cancel`)
   },
   action(messageId, payload) {
     return http.post(`/api/im/messages/${messageId}/actions`, payload)

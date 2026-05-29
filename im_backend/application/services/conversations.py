@@ -4,18 +4,14 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
-from im_backend.application.event_stream import RoomEventStreamService
-from im_backend.application.cleanup_service import IMCleanupService
+from im_backend.application.services.cleanup import IMCleanupService
+from im_backend.application.services.events import RoomEventStreamService
 from im_backend.domain.models import ContentPart, Conversation, Message
 from im_backend.infra.agent_flow_bridge.bridge import AgentFlowBridge
 
 
 class ConversationService:
-    """Single-agent conversation use cases.
-
-    A conversation is not a room. It is the single-agent context boundary used
-    to rebuild HistoryProvider input before each direct agent reply.
-    """
+    """Single-agent conversation use cases."""
 
     def __init__(
         self,
@@ -31,6 +27,7 @@ class ConversationService:
         self._events = events
         self._default_workdir = str(Path(default_workdir).expanduser().resolve())
         self._agent_locks: dict[str, asyncio.Lock] = {}
+        self._reply_tasks: dict[str, asyncio.Task] = {}
         self._cleanup = cleanup or IMCleanupService(store)
 
     def get_conversation(self, conversation_id: str) -> dict[str, Any]:
@@ -156,12 +153,70 @@ class ConversationService:
             self._events.publish(conversation_id, "agent.reply.pending", {"message_id": message_id, "agent_id": agent_id})
             return {"type": "dm_reply_pending", "message_id": message_id, "agent_id": agent_id}
 
+        if message.get("status") == "running":
+            return {"type": "dm_reply_started", "message_id": message_id, "agent_id": agent_id}
+        self._store.update_one("im_messages", {"message_id": message_id}, {"status": "running"})
+        self._events.publish(
+            conversation_id,
+            "agent.reply.started",
+            {"message_id": message_id, "agent_id": agent_id, "conversation_id": conversation_id},
+        )
+        task = asyncio.create_task(
+            self._run_reply_task(
+                conversation_id=conversation_id,
+                message_id=message_id,
+                agent_id=agent_id,
+            )
+        )
+        self._reply_tasks[message_id] = task
+        task.add_done_callback(lambda _task, mid=message_id: self._reply_tasks.pop(mid, None))
+        return {"type": "dm_reply_started", "message_id": message_id, "agent_id": agent_id}
+
+    async def cancel_conversation_reply(self, *, conversation_id: str, message_id: str) -> dict[str, Any]:
+        conversation = self.get_conversation(conversation_id)
+        message = self._get_message(message_id)
+        if message.get("conversation_id") != conversation_id:
+            raise ValueError("message 不属于该 conversation")
+        if message.get("sender_type") != "user":
+            raise ValueError("只能中断 user 消息触发的回复")
+        if message.get("status") == "cancelled":
+            return {
+                "type": "dm_reply_cancelled",
+                "conversation_id": conversation_id,
+                "message_id": message_id,
+                "cancelled": True,
+            }
+        if message.get("status") != "running":
+            raise ValueError("该消息没有正在运行的回复")
+
+        task = self._reply_tasks.get(message_id)
+        if task and not task.done():
+            task.cancel()
+        self._mark_reply_cancelled(
+            conversation_id=conversation_id,
+            message_id=message_id,
+            agent_id=conversation.get("agent_id", ""),
+            publish=True,
+        )
+        return {
+            "type": "dm_reply_cancelled",
+            "conversation_id": conversation_id,
+            "message_id": message_id,
+            "cancelled": True,
+        }
+
+    async def _run_reply_task(self, *, conversation_id: str, message_id: str, agent_id: str) -> None:
         lock = self._agent_locks.setdefault(agent_id, asyncio.Lock())
+        registered = False
         async with lock:
             agent = self._bridge.get_agent(agent_id)
+            message = self._get_message(message_id)
+            if message.get("status") == "cancelled":
+                return
             self._rebuild_agent_history(agent, conversation_id=conversation_id, before_message_id=message_id)
             prompt = self._message_text(message)
             self._bridge.register_agent_runtime_scope(agent_id, conversation_id)
+            registered = True
             self._events.publish(
                 conversation_id,
                 "workflow.started",
@@ -176,6 +231,8 @@ class ConversationService:
             )
             try:
                 await agent.start_with_history(prompt)
+                if self._get_message(message_id).get("status") == "cancelled":
+                    return
                 final = agent.states.get("final", "") or agent.states.get("finish_reason", "")
                 reply = self.add_conversation_message(
                     conversation_id=conversation_id,
@@ -203,7 +260,16 @@ class ConversationService:
                         "final": final,
                     },
                 )
-                return {"type": "dm_reply", "message": reply}
+                return
+            except asyncio.CancelledError:
+                current = self._get_message(message_id)
+                self._mark_reply_cancelled(
+                    conversation_id=conversation_id,
+                    message_id=message_id,
+                    agent_id=agent_id,
+                    publish=current.get("status") != "cancelled",
+                )
+                raise
             except Exception as exc:
                 self._store.update_one("im_messages", {"message_id": message_id}, {"status": "failed"})
                 self._events.publish(
@@ -220,7 +286,32 @@ class ConversationService:
                 )
                 raise
             finally:
-                self._bridge.unregister_agent_runtime_scope(agent_id, conversation_id)
+                if registered:
+                    self._bridge.unregister_agent_runtime_scope(agent_id, conversation_id)
+
+    def _mark_reply_cancelled(
+        self,
+        *,
+        conversation_id: str,
+        message_id: str,
+        agent_id: str,
+        publish: bool,
+    ) -> None:
+        self._store.update_one("im_messages", {"message_id": message_id}, {"status": "cancelled"})
+        if publish:
+            self._events.publish(
+                conversation_id,
+                "workflow.failed",
+                {
+                    "scope_id": conversation_id,
+                    "conversation_id": conversation_id,
+                    "message_id": message_id,
+                    "agent_id": agent_id,
+                    "mode": "direct",
+                    "error": "用户中断",
+                    "cancelled": True,
+                },
+            )
 
     def _get_message(self, message_id: str) -> dict[str, Any]:
         message = self._store.find_one("im_messages", {"message_id": message_id})
