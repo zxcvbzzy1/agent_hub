@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from im_backend.application.services.cleanup import IMCleanupService
+from im_backend.application.services.agents import IMAgentService
 from im_backend.application.services.events import RoomEventStreamService
 from im_backend.domain.models import Room
 from im_backend.infra.agent_flow_bridge.bridge import AgentFlowBridge
@@ -16,11 +17,13 @@ class RoomService:
         bridge: AgentFlowBridge,
         events: RoomEventStreamService,
         cleanup: IMCleanupService,
+        agents: IMAgentService,
     ) -> None:
         self._store = store
         self._bridge = bridge
         self._events = events
         self._cleanup = cleanup
+        self._agents = agents
 
     def create_room(
         self,
@@ -38,7 +41,7 @@ class RoomService:
         if type != "group":
             raise ValueError("room 只用于 agent 群聊；单聊请创建 conversation")
         for agent_id in member_agent_ids:
-            self._bridge.ensure_agent_exists(agent_id)
+            self._agents.ensure_agent_access(agent_id, created_by)
 
         room_metadata = {
             "planner_agent_id": "default_planner",
@@ -46,6 +49,11 @@ class RoomService:
             "execution_mode": "plan",
             **(metadata or {}),
         }
+        planner_agent_id = room_metadata.get("planner_agent_id")
+        if planner_agent_id:
+            planner = self._agents.ensure_agent_access(planner_agent_id, created_by)
+            if planner.get("agent_type") != "planner":
+                raise ValueError("planner_agent_id 必须指向 planner agent")
 
         room = Room.create(
             type=type,
@@ -76,6 +84,7 @@ class RoomService:
         avatar_url: str | None = None,
         member_agent_ids: list[str] | None = None,
         metadata: dict[str, Any] | None = None,
+        user_id: str = "",
     ) -> dict[str, Any]:
         room = self.get_room(room_id)
         if room.get("type") != "group":
@@ -87,13 +96,20 @@ class RoomService:
             updates["avatar_url"] = avatar_url
         if member_agent_ids is not None:
             for agent_id in member_agent_ids:
-                self._bridge.ensure_agent_exists(agent_id)
+                if user_id:
+                    self._agents.ensure_agent_access(agent_id, user_id)
+                else:
+                    self._bridge.ensure_agent_exists(agent_id)
             updates["member_agent_ids"] = member_agent_ids
         if metadata is not None:
             next_metadata = {**(room.get("metadata") or {}), **metadata}
             planner_agent_id = next_metadata.get("planner_agent_id")
             if planner_agent_id:
-                planner = self._bridge.ensure_agent_exists(planner_agent_id)
+                planner = (
+                    self._agents.ensure_agent_access(planner_agent_id, user_id)
+                    if user_id
+                    else self._bridge.ensure_agent_exists(planner_agent_id)
+                )
                 if planner.get("agent_type") != "planner":
                     raise ValueError("planner_agent_id 必须指向 planner agent")
             updates["metadata"] = next_metadata

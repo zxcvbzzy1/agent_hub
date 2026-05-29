@@ -16,8 +16,22 @@ class IMAgentService:
     def list_agents(self) -> list[dict[str, Any]]:
         return self._bridge.list_agents()
 
+    def list_visible_agents(self, user_id: str) -> list[dict[str, Any]]:
+        return [
+            record
+            for record in self._bridge.list_agents()
+            if self.is_visible(record, user_id)
+        ]
+
     def list_contexts(self) -> list[dict[str, Any]]:
         return self._bridge.list_contexts()
+
+    def list_visible_contexts(self, user_id: str) -> list[dict[str, Any]]:
+        return [
+            record
+            for record in self._bridge.list_contexts()
+            if self.is_visible(record, user_id)
+        ]
 
     def create_agent(
         self,
@@ -27,23 +41,38 @@ class IMAgentService:
         context_id: str = "default_executor",
         role_prompt: str = "",
         metadata: dict[str, Any] | None = None,
+        owner_user_id: str = "",
     ) -> dict[str, Any]:
         if not name.strip():
             raise ValueError("Agent 名称不能为空")
         if agent_type not in {"executor", "planner"}:
             raise ValueError("agent_type 必须是 executor 或 planner")
+        if owner_user_id:
+            self.ensure_context_access(context_id, owner_user_id)
+        agent_metadata = {
+            "agent_kind": "native",
+            **(metadata or {}),
+        }
+        if owner_user_id:
+            agent_metadata = {
+                **agent_metadata,
+                "owner_user_id": owner_user_id,
+                "visibility": "private",
+            }
         return self._bridge.create_agent(
             name=name.strip(),
             agent_type=agent_type,
             context_id=context_id,
             role_prompt=role_prompt,
-            metadata={"agent_kind": "native", **(metadata or {})},
+            metadata=agent_metadata,
         )
 
-    def delete_agent(self, agent_id: str) -> dict[str, Any]:
+    def delete_agent(self, agent_id: str, *, user_id: str = "") -> dict[str, Any]:
         if agent_id in self.PROTECTED_AGENT_IDS:
             raise ValueError("默认 Agent 不允许删除")
-        self._bridge.ensure_agent_exists(agent_id)
+        record = self._bridge.ensure_agent_exists(agent_id)
+        if user_id and self.owner_user_id(record) != user_id:
+            raise ValueError("只能删除当前用户拥有的 Agent")
         agent_flow_result = self._bridge.delete_agent(agent_id)
         im_stats = self._cleanup.delete_agent_im_refs(agent_id)
         return {
@@ -52,3 +81,26 @@ class IMAgentService:
             "agent_flow": agent_flow_result,
             "im_stats": im_stats,
         }
+
+    def ensure_agent_access(self, agent_id: str, user_id: str) -> dict[str, Any]:
+        record = self._bridge.ensure_agent_exists(agent_id)
+        if not self.is_visible(record, user_id):
+            raise KeyError(f"Agent 不存在: {agent_id}")
+        return record
+
+    def ensure_context_access(self, context_id: str, user_id: str) -> dict[str, Any]:
+        record = self._bridge.get_context_record(context_id)
+        if record is None or not self.is_visible(record, user_id):
+            raise KeyError(f"Context 不存在: {context_id}")
+        return record
+
+    def is_visible(self, record: dict[str, Any], user_id: str) -> bool:
+        metadata = record.get("metadata") or {}
+        if metadata.get("visibility") == "public":
+            return True
+        owner = self.owner_user_id(record)
+        return not owner or owner == user_id
+
+    def owner_user_id(self, record: dict[str, Any]) -> str:
+        metadata = record.get("metadata") or {}
+        return metadata.get("owner_user_id") or metadata.get("created_by") or ""

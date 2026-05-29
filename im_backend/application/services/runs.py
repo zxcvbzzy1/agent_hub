@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from im_backend.application.services.agents import IMAgentService
 from im_backend.application.services.coding_agents import CodingAgentService
 from im_backend.application.services.events import RoomEventStreamService
 from im_backend.application.services.messages import GroupMessageService
@@ -21,6 +22,7 @@ class GroupRunService:
         rooms: RoomService,
         messages: GroupMessageService,
         coding_agents: CodingAgentService,
+        agents: IMAgentService,
         default_workdir: str | Path,
     ) -> None:
         self._store = store
@@ -29,6 +31,7 @@ class GroupRunService:
         self._rooms = rooms
         self._messages = messages
         self._coding_agents = coding_agents
+        self._agents = agents
         self._default_workdir = str(Path(default_workdir).expanduser().resolve())
 
     def list_room_tasks(self, room_id: str) -> list[dict[str, Any]]:
@@ -74,6 +77,7 @@ class GroupRunService:
         max_replan_rounds: int = 3,
         auto_start: bool = True,
         approved: bool = False,
+        user_id: str = "",
     ) -> dict[str, Any]:
         room = self._rooms.ensure_group_room(room_id)
         message = self._messages.get_message(message_id)
@@ -84,7 +88,7 @@ class GroupRunService:
 
         prompt = self._messages.message_text(message)
         target_agent_ids = self._select_target_agents(room, message)
-        profiles = [self._runtime_profile(agent_id) for agent_id in target_agent_ids]
+        profiles = [self._runtime_profile(agent_id, user_id=user_id) for agent_id in target_agent_ids]
         external_profiles = [profile for profile in profiles if profile.agent_kind in {"claude_code", "codex"}]
 
         if external_profiles and not approved:
@@ -112,6 +116,7 @@ class GroupRunService:
             context_id=context_id,
             max_replan_rounds=max_replan_rounds,
             auto_start=auto_start,
+            user_id=user_id,
         )
         return self._mark_dispatched(room_id, message_id, run)
 
@@ -152,8 +157,8 @@ class GroupRunService:
             return mentions
         return room.get("member_agent_ids", [])
 
-    def _runtime_profile(self, agent_id: str) -> AgentRuntimeProfile:
-        record = self._bridge.ensure_agent_exists(agent_id)
+    def _runtime_profile(self, agent_id: str, *, user_id: str = "") -> AgentRuntimeProfile:
+        record = self._agents.ensure_agent_access(agent_id, user_id) if user_id else self._bridge.ensure_agent_exists(agent_id)
         profile = AgentRuntimeProfile.from_agent_record(record)
         if not profile.workdir:
             profile.workdir = self._default_workdir
@@ -172,7 +177,11 @@ class GroupRunService:
         context_id: str = "default_step",
         max_replan_rounds: int = 3,
         auto_start: bool = True,
+        user_id: str = "",
     ) -> dict[str, Any]:
+        if user_id:
+            self._agents.ensure_agent_access(planner_agent_id, user_id)
+            self._agents.ensure_context_access(context_id, user_id)
         runtime_conversation = self._bridge.create_runtime_conversation(
             title=f"IM:{room.get('title', room['room_id'])}",
             metadata={"source": "im_backend", "room_id": room["room_id"]},

@@ -29,7 +29,7 @@ class IMService:
         self._events = room_events
         self.cleanup = IMCleanupService(store)
         self.agents = IMAgentService(bridge=bridge, cleanup=self.cleanup)
-        self.rooms = RoomService(store=store, bridge=bridge, events=room_events, cleanup=self.cleanup)
+        self.rooms = RoomService(store=store, bridge=bridge, events=room_events, cleanup=self.cleanup, agents=self.agents)
         self.messages = GroupMessageService(store=store, bridge=bridge, events=room_events, rooms=self.rooms)
         self.actions = MessageActionService(store=store, events=room_events)
         self.conversations = ConversationService(
@@ -37,6 +37,7 @@ class IMService:
             bridge=bridge,
             events=room_events,
             default_workdir=default_workdir,
+            agents=self.agents,
             cleanup=self.cleanup,
         )
         self.coding_agents = CodingAgentService(store=store, events=room_events, messages=self.messages)
@@ -47,6 +48,7 @@ class IMService:
             rooms=self.rooms,
             messages=self.messages,
             coding_agents=self.coding_agents,
+            agents=self.agents,
             default_workdir=default_workdir,
         )
 
@@ -74,7 +76,9 @@ class IMService:
     def add_message(self, **kwargs) -> dict[str, Any]:
         return self.messages.add_message(**kwargs)
 
-    def list_agent_messages(self, agent_id: str) -> list[dict[str, Any]]:
+    def list_agent_messages(self, agent_id: str, user_id: str = "") -> list[dict[str, Any]]:
+        if user_id:
+            self.agents.ensure_agent_access(agent_id, user_id)
         return self.messages.list_agent_messages(agent_id)
 
     def list_room_tasks(self, room_id: str) -> list[dict[str, Any]]:
@@ -95,7 +99,9 @@ class IMService:
     def list_conversation_messages(self, conversation_id: str) -> list[dict[str, Any]]:
         return self.conversations.list_conversation_messages(conversation_id)
 
-    def list_agent_conversations(self, agent_id: str) -> list[dict[str, Any]]:
+    def list_agent_conversations(self, agent_id: str, user_id: str = "") -> list[dict[str, Any]]:
+        if user_id:
+            self.agents.ensure_agent_access(agent_id, user_id)
         return self.conversations.list_agent_conversations(agent_id)
 
     def create_agent_conversation(self, **kwargs) -> dict[str, Any]:
@@ -116,17 +122,17 @@ class IMService:
     async def reply_to_dm_message(self, *, room_id: str, message_id: str, auto_start: bool = True) -> dict[str, Any]:
         raise ValueError("单聊不再使用 room，请使用 /api/im/conversations/{conversation_id}/reply")
 
-    def list_agents(self) -> list[dict[str, Any]]:
-        return self.agents.list_agents()
+    def list_agents(self, user_id: str = "") -> list[dict[str, Any]]:
+        return self.agents.list_visible_agents(user_id) if user_id else self.agents.list_agents()
 
-    def list_contexts(self) -> list[dict[str, Any]]:
-        return self.agents.list_contexts()
+    def list_contexts(self, user_id: str = "") -> list[dict[str, Any]]:
+        return self.agents.list_visible_contexts(user_id) if user_id else self.agents.list_contexts()
 
     def create_agent(self, **kwargs) -> dict[str, Any]:
         return self.agents.create_agent(**kwargs)
 
-    def delete_agent(self, agent_id: str) -> dict[str, Any]:
-        return self.agents.delete_agent(agent_id)
+    def delete_agent(self, agent_id: str, *, user_id: str = "") -> dict[str, Any]:
+        return self.agents.delete_agent(agent_id, user_id=user_id)
 
     def record_action(self, **kwargs) -> dict[str, Any]:
         return self.actions.record_action(**kwargs)

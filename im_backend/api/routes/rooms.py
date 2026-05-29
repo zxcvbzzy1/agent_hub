@@ -60,6 +60,7 @@ async def update_room(
             avatar_url=request.avatar_url,
             member_agent_ids=request.member_agent_ids,
             metadata=request.metadata,
+            user_id=current_user["user_id"],
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -149,6 +150,7 @@ async def dispatch_message(
             max_replan_rounds=request.max_replan_rounds,
             auto_start=request.auto_start,
             approved=request.approved,
+            user_id=current_user["user_id"],
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

@@ -12,13 +12,19 @@ router = APIRouter()
 
 
 @router.get("/agents")
-async def list_agents(service: IMAgentService = Depends(get_agent_catalog)):
-    return {"items": service.list_agents()}
+async def list_agents(
+    current_user: dict = Depends(get_current_user),
+    service: IMAgentService = Depends(get_agent_catalog),
+):
+    return {"items": service.list_visible_agents(current_user["user_id"])}
 
 
 @router.get("/contexts")
-async def list_contexts(service: IMAgentService = Depends(get_agent_catalog)):
-    return {"items": service.list_contexts()}
+async def list_contexts(
+    current_user: dict = Depends(get_current_user),
+    service: IMAgentService = Depends(get_agent_catalog),
+):
+    return {"items": service.list_visible_contexts(current_user["user_id"])}
 
 
 @router.post("/agents")
@@ -34,6 +40,7 @@ async def create_agent(
             context_id=request.context_id,
             role_prompt=request.role_prompt,
             metadata={**request.metadata, "created_by": current_user["user_id"], "created_by_username": current_user["username"]},
+            owner_user_id=current_user["user_id"],
         )
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -48,7 +55,7 @@ async def delete_agent(
 ):
     _ = current_user
     try:
-        return {"item": service.delete_agent(agent_id)}
+        return {"item": service.delete_agent(agent_id, user_id=current_user["user_id"])}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -56,17 +63,25 @@ async def delete_agent(
 
 
 @router.get("/agents/{agent_id}/messages")
-async def list_agent_messages(agent_id: str, service: IMService = Depends(get_im_service)):
+async def list_agent_messages(
+    agent_id: str,
+    current_user: dict = Depends(get_current_user),
+    service: IMService = Depends(get_im_service),
+):
     try:
-        return {"items": service.list_agent_messages(agent_id)}
+        return {"items": service.list_agent_messages(agent_id, user_id=current_user["user_id"])}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/agents/{agent_id}/conversations")
-async def list_agent_conversations(agent_id: str, service: IMService = Depends(get_im_service)):
+async def list_agent_conversations(
+    agent_id: str,
+    current_user: dict = Depends(get_current_user),
+    service: IMService = Depends(get_im_service),
+):
     try:
-        return {"items": service.list_agent_conversations(agent_id)}
+        return {"items": service.list_agent_conversations(agent_id, user_id=current_user["user_id"])}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from im_backend.application.services.agents import IMAgentService
 from im_backend.application.services.cleanup import IMCleanupService
 from im_backend.application.services.events import RoomEventStreamService
 from im_backend.domain.models import ContentPart, Conversation, Message
@@ -20,11 +21,13 @@ class ConversationService:
         bridge: AgentFlowBridge,
         events: RoomEventStreamService,
         default_workdir: str | Path,
+        agents: IMAgentService,
         cleanup: IMCleanupService | None = None,
     ) -> None:
         self._store = store
         self._bridge = bridge
         self._events = events
+        self._agents = agents
         self._default_workdir = str(Path(default_workdir).expanduser().resolve())
         self._agent_locks: dict[str, asyncio.Lock] = {}
         self._reply_tasks: dict[str, asyncio.Task] = {}
@@ -79,7 +82,7 @@ class ConversationService:
         avatar_url: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        agent = self._bridge.ensure_agent_exists(agent_id)
+        agent = self._agents.ensure_agent_access(agent_id, created_by)
         conversation = Conversation.create(
             agent_id=agent_id,
             title=title or f"{agent.get('name', agent_id)} 对话",

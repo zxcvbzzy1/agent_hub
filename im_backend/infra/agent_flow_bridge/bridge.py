@@ -64,6 +64,39 @@ class AgentFlowBridge:
     def list_contexts(self) -> list[dict[str, Any]]:
         return self.contexts.list_contexts()
 
+    def get_context_record(self, context_id: str) -> dict[str, Any] | None:
+        return self.contexts.get_context(context_id)
+
+    def context_exists(self, context_id: str) -> bool:
+        return self.get_context_record(context_id) is not None
+
+    def agent_exists(self, agent_id: str) -> bool:
+        return self.get_agent_record(agent_id) is not None
+
+    def create_context_from_engine(
+        self,
+        *,
+        kind: str,
+        name: str,
+        engine,
+        context_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        record = self.contexts.create_context_from_engine(
+            kind=kind,
+            name=name,
+            engine=engine,
+            context_id=context_id,
+        )
+        if metadata:
+            self._store.update_one(
+                "contexts",
+                {"context_id": record["context_id"]},
+                {"metadata": metadata},
+            )
+            record = self.contexts.get_context(record["context_id"]) or record
+        return record
+
     def get_agent_record(self, agent_id: str) -> dict[str, Any] | None:
         return self.agents.get_agent_record(agent_id)
 
@@ -90,6 +123,40 @@ class AgentFlowBridge:
             agent_type=agent_type,
             context_id=context_id,
             role_prompt=role_prompt,
+            metadata=metadata or {},
+        )
+
+    def create_agent_from_instance(
+        self,
+        *,
+        agent,
+        agent_type: str | None = None,
+        context_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if context_id and self.context_exists(context_id):
+            agent_type = agent_type or ("planner" if type(agent).__name__ == "PlanAgent" else "executor")
+            if agent_type not in {"planner", "executor"}:
+                raise ValueError("agent_type 必须是 planner 或 executor")
+            record = {
+                "agent_id": agent.id,
+                "name": agent.name,
+                "agent_type": agent_type,
+                "context_id": context_id,
+                "role_prompt": getattr(agent, "_role_prompt", ""),
+                "metadata": {
+                    "description": getattr(agent, "description", ""),
+                    "imported_agent_class": type(agent).__name__,
+                    **(metadata or {}),
+                },
+            }
+            self._store.update_one("agents", {"agent_id": agent.id}, record, upsert=True)
+            self.agents._agents[agent.id] = agent
+            return record
+        return self.agents.create_agent_from_instance(
+            agent=agent,
+            agent_type=agent_type,
+            context_id=context_id,
             metadata=metadata or {},
         )
 
