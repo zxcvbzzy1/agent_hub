@@ -143,7 +143,7 @@ class AgentFlowBridge:
                 "name": agent.name,
                 "agent_type": agent_type,
                 "context_id": context_id,
-                "role_prompt": getattr(agent, "_role_prompt", ""),
+                "role_prompt": rp if isinstance(rp := getattr(agent, "_role_prompt", ""), str) else "",
                 "metadata": {
                     "description": getattr(agent, "description", ""),
                     "imported_agent_class": type(agent).__name__,
@@ -151,6 +151,7 @@ class AgentFlowBridge:
                 },
             }
             self._store.update_one("agents", {"agent_id": agent.id}, record, upsert=True)
+            agent._llm = self.agents._build_llm(record)
             self.agents._agents[agent.id] = agent
             return record
         return self.agents.create_agent_from_instance(

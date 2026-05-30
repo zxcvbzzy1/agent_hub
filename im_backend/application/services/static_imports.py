@@ -11,7 +11,7 @@ class StaticConfigImportService:
         self,
         *,
         bridge: AgentFlowBridge,
-        module_name: str = "im_backend.application.static_configs.registry",
+        module_name: str = "im_backend.infra.static_configs.registry",
     ) -> None:
         self._bridge = bridge
         self._module_name = module_name
