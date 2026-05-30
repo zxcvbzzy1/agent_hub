@@ -32,15 +32,16 @@ class IMService:
         self.rooms = RoomService(store=store, bridge=bridge, events=room_events, cleanup=self.cleanup, agents=self.agents)
         self.messages = GroupMessageService(store=store, bridge=bridge, events=room_events, rooms=self.rooms)
         self.actions = MessageActionService(store=store, events=room_events)
+        self.coding_agents = CodingAgentService(store=store, events=room_events, messages=self.messages)
         self.conversations = ConversationService(
             store=store,
             bridge=bridge,
             events=room_events,
             default_workdir=default_workdir,
             agents=self.agents,
+            coding_agents=self.coding_agents,
             cleanup=self.cleanup,
         )
-        self.coding_agents = CodingAgentService(store=store, events=room_events, messages=self.messages)
         self.runs = GroupRunService(
             store=store,
             bridge=bridge,

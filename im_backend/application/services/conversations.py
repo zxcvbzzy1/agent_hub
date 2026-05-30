@@ -6,8 +6,9 @@ from typing import Any
 
 from im_backend.application.services.agents import IMAgentService
 from im_backend.application.services.cleanup import IMCleanupService
+from im_backend.application.services.coding_agents import CodingAgentService
 from im_backend.application.services.events import RoomEventStreamService
-from im_backend.domain.models import ContentPart, Conversation, Message
+from im_backend.domain.models import AgentRuntimeProfile, ContentPart, Conversation, Message
 from im_backend.infra.agent_flow_bridge.bridge import AgentFlowBridge
 
 
@@ -22,12 +23,14 @@ class ConversationService:
         events: RoomEventStreamService,
         default_workdir: str | Path,
         agents: IMAgentService,
+        coding_agents: CodingAgentService,
         cleanup: IMCleanupService | None = None,
     ) -> None:
         self._store = store
         self._bridge = bridge
         self._events = events
         self._agents = agents
+        self._coding_agents = coding_agents
         self._default_workdir = str(Path(default_workdir).expanduser().resolve())
         self._agent_locks: dict[str, asyncio.Lock] = {}
         self._reply_tasks: dict[str, asyncio.Task] = {}
@@ -108,6 +111,7 @@ class ConversationService:
         content_parts: list[dict[str, Any]],
         reply_to: str = "",
         quote_of: str = "",
+        run_id: str = "",
         status: str = "sent",
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
@@ -124,6 +128,7 @@ class ConversationService:
             content_parts=parts,
             reply_to=reply_to,
             quote_of=quote_of,
+            run_id=run_id,
             status=status,
             metadata=metadata or {},
         )
@@ -151,7 +156,7 @@ class ConversationService:
             raise ValueError("只能回复 user 消息")
 
         agent_id = conversation.get("agent_id", "")
-        self._bridge.ensure_agent_exists(agent_id)
+        profile = self._runtime_profile(agent_id)
         if not auto_start:
             self._events.publish(conversation_id, "agent.reply.pending", {"message_id": message_id, "agent_id": agent_id})
             return {"type": "dm_reply_pending", "message_id": message_id, "agent_id": agent_id}
@@ -164,6 +169,34 @@ class ConversationService:
             "agent.reply.started",
             {"message_id": message_id, "agent_id": agent_id, "conversation_id": conversation_id},
         )
+        if profile.agent_kind in {"claude_code", "codex"}:
+            run_id = f"coding-{message_id}-{agent_id}"
+            self._store.update_one("im_messages", {"message_id": message_id}, {"run_id": run_id})
+            result, task = self._coding_agents.start_coding_agent(
+                scope_id=conversation_id,
+                message_id=message_id,
+                run_id=run_id,
+                prompt=self._message_text(message),
+                profile=profile,
+                mode="direct_coding_agent",
+                final_message_writer=lambda final: self.add_conversation_message(
+                    conversation_id=conversation_id,
+                    sender_type="agent",
+                    sender_id=agent_id,
+                    content_parts=[{"type": "text", "text": final or "Coding agent 已完成回复"}],
+                    run_id=run_id,
+                    status="finished",
+                    metadata={
+                        "source": "direct_coding_agent_reply",
+                        "reply_to": message_id,
+                        "agent_kind": profile.agent_kind,
+                    },
+                ),
+            )
+            self._reply_tasks[message_id] = task
+            task.add_done_callback(lambda _task, mid=message_id: self._reply_tasks.pop(mid, None))
+            return {"type": "dm_reply_started", "message_id": message_id, "agent_id": agent_id, "run": result}
+
         task = asyncio.create_task(
             self._run_reply_task(
                 conversation_id=conversation_id,
@@ -174,6 +207,13 @@ class ConversationService:
         self._reply_tasks[message_id] = task
         task.add_done_callback(lambda _task, mid=message_id: self._reply_tasks.pop(mid, None))
         return {"type": "dm_reply_started", "message_id": message_id, "agent_id": agent_id}
+
+    def _runtime_profile(self, agent_id: str) -> AgentRuntimeProfile:
+        record = self._bridge.ensure_agent_exists(agent_id)
+        profile = AgentRuntimeProfile.from_agent_record(record)
+        if not profile.workdir:
+            profile.workdir = self._default_workdir
+        return profile
 
     async def cancel_conversation_reply(self, *, conversation_id: str, message_id: str) -> dict[str, Any]:
         conversation = self.get_conversation(conversation_id)

@@ -58,16 +58,30 @@ const roomForm = reactive({
 })
 const agentForm = reactive({
   name: '',
+  agent_kind: 'native',
   agent_type: 'executor',
   context_id: 'default_executor',
   description: '',
   role_prompt: '',
+  workdir: '',
+  permission_profile: 'human_confirm',
 })
+const agentKindOptions = [
+  { label: 'Native', value: 'native' },
+  { label: 'Claude Code', value: 'claude_code' },
+  { label: 'Codex', value: 'codex' },
+]
+const permissionProfileOptions = [
+  { label: '人工确认', value: 'human_confirm' },
+  { label: '只读计划', value: 'plan' },
+]
 const dispatchOptions = reactive({
   auto_start: false,
   context_id: 'default_step',
   max_replan_rounds: 3,
 })
+
+const isNativeAgentForm = computed(() => agentForm.agent_kind === 'native')
 
 const currentMembers = computed(() => {
   const ids = im.currentRoom?.member_agent_ids || []
@@ -354,22 +368,31 @@ async function createAgent() {
   }
   creatingAgent.value = true
   try {
+    const agentKindValue = agentForm.agent_kind || 'native'
+    const agentTypeValue = agentKindValue === 'native' ? agentForm.agent_type : 'executor'
+    const contextId = agentTypeValue === 'planner' ? 'default_planner' : 'default_executor'
     await im.createAgent({
       name: agentForm.name.trim(),
-      agent_type: agentForm.agent_type,
-      context_id: agentForm.context_id || (agentForm.agent_type === 'planner' ? 'default_planner' : 'default_executor'),
-      role_prompt: agentForm.role_prompt,
+      agent_type: agentTypeValue,
+      context_id: isNativeAgentForm.value ? (agentForm.context_id || contextId) : 'default_executor',
+      role_prompt: isNativeAgentForm.value ? agentForm.role_prompt : '',
       metadata: {
+        agent_kind: agentKindValue,
         description: agentForm.description,
         capabilities: agentForm.description ? [agentForm.description] : [],
+        workdir: agentForm.workdir,
+        permission_profile: agentForm.permission_profile || 'human_confirm',
       },
     })
     agentCreateOpen.value = false
     agentForm.name = ''
+    agentForm.agent_kind = 'native'
     agentForm.agent_type = 'executor'
     agentForm.context_id = 'default_executor'
     agentForm.description = ''
     agentForm.role_prompt = ''
+    agentForm.workdir = ''
+    agentForm.permission_profile = 'human_confirm'
     message.success('Agent 已创建')
   } finally {
     creatingAgent.value = false
@@ -517,7 +540,21 @@ watch(
 watch(
   () => agentForm.agent_type,
   (value) => {
+    if (!isNativeAgentForm.value) return
     agentForm.context_id = value === 'planner' ? 'default_planner' : 'default_executor'
+  },
+)
+
+watch(
+  () => agentForm.agent_kind,
+  (value) => {
+    if (value !== 'native') {
+      agentForm.agent_type = 'executor'
+      agentForm.context_id = 'default_executor'
+      agentForm.role_prompt = ''
+      return
+    }
+    agentForm.context_id = agentForm.agent_type === 'planner' ? 'default_planner' : 'default_executor'
   },
 )
 
@@ -862,7 +899,13 @@ onMounted(async () => {
         <a-form-item label="名称">
           <a-input v-model:value="agentForm.name" placeholder="例如：前端组件工程师" />
         </a-form-item>
-        <a-form-item label="类型">
+        <a-form-item label="运行类型">
+          <a-segmented
+            v-model:value="agentForm.agent_kind"
+            :options="agentKindOptions"
+          />
+        </a-form-item>
+        <a-form-item v-if="isNativeAgentForm" label="类型">
           <a-segmented
             v-model:value="agentForm.agent_type"
             :options="[
@@ -871,7 +914,7 @@ onMounted(async () => {
             ]"
           />
         </a-form-item>
-        <a-form-item label="Context">
+        <a-form-item v-if="isNativeAgentForm" label="Context">
           <a-select
             v-model:value="agentForm.context_id"
             :options="contextOptions"
@@ -879,10 +922,19 @@ onMounted(async () => {
             show-search
           />
         </a-form-item>
+        <a-form-item v-if="!isNativeAgentForm" label="工作目录">
+          <a-input v-model:value="agentForm.workdir" placeholder="留空则使用后端默认工作目录" />
+        </a-form-item>
+        <a-form-item v-if="!isNativeAgentForm" label="权限策略">
+          <a-select
+            v-model:value="agentForm.permission_profile"
+            :options="permissionProfileOptions"
+          />
+        </a-form-item>
         <a-form-item label="能力描述">
           <a-input v-model:value="agentForm.description" placeholder="擅长方向、可承担任务或工具范围" />
         </a-form-item>
-        <a-form-item label="Role Prompt">
+        <a-form-item v-if="isNativeAgentForm" label="Role Prompt">
           <a-textarea v-model:value="agentForm.role_prompt" :auto-size="{ minRows: 4, maxRows: 8 }" />
         </a-form-item>
         <a-button type="primary" html-type="submit" block :loading="creatingAgent" @click="createAgent">

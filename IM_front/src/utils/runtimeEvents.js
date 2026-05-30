@@ -7,6 +7,7 @@ export const runtimeEventNames = new Set([
   'llm.completed',
   'agent.think',
   'agent.tool.reasoning',
+  'agent.delta',
   'agent.final',
   'agent.failed',
   'tool.called',
@@ -124,6 +125,7 @@ export function isTraceEvent(event) {
     name === 'llm.completed' ||
     name === 'agent.think' ||
     name === 'agent.tool.reasoning' ||
+    name === 'agent.delta' ||
     name.startsWith('tool.') ||
     name === 'planner.replan.reasoning' ||
     name === 'workflow.started' ||
@@ -381,6 +383,7 @@ export function eventTitle(event) {
   if (event.name === 'llm.completed') return '模型输出完成'
   if (event.name === 'agent.think') return '思考'
   if (event.name === 'agent.tool.reasoning') return `工具决策${payload.tool_name ? ` · ${payload.tool_name}` : ''}`
+  if (event.name === 'agent.delta') return 'Agent 输出'
   if (event.name === 'agent.final') return '最终回复'
   if (event.name === 'planner.plan.generated') return `生成计划 · ${payload.steps?.length || 0} steps`
   if (event.name === 'planner.replan.reasoning') return '重规划'
@@ -399,6 +402,7 @@ export function eventContent(event, agentName = (value) => value) {
   if (event.name === 'llm.completed') return payload.content || '模型调用完成'
   if (event.name === 'agent.think') return payload.think || payload.content || 'Agent 正在思考'
   if (event.name === 'agent.tool.reasoning') return payload.reasoning || payload.reason || '准备调用工具'
+  if (event.name === 'agent.delta') return payload.delta || payload.content || '...'
   if (event.name === 'agent.final') return payload.final || payload.finish_reason || 'Agent 已完成'
   if (event.name === 'planner.plan.generated') return formatPlan(payload.steps || [], agentName)
   if (event.name === 'planner.replan.reasoning') return [payload.action, payload.reason].filter(Boolean).join('\n') || 'Planner 发起重规划'

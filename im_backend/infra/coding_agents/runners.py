@@ -11,6 +11,7 @@ from im_backend.domain.models import CodingAgentEvent
 
 class CodingAgentRunner(ABC):
     agent_kind: str
+    prompt_via_stdin = False
 
     @abstractmethod
     def build_command(self, *, prompt: str, workdir: str, attachments: list[str] | None = None) -> list[str]:
@@ -27,9 +28,16 @@ class CodingAgentRunner(ABC):
         process = await asyncio.create_subprocess_exec(
             *command,
             cwd=workdir or None,
+            stdin=asyncio.subprocess.PIPE if self.prompt_via_stdin else None,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
+        if self.prompt_via_stdin:
+            assert process.stdin is not None
+            process.stdin.write(prompt.encode("utf-8"))
+            await process.stdin.drain()
+            process.stdin.close()
+            await process.stdin.wait_closed()
         assert process.stdout is not None
         assert process.stderr is not None
 
@@ -87,6 +95,7 @@ class CodingAgentRunner(ABC):
 
 class ClaudeCodeRunner(CodingAgentRunner):
     agent_kind = "claude_code"
+    prompt_via_stdin = True
 
     def build_command(self, *, prompt: str, workdir: str, attachments: list[str] | None = None) -> list[str]:
         command = [
@@ -94,6 +103,7 @@ class ClaudeCodeRunner(CodingAgentRunner):
             "-p",
             "--output-format",
             "stream-json",
+            "--verbose",
             "--permission-mode",
             "plan",
             "--add-dir",
@@ -101,7 +111,6 @@ class ClaudeCodeRunner(CodingAgentRunner):
         ]
         for attachment in attachments or []:
             command.extend(["--file", attachment])
-        command.append(prompt)
         return command
 
     def parse_json_event(self, data: dict) -> Iterable[CodingAgentEvent]:

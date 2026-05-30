@@ -3,11 +3,13 @@ from __future__ import annotations
 from typing import Any
 
 from im_backend.application.services.cleanup import IMCleanupService
+from im_backend.domain.common import AgentKind
 from im_backend.infra.agent_flow_bridge.bridge import AgentFlowBridge
 
 
 class IMAgentService:
     PROTECTED_AGENT_IDS = {"default_planner", "default_executor"}
+    AGENT_KINDS: set[AgentKind] = {"native", "claude_code", "codex", "human_proxy"}
 
     def __init__(self, *, bridge: AgentFlowBridge, cleanup: IMCleanupService) -> None:
         self._bridge = bridge
@@ -47,11 +49,17 @@ class IMAgentService:
             raise ValueError("Agent 名称不能为空")
         if agent_type not in {"executor", "planner"}:
             raise ValueError("agent_type 必须是 executor 或 planner")
+        requested_metadata = metadata or {}
+        agent_kind = requested_metadata.get("agent_kind") or "native"
+        if agent_kind not in self.AGENT_KINDS:
+            raise ValueError("agent_kind 必须是 native、claude_code、codex 或 human_proxy")
+        if agent_kind != "native" and agent_type != "executor":
+            raise ValueError("第三方 Agent 只能创建为 executor")
         if owner_user_id:
             self.ensure_context_access(context_id, owner_user_id)
         agent_metadata = {
-            "agent_kind": "native",
-            **(metadata or {}),
+            **requested_metadata,
+            "agent_kind": agent_kind,
         }
         if owner_user_id:
             agent_metadata = {

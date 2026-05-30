@@ -104,33 +104,69 @@ class GroupRunService:
             for profile in profiles
             if profile.agent_kind in {"native", "human_proxy"}
         ]
-        if not native_agent_ids:
-            raise ValueError("没有可由 PlanOrchestrator 调度的 native executor")
-        run = self._create_agent_flow_run(
-            room=room,
-            message=message,
-            prompt=prompt,
-            mode="plan",
-            planner_agent_id=room.get("metadata", {}).get("planner_agent_id") or planner_agent_id,
-            executor_agent_ids=native_agent_ids,
-            context_id=context_id,
-            max_replan_rounds=max_replan_rounds,
-            auto_start=auto_start,
-            user_id=user_id,
-        )
-        return self._mark_dispatched(room_id, message_id, run)
+        external_runs: list[dict[str, str]] = []
+        if approved:
+            for profile in external_profiles:
+                external_runs.append(
+                    await self._coding_agents.dispatch_coding_agent(
+                        room_id=room_id,
+                        message_id=message_id,
+                        prompt=prompt,
+                        profile=profile,
+                    )
+                )
+            if external_runs:
+                current_message = self._messages.get_message(message_id)
+                self._store.update_one(
+                    "im_messages",
+                    {"message_id": message_id},
+                    {
+                        "metadata": {
+                            **(current_message.get("metadata") or {}),
+                            "external_run_ids": [item["run_id"] for item in external_runs],
+                        }
+                    },
+                )
+
+        native_run = None
+        if native_agent_ids:
+            native_run = self._create_agent_flow_run(
+                room=room,
+                message=message,
+                prompt=prompt,
+                mode="plan",
+                planner_agent_id=room.get("metadata", {}).get("planner_agent_id") or planner_agent_id,
+                executor_agent_ids=native_agent_ids,
+                context_id=context_id,
+                max_replan_rounds=max_replan_rounds,
+                auto_start=auto_start,
+                user_id=user_id,
+            )
+            self._mark_dispatched(room_id, message_id, native_run)
+
+        if not native_run and not external_runs:
+            raise ValueError("没有可调度的 executor")
+        return {
+            "type": "mixed_run" if native_run and external_runs else ("run" if native_run else "coding_agent_runs"),
+            "run": native_run,
+            "external_runs": external_runs,
+        }
 
     def cancel_room_run(self, *, room_id: str, run_id: str, actor_id: str = "user") -> dict[str, Any]:
         self._rooms.ensure_group_room(room_id)
         messages = [
             message
             for message in self._messages.list_messages(room_id)
-            if message.get("run_id") == run_id
+            if message.get("run_id") == run_id or run_id in (message.get("metadata", {}).get("external_run_ids") or [])
         ]
         if not messages:
             raise KeyError(f"run 不属于该 room: {run_id}")
-        run = self._bridge.cancel_run(run_id)
         message_id = messages[0].get("message_id", "")
+        if run_id.startswith("coding-"):
+            self._coding_agents.cancel_run(run_id)
+            run = {"run_id": run_id, "status": "cancelled", "mode": "coding_agent"}
+        else:
+            run = self._bridge.cancel_run(run_id)
         self._store.update_one(
             "im_messages",
             {"message_id": message_id},
