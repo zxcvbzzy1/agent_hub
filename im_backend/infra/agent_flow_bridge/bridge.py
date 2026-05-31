@@ -3,7 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from im_backend.domain.models import AgentRuntimeProfile
 from im_backend.infra.agent_flow_bridge.pathing import ensure_agent_flow_path
+from im_backend.infra.coding_agents.executor_agent import CodingExecutorAgent
 from im_backend.infra.env import load_backend_env
 
 load_backend_env()
@@ -44,7 +46,13 @@ class AgentFlowBridge:
         register_run_context_provider(self.frontend_bridge)
         self.tools = ToolRegistryService(self._store, self._root_dir / "agent_flow")
         self.contexts = ContextService(self._store)
-        self.agents = AgentFactoryService(self._store, self.contexts, llm_client, self.events)
+        self.agents = AgentFactoryService(
+            self._store,
+            self.contexts,
+            llm_client,
+            self.events,
+            external_executor_builder=self._build_external_executor,
+        )
         self.runs = RunOrchestrationService(
             self._store,
             self.agents,
@@ -102,6 +110,19 @@ class AgentFlowBridge:
 
     def get_agent(self, agent_id: str):
         return self.agents.get_agent(agent_id)
+
+    def _build_external_executor(self, record: dict[str, Any]):
+        profile = AgentRuntimeProfile.from_agent_record(record)
+        if not profile.workdir:
+            profile.workdir = str(self._root_dir.parent)
+        return CodingExecutorAgent(
+            profile=profile,
+            name=record.get("name", profile.agent_id),
+            description=(record.get("metadata") or {}).get("description", ""),
+            store=self._store,
+            streams=self.events,
+            run_id_provider=self.frontend_bridge.run_id_for_agent,
+        )
 
     def ensure_agent_exists(self, agent_id: str) -> dict[str, Any]:
         record = self.get_agent_record(agent_id)

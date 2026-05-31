@@ -191,6 +191,27 @@ const chatItems = computed(() => {
   return [...messageItems, ...traceItems, ...eventItems].sort((a, b) => a.created_at - b.created_at)
 })
 
+const chatScrollSignature = computed(() => {
+  return chatItems.value
+    .map((entry) => {
+      if (entry.kind === 'message') {
+        const messageItem = entry.message
+        const contentSize = (messageItem.content_parts || [])
+          .map((part) => part.text || part.diff || part.title || part.description || part.url || part.type || '')
+          .join('').length
+        return `m:${messageItem.message_id}:${messageItem.status}:${messageItem.created_at}:${contentSize}`
+      }
+      if (entry.kind === 'trace') {
+        const trace = entry.trace
+        const latest = trace.latest_event || {}
+        return `t:${trace.key}:${trace.resolved}:${trace.event_count}:${latest.event_id || latest.name}:${latest.created_at}`
+      }
+      const event = entry.event
+      return `e:${event.event_id || entry.key}:${event.name}:${event.created_at}`
+    })
+    .join('|')
+})
+
 function agentById(agentId) {
   return im.agents.find((agent) => agent.agent_id === agentId)
 }
@@ -504,20 +525,25 @@ async function send() {
   }
 }
 
-async function approveConfirmation(part) {
-  const targetMessageId = part.metadata?.message_id
-  if (!targetMessageId) return
-  await im.recordAction(targetMessageId, {
+async function approveConfirmation(part, confirmationMessage) {
+  const sourceMessageId = part.metadata?.source_message_id || part.metadata?.message_id
+  const confirmationMessageId = part.metadata?.confirmation_message_id || confirmationMessage?.message_id
+  if (!sourceMessageId || !confirmationMessageId) return
+  await im.recordAction(confirmationMessageId, {
     action_type: 'approve',
     payload: part.metadata,
   })
-  await im.dispatch(targetMessageId, {
+  await im.dispatch(sourceMessageId, {
     approved: true,
     auto_start: true,
     planner_agent_id: im.currentRoom?.metadata?.planner_agent_id || drawerPlannerId.value || 'default_planner',
     context_id: dispatchOptions.context_id,
     max_replan_rounds: dispatchOptions.max_replan_rounds,
   })
+  im.messages = im.messages.map((messageItem) => (
+    messageItem.message_id === confirmationMessageId ? { ...messageItem, status: 'finished' } : messageItem
+  ))
+  await Promise.all([im.refreshMessages(), im.fetchTasks()])
   message.success('已批准并启动外部 Agent')
 }
 
@@ -533,7 +559,7 @@ async function scrollToBottom() {
 }
 
 watch(
-  () => chatItems.value.length,
+  () => chatScrollSignature.value,
   () => scrollToBottom(),
 )
 
@@ -764,7 +790,7 @@ onMounted(async () => {
                   </div>
                   <p>{{ part.description }}</p>
                   <a-space v-if="part.metadata?.message_id">
-                    <a-button type="primary" size="small" @click="approveConfirmation(part)">
+                    <a-button type="primary" size="small" @click="approveConfirmation(part, entry.message)">
                       <template #icon><CheckOutlined /></template>
                       批准
                     </a-button>

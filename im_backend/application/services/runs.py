@@ -104,53 +104,22 @@ class GroupRunService:
             for profile in profiles
             if profile.agent_kind in {"native", "human_proxy"}
         ]
-        external_runs: list[dict[str, str]] = []
-        if approved:
-            for profile in external_profiles:
-                external_runs.append(
-                    await self._coding_agents.dispatch_coding_agent(
-                        room_id=room_id,
-                        message_id=message_id,
-                        prompt=prompt,
-                        profile=profile,
-                    )
-                )
-            if external_runs:
-                current_message = self._messages.get_message(message_id)
-                self._store.update_one(
-                    "im_messages",
-                    {"message_id": message_id},
-                    {
-                        "metadata": {
-                            **(current_message.get("metadata") or {}),
-                            "external_run_ids": [item["run_id"] for item in external_runs],
-                        }
-                    },
-                )
-
-        native_run = None
-        if native_agent_ids:
-            native_run = self._create_agent_flow_run(
-                room=room,
-                message=message,
-                prompt=prompt,
-                mode="plan",
-                planner_agent_id=room.get("metadata", {}).get("planner_agent_id") or planner_agent_id,
-                executor_agent_ids=native_agent_ids,
-                context_id=context_id,
-                max_replan_rounds=max_replan_rounds,
-                auto_start=auto_start,
-                user_id=user_id,
-            )
-            self._mark_dispatched(room_id, message_id, native_run)
-
-        if not native_run and not external_runs:
+        executor_agent_ids = [*native_agent_ids, *[profile.agent_id for profile in external_profiles]]
+        if not executor_agent_ids:
             raise ValueError("没有可调度的 executor")
-        return {
-            "type": "mixed_run" if native_run and external_runs else ("run" if native_run else "coding_agent_runs"),
-            "run": native_run,
-            "external_runs": external_runs,
-        }
+        run = self._create_agent_flow_run(
+            room=room,
+            message=message,
+            prompt=prompt,
+            mode="plan",
+            planner_agent_id=room.get("metadata", {}).get("planner_agent_id") or planner_agent_id,
+            executor_agent_ids=executor_agent_ids,
+            context_id=context_id,
+            max_replan_rounds=max_replan_rounds,
+            auto_start=auto_start,
+            user_id=user_id,
+        )
+        return self._mark_dispatched(room_id, message_id, run)
 
     def cancel_room_run(self, *, room_id: str, run_id: str, actor_id: str = "user") -> dict[str, Any]:
         self._rooms.ensure_group_room(room_id)
@@ -222,6 +191,19 @@ class GroupRunService:
             title=f"IM:{room.get('title', room['room_id'])}",
             metadata={"source": "im_backend", "room_id": room["room_id"]},
         )
+        for history_message in self._room_history_before(room["room_id"], message["message_id"]):
+            self._bridge.add_runtime_message(
+                conversation_id=runtime_conversation["conversation_id"],
+                role="assistant" if history_message.get("sender_type") == "agent" else "user",
+                content=self._messages.message_text(history_message),
+                metadata={
+                    "source": "im_backend_history",
+                    "room_id": room["room_id"],
+                    "message_id": history_message["message_id"],
+                    "sender_type": history_message.get("sender_type", ""),
+                    "sender_id": history_message.get("sender_id", ""),
+                },
+            )
         runtime_message = self._bridge.add_runtime_message(
             conversation_id=runtime_conversation["conversation_id"],
             role="user",
@@ -240,6 +222,15 @@ class GroupRunService:
             message_id=runtime_message["message_id"],
             auto_start=auto_start,
         )
+
+    def _room_history_before(self, room_id: str, message_id: str) -> list[dict[str, Any]]:
+        history: list[dict[str, Any]] = []
+        for message in self._messages.list_messages(room_id):
+            if message.get("message_id") == message_id:
+                break
+            if message.get("sender_type") in {"user", "agent"} and self._messages.message_text(message):
+                history.append(message)
+        return history[-15:]
 
     def _mark_dispatched(self, room_id: str, message_id: str, run: dict[str, Any]) -> dict[str, Any]:
         self._store.update_one(
@@ -260,6 +251,7 @@ class GroupRunService:
     ) -> dict[str, Any]:
         payload = {
             "message_id": message_id,
+            "source_message_id": message_id,
             "agent_ids": [profile.agent_id for profile in profiles],
             "agent_kinds": [profile.agent_kind for profile in profiles],
             "prompt": prompt,
@@ -280,5 +272,19 @@ class GroupRunService:
             status="pending",
             metadata={"confirmation": payload},
         )
-        self._events.publish(room_id, "confirmation.requested", {"confirmation": confirmation, **payload})
+        confirmation_payload = {
+            **payload,
+            "confirmation_message_id": confirmation["message_id"],
+        }
+        confirmation["content_parts"][0]["metadata"] = confirmation_payload
+        confirmation["metadata"] = {"confirmation": confirmation_payload}
+        confirmation = self._store.update_one(
+            "im_messages",
+            {"message_id": confirmation["message_id"]},
+            {
+                "content_parts": confirmation["content_parts"],
+                "metadata": confirmation["metadata"],
+            },
+        ) or confirmation
+        self._events.publish(room_id, "confirmation.requested", {"confirmation": confirmation, **confirmation_payload})
         return {"type": "confirmation", "confirmation": confirmation}

@@ -128,13 +128,16 @@ export function isTraceEvent(event) {
     name === 'agent.delta' ||
     name.startsWith('tool.') ||
     name === 'planner.replan.reasoning' ||
-    name === 'workflow.started' ||
-    name === 'workflow.finished'
+    name === 'workflow.started'
   )
 }
 
 export function isTraceBoundaryEvent(event) {
   return ['plan.step.observed', 'plan.step.failed', 'planner.plan.generated', 'planner.final', 'agent.final', 'agent.failed', 'workflow.failed'].includes(event?.name)
+}
+
+function isWorkflowTerminalEvent(event) {
+  return event?.name === 'workflow.finished' || event?.name === 'workflow.failed'
 }
 
 export function traceDuration(trace) {
@@ -171,6 +174,17 @@ function addTraceEvent(trace, event) {
   trace.event_count = trace.events.length
 }
 
+function terminalTraceActorIds(event) {
+  const payload = event?.payload || {}
+  return [
+    payload.agent_id,
+    payload.executor_id,
+    payload.planner_id,
+    eventActorId(event),
+    'workflow',
+  ].filter((value, index, values) => value && values.indexOf(value) === index)
+}
+
 function recentUserBefore(messages, timestamp) {
   return [...messages]
     .filter((message) => message.sender_type === 'user' && (message.created_at || 0) <= timestamp)
@@ -198,7 +212,10 @@ export function buildConversationTraces({ messages = [], events = [], conversati
     const traceEvents = scopedEvents.filter((event) => {
       const actorId = eventActorId(event)
       const ts = event.created_at || 0
-      return isTraceEvent(event) && actorId === reply.sender_id && ts >= start && ts <= end
+      const matchesReply = replyTo && event.payload?.message_id === replyTo
+      const matchesWindow = actorId === reply.sender_id && ts >= start && ts <= end
+      if (isWorkflowTerminalEvent(event)) return matchesReply || matchesWindow
+      return isTraceEvent(event) && matchesWindow
     })
     if (!traceEvents.length) continue
     const trace = createTrace({
@@ -273,7 +290,77 @@ export function buildGroupTimelineItems({ messages = [], events = [] }) {
     return bucket
   }
 
+  function closeBucketWithEvent(scope, actorId, event, title) {
+    const bucket = buckets.get(bucketKey(scope, actorId))
+    if (!bucket || !bucket.events.length) return null
+    addTraceEvent(bucket, event)
+    return closeBucket(scope, actorId, event, title)
+  }
+
+  function traceOutputAnchorTime(trace, boundary) {
+    const start = trace.created_at || 0
+    const boundaryAt = boundary?.created_at || 0
+    const scope = trace.scope
+    const actorId = trace.actor_id
+    const eventAnchors = sortedEvents
+      .filter((event) => {
+        const name = event.name || ''
+        const ts = event.created_at || 0
+        return (
+          eventRunScope(event) === scope &&
+          eventActorId(event) === actorId &&
+          ['agent.final', 'planner.plan.generated', 'planner.final'].includes(name) &&
+          ts + 0.000001 >= start &&
+          (!boundaryAt || ts <= boundaryAt + 0.000001)
+        )
+      })
+      .map((event) => event.created_at || 0)
+    const messageAnchors = messages
+      .filter((message) => {
+        const ts = message.created_at || 0
+        return (
+          message.sender_type === 'agent' &&
+          message.sender_id === actorId &&
+          message.run_id === scope &&
+          ts + 0.000001 >= start
+        )
+      })
+      .map((message) => message.created_at || 0)
+    const anchors = [...eventAnchors, ...messageAnchors].filter(Boolean).sort((a, b) => a - b)
+    return anchors.length ? anchors[0] - 0.0001 : start
+  }
+
+  function pushClosedTrace(trace, boundary) {
+    items.push({
+      key: `trace-${trace.key}-${boundary?.event_id || boundary?.created_at || trace.updated_at}`,
+      kind: 'trace',
+      created_at: traceOutputAnchorTime(trace, boundary),
+      trace,
+    })
+  }
+
   for (const event of sortedEvents) {
+    if (isWorkflowTerminalEvent(event)) {
+      const scope = eventRunScope(event)
+      let trace = null
+      for (const actorId of terminalTraceActorIds(event)) {
+        trace = closeBucketWithEvent(scope, actorId, event, eventTitle(event))
+        if (trace) break
+      }
+      if (trace) {
+        pushClosedTrace(trace, event)
+      } else if (isPrimaryOutputEvent(event, 'group')) {
+        items.push({
+          key: `event-${event.event_id || `${event.name}-${event.created_at}`}`,
+          kind: 'event',
+          created_at: event.created_at || 0,
+          event,
+        })
+      }
+      consumedEventIds.add(event.event_id)
+      continue
+    }
+
     if (event.name === 'planner.replan.reasoning') {
       addTraceEvent(getBucket(event), event)
       consumedEventIds.add(event.event_id)
@@ -299,12 +386,7 @@ export function buildGroupTimelineItems({ messages = [], events = [] }) {
       const trace = closeBucket(scope, actorId, event, `[${step.step_id || '-'}] ${step.title || '执行计划步骤'}`)
       if (trace) {
         trace.step = step
-        items.push({
-          key: `trace-${trace.key}-${event.event_id || event.created_at}`,
-          kind: 'trace',
-          created_at: event.created_at || trace.created_at,
-          trace,
-        })
+        pushClosedTrace(trace, event)
       }
       consumedEventIds.add(event.event_id)
       continue
@@ -314,12 +396,7 @@ export function buildGroupTimelineItems({ messages = [], events = [] }) {
       const actorId = eventActorId(event)
       const trace = closeBucket(eventRunScope(event), actorId, event, event.name === 'planner.final' ? 'Planner 总结过程' : '计划生成过程')
       if (trace) {
-        items.push({
-          key: `trace-${trace.key}-${event.event_id || event.created_at}`,
-          kind: 'trace',
-          created_at: event.created_at || trace.created_at,
-          trace,
-        })
+        pushClosedTrace(trace, event)
       }
     }
 

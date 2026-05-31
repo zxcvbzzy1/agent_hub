@@ -96,6 +96,16 @@ export const useIMStore = defineStore('im', {
       }
       return []
     },
+    mergeMessage(messageItem) {
+      if (!messageItem?.message_id) return
+      const index = this.messages.findIndex((item) => item.message_id === messageItem.message_id)
+      if (index >= 0) {
+        this.messages.splice(index, 1, { ...this.messages[index], ...messageItem })
+      } else {
+        this.messages.push(messageItem)
+        this.messages.sort((a, b) => (a.created_at || 0) - (b.created_at || 0))
+      }
+    },
     async createRoom(payload) {
       const response = await imApi.createRoom(payload)
       await this.fetchRooms()
@@ -237,10 +247,14 @@ export const useIMStore = defineStore('im', {
         : await imApi.addConversationMessage(this.currentConversation.conversation_id, payload)
       const messageItem = response.item
       if (isGroup) {
-        await imApi.dispatch(this.currentRoom.room_id, {
+        const dispatchResponse = await imApi.dispatch(this.currentRoom.room_id, {
           message_id: messageItem.message_id,
           ...options,
         })
+        if (dispatchResponse.item?.type === 'confirmation') {
+          this.mergeMessage(dispatchResponse.item.confirmation)
+          await this.refreshMessages()
+        }
         await this.fetchTasks()
       } else {
         await imApi.replyConversation(this.currentConversation.conversation_id, {
@@ -306,11 +320,12 @@ export const useIMStore = defineStore('im', {
       this.events.push(event)
       if (event.name === 'message.created') {
         const messageItem = event.payload?.message
-        if (messageItem && !this.messages.some((item) => item.message_id === messageItem.message_id)) {
-          this.messages.push(messageItem)
-        }
+        if (messageItem) this.mergeMessage(messageItem)
         if (this.currentRoom?.type === 'group') this.fetchTasks().catch(() => {})
         if (this.currentAgentId) this.fetchConversations().catch(() => {})
+      }
+      if (event.name === 'confirmation.requested' && event.payload?.confirmation) {
+        this.mergeMessage(event.payload.confirmation)
       }
       if (event.name === 'run.created' && this.currentRoom?.type === 'group') {
         this.fetchTasks().catch(() => {})

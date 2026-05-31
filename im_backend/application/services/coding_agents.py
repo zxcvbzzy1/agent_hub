@@ -139,7 +139,11 @@ class CodingAgentService:
         final_chunks: list[str] = []
         emitted_final = False
         try:
-            async for event in runner.run(prompt=prompt, workdir=profile.workdir):
+            async for event in runner.run(
+                prompt=prompt,
+                workdir=profile.workdir,
+                permission_profile=profile.permission_profile,
+            ):
                 payload = {
                     "run_id": run_id,
                     "agent_id": profile.agent_id,

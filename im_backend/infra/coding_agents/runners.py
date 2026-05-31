@@ -14,7 +14,14 @@ class CodingAgentRunner(ABC):
     prompt_via_stdin = False
 
     @abstractmethod
-    def build_command(self, *, prompt: str, workdir: str, attachments: list[str] | None = None) -> list[str]:
+    def build_command(
+        self,
+        *,
+        prompt: str,
+        workdir: str,
+        attachments: list[str] | None = None,
+        permission_profile: str = "",
+    ) -> list[str]:
         raise NotImplementedError
 
     async def run(
@@ -23,8 +30,14 @@ class CodingAgentRunner(ABC):
         prompt: str,
         workdir: str,
         attachments: list[str] | None = None,
+        permission_profile: str = "",
     ) -> AsyncIterator[CodingAgentEvent]:
-        command = self.build_command(prompt=prompt, workdir=workdir, attachments=attachments or [])
+        command = self.build_command(
+            prompt=prompt,
+            workdir=workdir,
+            attachments=attachments or [],
+            permission_profile=permission_profile,
+        )
         process = await asyncio.create_subprocess_exec(
             *command,
             cwd=workdir or None,
@@ -97,7 +110,14 @@ class ClaudeCodeRunner(CodingAgentRunner):
     agent_kind = "claude_code"
     prompt_via_stdin = True
 
-    def build_command(self, *, prompt: str, workdir: str, attachments: list[str] | None = None) -> list[str]:
+    def build_command(
+        self,
+        *,
+        prompt: str,
+        workdir: str,
+        attachments: list[str] | None = None,
+        permission_profile: str = "",
+    ) -> list[str]:
         command = [
             "claude",
             "-p",
@@ -105,13 +125,20 @@ class ClaudeCodeRunner(CodingAgentRunner):
             "stream-json",
             "--verbose",
             "--permission-mode",
-            "plan",
+            self._permission_mode(permission_profile),
             "--add-dir",
             str(Path(workdir).expanduser().resolve()),
         ]
         for attachment in attachments or []:
             command.extend(["--file", attachment])
         return command
+
+    def _permission_mode(self, permission_profile: str) -> str:
+        if permission_profile == "plan":
+            return "plan"
+        if permission_profile in {"acceptEdits", "auto", "bypassPermissions", "default", "dontAsk"}:
+            return permission_profile
+        return "acceptEdits"
 
     def parse_json_event(self, data: dict) -> Iterable[CodingAgentEvent]:
         event_type = data.get("type", "")
@@ -128,7 +155,14 @@ class ClaudeCodeRunner(CodingAgentRunner):
 class CodexRunner(CodingAgentRunner):
     agent_kind = "codex"
 
-    def build_command(self, *, prompt: str, workdir: str, attachments: list[str] | None = None) -> list[str]:
+    def build_command(
+        self,
+        *,
+        prompt: str,
+        workdir: str,
+        attachments: list[str] | None = None,
+        permission_profile: str = "",
+    ) -> list[str]:
         command = [
             "codex",
             "exec",
