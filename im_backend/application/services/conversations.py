@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,7 @@ from im_backend.application.services.agents import IMAgentService
 from im_backend.application.services.cleanup import IMCleanupService
 from im_backend.application.services.coding_agents import CodingAgentService
 from im_backend.application.services.events import RoomEventStreamService
+from im_backend.application.services.inline_artifacts import collect_inline_artifact_parts
 from im_backend.domain.models import AgentRuntimeProfile, ContentPart, Conversation, Message
 from im_backend.infra.agent_flow_bridge.bridge import AgentFlowBridge
 
@@ -272,16 +274,27 @@ class ConversationService:
                     "prompt": prompt,
                 },
             )
+            started_at = time.time()
             try:
                 await agent.start_with_history(prompt)
                 if self._get_message(message_id).get("status") == "cancelled":
                     return
                 final = agent.states.get("final", "") or agent.states.get("finish_reason", "")
+                content_parts: list[dict[str, Any]] = [
+                    {"type": "text", "text": final or "Agent 已完成回复"}
+                ]
+                content_parts.extend(
+                    collect_inline_artifact_parts(
+                        self._bridge.list_run_events(conversation_id),
+                        since=started_at,
+                        run_id=conversation_id,
+                    )
+                )
                 reply = self.add_conversation_message(
                     conversation_id=conversation_id,
                     sender_type="agent",
                     sender_id=agent_id,
-                    content_parts=[{"type": "text", "text": final or "Agent 已完成回复"}],
+                    content_parts=content_parts,
                     status="finished",
                     metadata={"source": "direct_agent_reply", "reply_to": message_id},
                 )

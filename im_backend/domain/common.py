@@ -16,6 +16,7 @@ ContentPartType = Literal[
     "diff",
     "deploy",
     "event_ref",
+    "artifact",
 ]
 MessageStatus = Literal["pending", "sent", "running", "finished", "failed", "cancelled"]
 ActionType = Literal["reply", "quote", "copy", "expand", "apply_diff", "approve", "reject"]

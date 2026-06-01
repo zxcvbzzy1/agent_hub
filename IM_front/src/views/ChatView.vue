@@ -34,6 +34,7 @@ import {
 } from '@/utils/runtimeEvents'
 import { useAuthStore } from '@/stores/auth'
 import { useIMStore } from '@/stores/im'
+import ArtifactCard from '@/components/ArtifactCard.vue'
 
 const im = useIMStore()
 const auth = useAuthStore()
@@ -205,6 +206,11 @@ const chatScrollSignature = computed(() => {
         const trace = entry.trace
         const latest = trace.latest_event || {}
         return `t:${trace.key}:${trace.resolved}:${trace.event_count}:${latest.event_id || latest.name}:${latest.created_at}`
+      }
+      if (entry.kind === 'artifact') {
+        const artifact = entry.artifact || {}
+        const size = (artifact.content || artifact.url || artifact.after || artifact.html || '').length
+        return `a:${entry.key}:${artifact.type}:${size}`
       }
       const event = entry.event
       return `e:${event.event_id || entry.key}:${event.name}:${event.created_at}`
@@ -558,10 +564,10 @@ async function scrollToBottom() {
   if (el) el.scrollTop = el.scrollHeight
 }
 
-watch(
-  () => chatScrollSignature.value,
-  () => scrollToBottom(),
-)
+// watch(
+//   () => chatScrollSignature.value,
+//   () => scrollToBottom(),
+// )
 
 watch(
   () => agentForm.agent_type,
@@ -783,6 +789,10 @@ onMounted(async () => {
                   </div>
                   <pre><code>{{ part.diff }}</code></pre>
                 </div>
+                <ArtifactCard
+                  v-else-if="part.type === 'artifact'"
+                  :artifact="part.metadata?.artifact || part"
+                />
                 <div v-else-if="part.type === 'deploy'" class="deploy-card">
                   <div class="card-title">
                     <DeploymentUnitOutlined />
@@ -854,6 +864,18 @@ onMounted(async () => {
                   </div>
                 </div>
               </div>
+            </div>
+          </article>
+
+          <article v-else-if="entry.kind === 'artifact'" class="message-row artifact-row">
+            <a-avatar class="message-avatar">{{ avatarText(eventActor(entry.event, agentName)) }}</a-avatar>
+            <div class="message-bubble artifact-bubble">
+              <div class="message-meta">
+                <strong>{{ eventActor(entry.event, agentName) }}</strong>
+                <a-tag color="purple" size="small">内联产物</a-tag>
+                <span>{{ formatTime(entry.event.created_at) }}</span>
+              </div>
+              <ArtifactCard :artifact="entry.artifact" />
             </div>
           </article>
 

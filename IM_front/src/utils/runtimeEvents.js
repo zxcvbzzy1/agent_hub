@@ -23,7 +23,24 @@ export const runtimeEventNames = new Set([
   'wave.completed',
   'human.confirmation.requested',
   'human.confirmation.resolved',
+  'artifacts.message',
+  'artifacts.image',
+  'artifacts.diff',
+  'artifacts.document',
+  'artifacts.web',
 ])
+
+export const artifactEventNames = [
+  'artifacts.message',
+  'artifacts.image',
+  'artifacts.diff',
+  'artifacts.document',
+  'artifacts.web',
+]
+
+export function isArtifactEvent(event) {
+  return typeof event?.name === 'string' && event.name.startsWith('artifacts.')
+}
 
 export const sseEventNames = [
   'room.created',
@@ -60,6 +77,11 @@ export const sseEventNames = [
   'human.confirmation.requested',
   // 'human.confirmation.resolved',
   'workflow.finished',
+  'artifacts.message',
+  'artifacts.image',
+  'artifacts.diff',
+  'artifacts.document',
+  'artifacts.web',
 ]
 
 export function compactLlmEvents(events) {
@@ -340,6 +362,19 @@ export function buildGroupTimelineItems({ messages = [], events = [] }) {
   }
 
   for (const event of sortedEvents) {
+    if (isArtifactEvent(event)) {
+      items.push({
+        key: `artifact-${event.event_id || `${event.name}-${event.created_at}`}`,
+        kind: 'artifact',
+        created_at: event.created_at || 0,
+        event,
+        actor_id: eventActorId(event),
+        artifact: event.payload?.artifact || {},
+      })
+      consumedEventIds.add(event.event_id)
+      continue
+    }
+
     if (isWorkflowTerminalEvent(event)) {
       const scope = eventRunScope(event)
       let trace = null
