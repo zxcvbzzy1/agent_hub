@@ -1,5 +1,5 @@
 <script setup>
-import { computed, nextTick, onMounted, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { Modal, message } from 'ant-design-vue'
 import {
   BranchesOutlined,
@@ -106,6 +106,13 @@ const permissionProfileOptions = [
   { label: '人工确认', value: 'human_confirm' },
   { label: '只读计划', value: 'plan' },
 ]
+const artifactTypeLabels = {
+  message: '消息',
+  image: '图片',
+  diff: 'Diff',
+  document: '文档',
+  web: '网页',
+}
 const dispatchOptions = reactive({
   auto_start: true,
   context_id: 'default_step',
@@ -306,6 +313,7 @@ function itemAvatar(item) {
 }
 
 function messageTitle(item) {
+  if (item?.metadata?.display_title) return item.metadata.display_title
   if (item.sender_type === 'user') {
     return item.sender_id === auth.user?.user_id ? '你' : item.sender_id
   }
@@ -639,7 +647,7 @@ function copyText(text) {
 function messagePlainText(item) {
   if (!item) return ''
   return (item.content_parts || [])
-    .map((part) => part.text || part.diff || part.title || part.description || part.url || '')
+    .map((part) => part.text || part.diff || part.title || part.description || part.url || part.metadata?.artifact?.content || '')
     .filter(Boolean)
     .join('\n')
     .trim()
@@ -659,8 +667,60 @@ function isRegenerable(item) {
   return item.sender_type === 'agent' && im.currentRoom?.type !== 'group'
 }
 
+function artifactTypeLabel(artifact = {}) {
+  return artifactTypeLabels[(artifact.type || 'message').toLowerCase()] || '产物'
+}
+
+function artifactTitle(artifact = {}) {
+  return artifact.title || artifact.preview_title || artifact.file_path || artifact.url || artifactTypeLabel(artifact)
+}
+
+function artifactSummary(artifact = {}) {
+  const text = artifact.content || artifact.alt || artifact.file_path || artifact.url || artifact.after || artifact.html || ''
+  return text.length > 90 ? `${text.slice(0, 90)}…` : (text || '点击查看详情')
+}
+
+function openArtifactPreview(item) {
+  const artifact = item?.artifact || item || {}
+  previewMessage.value = {
+    message_id: `artifact-${item?.event?.event_id || artifact.title || Date.now()}`,
+    sender_type: 'system',
+    sender_id: 'system',
+    created_at: item?.created_at || item?.event?.created_at,
+    content_parts: [{ type: 'artifact', metadata: { artifact } }],
+    metadata: {
+      display_title: `内联产物 · ${artifactTitle(artifact)}`,
+      virtual_artifact: true,
+    },
+  }
+}
+
 function copyMessage(item) {
   copyText(messagePlainText(item))
+}
+
+// 群聊里 agent 执行者 / planner 的最终回复以 agent.final / planner.final 运行事件呈现，
+// 原生 agent 无后端 message_id，无法做服务端的回复/引用/收藏，这里只提供纯前端的复制与展开预览。
+function isFinalReplyEvent(event) {
+  return event?.name === 'agent.final' || event?.name === 'planner.final'
+}
+
+function copyEvent(event) {
+  copyText(eventContent(event, agentName))
+}
+
+function openEventPreview(event) {
+  previewMessage.value = {
+    message_id: `event-${event?.event_id || event?.created_at || Date.now()}`,
+    sender_type: 'agent',
+    sender_id: 'system',
+    created_at: event?.created_at,
+    content_parts: [{ type: 'text', text: eventContent(event, agentName) }],
+    metadata: {
+      display_title: `${eventActor(event, agentName)} · ${eventTitle(event)}`,
+      virtual_event: true,
+    },
+  }
 }
 
 function setReplyTarget(item) {
@@ -687,6 +747,12 @@ function openPreview(item) {
 
 function closePreview() {
   previewMessage.value = null
+}
+
+function emitSidebarCollapseState(collapsed) {
+  window.dispatchEvent(new CustomEvent('im-sidebar-collapse', {
+    detail: { collapsed },
+  }))
 }
 
 async function regenerateMessage(item) {
@@ -791,6 +857,12 @@ watch(
 )
 
 watch(
+  () => sidebarCollapsed.value,
+  (collapsed) => emitSidebarCollapseState(collapsed),
+  { immediate: true },
+)
+
+watch(
   () => [im.currentConversation?.conversation_id, im.currentRoom?.room_id],
   () => {
     previewMessage.value = null
@@ -805,6 +877,10 @@ onMounted(async () => {
   const defaultPlanner = im.plannerAgents.find((agent) => agent.agent_id === 'default_planner') || im.plannerAgents[0]
   if (defaultPlanner && !drawerPlannerId.value) drawerPlannerId.value = defaultPlanner.agent_id
   await scrollToBottom()
+})
+
+onUnmounted(() => {
+  emitSidebarCollapseState(false)
 })
 </script>
 
@@ -1028,7 +1104,7 @@ onMounted(async () => {
       </section>
     </aside>
 
-    <section class="chat-main" :class="{ 'preview-open': previewMessage }">
+    <section class="chat-main">
       <a-tooltip v-if="sidebarCollapsed" title="展开侧栏" placement="right">
         <a-button class="sidebar-expand" shape="circle" @click="sidebarCollapsed = false">
           <template #icon><MenuUnfoldOutlined /></template>
@@ -1246,14 +1322,106 @@ onMounted(async () => {
                 <strong>{{ eventActor(entry.event, agentName) }}</strong>
                 <a-tag :color="eventColor(entry.event.name)" size="small">{{ eventTitle(entry.event) }}</a-tag>
                 <span>{{ formatTime(entry.event.created_at) }}</span>
+                <div v-if="isFinalReplyEvent(entry.event)" class="message-actions">
+                  <a-tooltip title="复制">
+                    <a-button type="text" size="small" @click.stop="copyEvent(entry.event)">
+                      <template #icon><CopyOutlined /></template>
+                    </a-button>
+                  </a-tooltip>
+                  <a-tooltip title="展开预览">
+                    <a-button type="text" size="small" @click.stop="openEventPreview(entry.event)">
+                      <template #icon><ExpandAltOutlined /></template>
+                    </a-button>
+                  </a-tooltip>
+                </div>
               </div>
               <pre class="event-content">{{ eventContent(entry.event, agentName) }}</pre>
+              <div v-if="entry.run_artifacts?.length" class="run-artifacts">
+                <div class="run-artifacts-head">
+                  <FileTextOutlined />
+                  <strong>本次 run 内联产物</strong>
+                  <a-tag size="small" color="purple">{{ entry.run_artifacts.length }}</a-tag>
+                </div>
+                <div class="run-artifact-strip">
+                  <button
+                    v-for="artifactItem in entry.run_artifacts"
+                    :key="artifactItem.key"
+                    class="run-artifact-chip"
+                    @click.stop="openArtifactPreview(artifactItem)"
+                  >
+                    <span class="run-artifact-type">{{ artifactTypeLabel(artifactItem.artifact) }}</span>
+                    <strong>{{ artifactTitle(artifactItem.artifact) }}</strong>
+                    <small>{{ artifactSummary(artifactItem.artifact) }}</small>
+                  </button>
+                </div>
+              </div>
             </div>
           </article>
         </template>
       </div>
 
-      <aside v-if="previewMessage" class="chat-preview-panel">
+      </div>
+
+      <footer class="composer">
+        <div v-if="replyTarget || quoteTarget" class="composer-refs">
+          <div v-if="replyTarget" class="composer-ref">
+            <MessageOutlined />
+            <span class="composer-ref-label">回复 @{{ messageTitle(replyTarget) }}：</span>
+            <span class="composer-ref-text">{{ quoteRefSummary(replyTarget) }}</span>
+            <a-button type="text" size="small" @click="clearReplyTarget">
+              <template #icon><CloseOutlined /></template>
+            </a-button>
+          </div>
+          <div v-if="quoteTarget" class="composer-ref">
+            <BranchesOutlined />
+            <span class="composer-ref-label">引用 @{{ messageTitle(quoteTarget) }}：</span>
+            <span class="composer-ref-text">{{ quoteRefSummary(quoteTarget) }}</span>
+            <a-button type="text" size="small" @click="clearQuoteTarget">
+              <template #icon><CloseOutlined /></template>
+            </a-button>
+          </div>
+        </div>
+        <div class="mention-wrap">
+          <div v-if="mentionCandidates.length" class="mention-popover">
+            <button v-for="agent in mentionCandidates" :key="agent.agent_id" @click="insertMention(agent)">
+              <a-avatar :size="24">{{ avatarText(agent.name) }}</a-avatar>
+              <span>{{ agent.name }}</span>
+              <small>{{ agentKind(agent.agent_id) }}</small>
+            </button>
+          </div>
+          <a-textarea
+            ref="composerRef"
+            :value="composer"
+            :auto-size="{ minRows: 2, maxRows: 6 }"
+            :placeholder="im.currentRoom?.type === 'group' ? '输入消息。输入 @ 可选择群内 agent' : '输入消息，当前会话历史会注入给这个 agent'"
+            @input="handleInput"
+            @pressEnter.ctrl.prevent="send"
+          />
+        </div>
+        <div class="composer-actions">
+          <a-space v-if="im.currentRoom?.type === 'group'">
+            <a-input-number v-model:value="dispatchOptions.max_replan_rounds" :min="0" :max="10" />
+          </a-space>
+          <a-button type="primary" :loading="sending" @click="send">
+            <template #icon><SendOutlined /></template>
+            发送
+          </a-button>
+        </div>
+      </footer>
+
+    </section>
+
+    <a-modal
+      :open="Boolean(previewMessage)"
+      wrap-class-name="message-preview-modal"
+      :footer="null"
+      :closable="false"
+      :width="'100vw'"
+      centered
+      destroy-on-close
+      @cancel="closePreview"
+    >
+      <template v-if="previewMessage">
         <div class="preview-head">
           <div class="preview-title">
             <ExpandAltOutlined />
@@ -1307,57 +1475,8 @@ onMounted(async () => {
             <a-tag v-else color="default">{{ part.type }}</a-tag>
           </div>
         </div>
-      </aside>
-      </div>
-
-      <footer class="composer">
-        <div v-if="replyTarget || quoteTarget" class="composer-refs">
-          <div v-if="replyTarget" class="composer-ref">
-            <MessageOutlined />
-            <span class="composer-ref-label">回复 @{{ messageTitle(replyTarget) }}：</span>
-            <span class="composer-ref-text">{{ quoteRefSummary(replyTarget) }}</span>
-            <a-button type="text" size="small" @click="clearReplyTarget">
-              <template #icon><CloseOutlined /></template>
-            </a-button>
-          </div>
-          <div v-if="quoteTarget" class="composer-ref">
-            <BranchesOutlined />
-            <span class="composer-ref-label">引用 @{{ messageTitle(quoteTarget) }}：</span>
-            <span class="composer-ref-text">{{ quoteRefSummary(quoteTarget) }}</span>
-            <a-button type="text" size="small" @click="clearQuoteTarget">
-              <template #icon><CloseOutlined /></template>
-            </a-button>
-          </div>
-        </div>
-        <div class="mention-wrap">
-          <div v-if="mentionCandidates.length" class="mention-popover">
-            <button v-for="agent in mentionCandidates" :key="agent.agent_id" @click="insertMention(agent)">
-              <a-avatar :size="24">{{ avatarText(agent.name) }}</a-avatar>
-              <span>{{ agent.name }}</span>
-              <small>{{ agentKind(agent.agent_id) }}</small>
-            </button>
-          </div>
-          <a-textarea
-            ref="composerRef"
-            :value="composer"
-            :auto-size="{ minRows: 2, maxRows: 6 }"
-            :placeholder="im.currentRoom?.type === 'group' ? '输入消息。输入 @ 可选择群内 agent' : '输入消息，当前会话历史会注入给这个 agent'"
-            @input="handleInput"
-            @pressEnter.ctrl.prevent="send"
-          />
-        </div>
-        <div class="composer-actions">
-          <a-space v-if="im.currentRoom?.type === 'group'">
-            <a-input-number v-model:value="dispatchOptions.max_replan_rounds" :min="0" :max="10" />
-          </a-space>
-          <a-button type="primary" :loading="sending" @click="send">
-            <template #icon><SendOutlined /></template>
-            发送
-          </a-button>
-        </div>
-      </footer>
-
-    </section>
+      </template>
+    </a-modal>
 
     <a-modal v-model:open="createOpen" title="创建 Agent 群聊" :footer="null">
       <a-form layout="vertical">

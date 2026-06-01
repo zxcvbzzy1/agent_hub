@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { LogoutOutlined, MessageOutlined } from '@ant-design/icons-vue'
 import { useAuthStore } from '@/stores/auth'
@@ -9,6 +9,11 @@ const auth = useAuthStore()
 const im = useIMStore()
 const router = useRouter()
 const displayName = computed(() => auth.user?.display_name || auth.user?.username || 'operator')
+const imHeaderCollapsed = ref(false)
+
+function handleImSidebarCollapse(event) {
+  imHeaderCollapsed.value = Boolean(event.detail?.collapsed)
+}
 
 async function logout() {
   if (im.source) {
@@ -19,10 +24,18 @@ async function logout() {
   await auth.logout()
   router.push('/login')
 }
+
+onMounted(() => {
+  window.addEventListener('im-sidebar-collapse', handleImSidebarCollapse)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('im-sidebar-collapse', handleImSidebarCollapse)
+})
 </script>
 
 <template>
-  <div class="app-layout">
+  <div class="app-layout" :class="{ 'im-header-collapsed': imHeaderCollapsed }">
     <header class="app-topbar">
       <div class="topbar-brand">
         <div class="topbar-mark"><MessageOutlined /></div>

@@ -42,6 +42,15 @@ export function isArtifactEvent(event) {
   return typeof event?.name === 'string' && event.name.startsWith('artifacts.')
 }
 
+// 同一次 run 内，后端可能对同一产物重复发出 artifacts.* 事件（重发、引用、多阶段输出）。
+// 以「类型 + 标题/路径/URL + 正文指纹」作为产物身份，用于在 run 汇总里去重。
+export function artifactIdentity(artifact = {}) {
+  const type = (artifact.type || 'message').toLowerCase()
+  const label = artifact.title || artifact.preview_title || artifact.file_path || artifact.url || ''
+  const body = artifact.content || artifact.after || artifact.html || artifact.alt || artifact.url || ''
+  return `${type}|${label}|${body.length}|${body.slice(0, 160)}`
+}
+
 export const sseEventNames = [
   'room.created',
   'room.updated',
@@ -285,6 +294,31 @@ export function buildGroupTimelineItems({ messages = [], events = [] }) {
   const sortedEvents = [...events].sort((a, b) => (a.created_at || 0) - (b.created_at || 0))
   const buckets = new Map()
   const consumedEventIds = new Set()
+  const artifactsByScope = new Map()
+  const artifactSeenByScope = new Map()
+
+  for (const event of sortedEvents) {
+    if (!isArtifactEvent(event)) continue
+    const scope = eventRunScope(event)
+    const artifact = event.payload?.artifact || {}
+    const identity = artifactIdentity(artifact)
+    let seen = artifactSeenByScope.get(scope)
+    if (!seen) {
+      seen = new Set()
+      artifactSeenByScope.set(scope, seen)
+    }
+    if (identity && seen.has(identity)) continue
+    if (identity) seen.add(identity)
+    const artifacts = artifactsByScope.get(scope) || []
+    artifacts.push({
+      key: `artifact-summary-${event.event_id || `${event.name}-${event.created_at}`}`,
+      event,
+      actor_id: eventActorId(event),
+      artifact,
+      created_at: event.created_at || 0,
+    })
+    artifactsByScope.set(scope, artifacts)
+  }
 
   function bucketKey(scope, actorId) {
     return `${scope}:${actorId}`
@@ -366,6 +400,19 @@ export function buildGroupTimelineItems({ messages = [], events = [] }) {
     })
   }
 
+  function createEventItem(event) {
+    const item = {
+      key: `event-${event.event_id || `${event.name}-${event.created_at}`}`,
+      kind: 'event',
+      created_at: event.created_at || 0,
+      event,
+    }
+    if (event.name === 'planner.final') {
+      item.run_artifacts = artifactsByScope.get(eventRunScope(event)) || []
+    }
+    return item
+  }
+
   for (const event of sortedEvents) {
     if (isArtifactEvent(event)) {
       items.push({
@@ -390,12 +437,7 @@ export function buildGroupTimelineItems({ messages = [], events = [] }) {
       if (trace) {
         pushClosedTrace(trace, event)
       } else if (isPrimaryOutputEvent(event, 'group')) {
-        items.push({
-          key: `event-${event.event_id || `${event.name}-${event.created_at}`}`,
-          kind: 'event',
-          created_at: event.created_at || 0,
-          event,
-        })
+        items.push(createEventItem(event))
       }
       consumedEventIds.add(event.event_id)
       continue
@@ -404,12 +446,7 @@ export function buildGroupTimelineItems({ messages = [], events = [] }) {
     if (event.name === 'planner.replan.reasoning') {
       addTraceEvent(getBucket(event), event)
       consumedEventIds.add(event.event_id)
-      items.push({
-        key: `event-${event.event_id || `${event.name}-${event.created_at}`}`,
-        kind: 'event',
-        created_at: event.created_at || 0,
-        event,
-      })
+      items.push(createEventItem(event))
       continue
     }
 
@@ -441,12 +478,7 @@ export function buildGroupTimelineItems({ messages = [], events = [] }) {
     }
 
     if (isPrimaryOutputEvent(event, 'group')) {
-      items.push({
-        key: `event-${event.event_id || `${event.name}-${event.created_at}`}`,
-        kind: 'event',
-        created_at: event.created_at || 0,
-        event,
-      })
+      items.push(createEventItem(event))
       consumedEventIds.add(event.event_id)
     }
   }
