@@ -1248,6 +1248,26 @@ onUnmounted(() => {
                 </div>
                 <a-tag v-else color="default">{{ part.type }}</a-tag>
               </div>
+
+              <div v-if="entry.run_artifacts?.length" class="run-artifacts">
+                <div class="run-artifacts-head">
+                  <FileTextOutlined />
+                  <strong>本次 run 内联产物</strong>
+                  <a-tag size="small" color="purple">{{ entry.run_artifacts.length }}</a-tag>
+                </div>
+                <div class="run-artifact-strip">
+                  <button
+                    v-for="artifactItem in entry.run_artifacts"
+                    :key="artifactItem.key"
+                    class="run-artifact-chip"
+                    @click.stop="openArtifactPreview(artifactItem)"
+                  >
+                    <span class="run-artifact-type">{{ artifactTypeLabel(artifactItem.artifact) }}</span>
+                    <strong>{{ artifactTitle(artifactItem.artifact) }}</strong>
+                    <small>{{ artifactSummary(artifactItem.artifact) }}</small>
+                  </button>
+                </div>
+              </div>
             </div>
           </article>
 

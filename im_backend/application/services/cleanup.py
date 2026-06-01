@@ -35,7 +35,13 @@ class IMCleanupService:
             "runtime_events": self._delete_runtime_for_runs(run_ids),
             "runs": self._delete_runs(run_ids),
             "message_actions": self._delete_message_actions(messages),
+            # 群聊每次编排都会在 agent_flow 的 conversations/messages/runs 里建一份运行态镜像
+            # （room_id 仅存在于 metadata 中），旧的 delete_room 只清 im_* 集合，会把这些运行态记录留成孤儿。
+            "runtime_conversations": 0,
+            "runtime_messages": 0,
+            "runtime_runs": 0,
         }
+        self._add_stats(stats, self._delete_runtime_scope_by_room(room_id))
         return stats
 
     def delete_agent_im_refs(self, agent_id: str) -> dict[str, int]:
@@ -114,6 +120,39 @@ class IMCleanupService:
             return agent_id in json.dumps(event, ensure_ascii=False)
         except TypeError:
             return False
+
+    def _delete_runtime_scope_by_room(self, room_id: str) -> dict[str, int]:
+        """删除 agent_flow 运行态镜像：room 关联的 conversations / messages / runs / events。
+
+        in-memory fallback store 的查询不支持 ``metadata.room_id`` 点号路径，这里全量扫描
+        conversations 后在 Python 侧按 ``metadata.room_id`` 过滤，与本类其它清理逻辑一致。
+        """
+        stats = {"runtime_conversations": 0, "runtime_messages": 0, "runtime_runs": 0, "runtime_events": 0}
+        for conversation in self._store.find_many("conversations", {}):
+            if (conversation.get("metadata") or {}).get("room_id") != room_id:
+                continue
+            conversation_id = conversation.get("conversation_id", "")
+            if not conversation_id:
+                continue
+            runtime_messages = self._store.find_many("messages", {"conversation_id": conversation_id})
+            runtime_runs = self._store.find_many("runs", {"conversation_id": conversation_id})
+            run_ids = [
+                run_id
+                for run_id in (
+                    [run.get("run_id") for run in runtime_runs]
+                    + [message.get("run_id") for message in runtime_messages]
+                )
+                if run_id
+            ]
+            run_ids = list(dict.fromkeys(run_ids))
+            stats["runtime_events"] += self._delete_runtime_for_runs(run_ids)
+            stats["runtime_runs"] += sum(self._store.delete_one("runs", {"run_id": run_id}) for run_id in run_ids)
+            stats["runtime_runs"] += self._store.delete_many("runs", {"conversation_id": conversation_id})
+            stats["runtime_messages"] += self._store.delete_many("messages", {"conversation_id": conversation_id})
+            stats["runtime_conversations"] += self._store.delete_one(
+                "conversations", {"conversation_id": conversation_id}
+            )
+        return stats
 
     def _delete_runtime_for_runs(self, run_ids: list[str]) -> int:
         return sum(self._store.delete_many("events", {"run_id": run_id}) for run_id in run_ids)

@@ -292,6 +292,14 @@ export function buildConversationTraces({ messages = [], events = [], conversati
 export function buildGroupTimelineItems({ messages = [], events = [] }) {
   const items = []
   const sortedEvents = [...events].sort((a, b) => (a.created_at || 0) - (b.created_at || 0))
+  // planner 的最终回复已由后端落库成房间消息（metadata.source === 'planner_final'）。
+  // 这些 run 的 planner.final 事件输出气泡需要抑制，避免与消息气泡重复；本次 run 的产物
+  // 汇总也随之挂到对应消息上。
+  const plannerFinalRunIds = new Set(
+    messages
+      .filter((message) => message?.metadata?.source === 'planner_final' && message.run_id)
+      .map((message) => message.run_id),
+  )
   const buckets = new Map()
   const consumedEventIds = new Set()
   const artifactsByScope = new Map()
@@ -478,6 +486,11 @@ export function buildGroupTimelineItems({ messages = [], events = [] }) {
     }
 
     if (isPrimaryOutputEvent(event, 'group')) {
+      // planner.final 已落库成房间消息时，跳过事件输出气泡（仍保留上面收起的总结过程 trace）。
+      if (event.name === 'planner.final' && plannerFinalRunIds.has(eventRunScope(event))) {
+        consumedEventIds.add(event.event_id)
+        continue
+      }
       items.push(createEventItem(event))
       consumedEventIds.add(event.event_id)
     }
@@ -493,12 +506,18 @@ export function buildGroupTimelineItems({ messages = [], events = [] }) {
     })
   }
 
-  const messageItems = messages.map((message) => ({
-    key: `message-${message.message_id}`,
-    kind: 'message',
-    created_at: message.created_at || 0,
-    message,
-  }))
+  const messageItems = messages.map((message) => {
+    const item = {
+      key: `message-${message.message_id}`,
+      kind: 'message',
+      created_at: message.created_at || 0,
+      message,
+    }
+    if (message?.metadata?.source === 'planner_final' && message.run_id) {
+      item.run_artifacts = artifactsByScope.get(message.run_id) || []
+    }
+    return item
+  })
 
   return [...messageItems, ...items].sort((a, b) => a.created_at - b.created_at)
 }

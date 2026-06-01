@@ -13,6 +13,7 @@ from im_backend.application.services.favorites import FavoriteService
 from im_backend.application.services.messages import GroupMessageService
 from im_backend.application.services.rooms import RoomService
 from im_backend.application.services.runs import GroupRunService
+from im_backend.application.services.runtime_reply import PlannerFinalReplyWriter
 from im_backend.infra.agent_flow_bridge.bridge import AgentFlowBridge
 
 
@@ -56,6 +57,9 @@ class IMService:
             favorites=self.favorites,
             default_workdir=default_workdir,
         )
+        # planner 的最终回复落库成房间消息，使其获得完整消息操作并可随群聊一起清理。
+        self._planner_final_writer = PlannerFinalReplyWriter(store=store, messages=self.messages)
+        bridge.events.subscribe(self._planner_final_writer.handle_event)
 
     def create_room(self, **kwargs) -> dict[str, Any]:
         return self.rooms.create_room(**kwargs)
