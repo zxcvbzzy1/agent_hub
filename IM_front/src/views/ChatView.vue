@@ -76,7 +76,7 @@ const permissionProfileOptions = [
   { label: '只读计划', value: 'plan' },
 ]
 const dispatchOptions = reactive({
-  auto_start: false,
+  auto_start: true,
   context_id: 'default_step',
   max_replan_rounds: 3,
 })
@@ -730,10 +730,10 @@ onMounted(async () => {
             <template #icon><StopOutlined /></template>
             中断运行
           </a-button>
-          <a-space v-if="im.currentRoom?.type === 'group'" @click.stop>
+          <!-- <a-space v-if="im.currentRoom?.type === 'group'" @click.stop>
             <a-switch v-model:checked="dispatchOptions.auto_start" />
             <span class="muted">自动启动</span>
-          </a-space>
+          </a-space> -->
           <span class="hero-info-chip">
             <InfoCircleOutlined />
             查看信息
