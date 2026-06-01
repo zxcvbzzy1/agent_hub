@@ -13,6 +13,10 @@ class Conversation:
     title: str
     created_by: str = "user"
     avatar_url: str = ""
+    pinned: bool = False
+    pinned_at: float = 0.0
+    archived: bool = False
+    archived_at: float = 0.0
     metadata: dict[str, Any] = field(default_factory=dict)
     created_at: float = field(default_factory=now_ts)
     updated_at: float = field(default_factory=now_ts)
@@ -43,6 +47,10 @@ class Conversation:
             "title": self.title,
             "created_by": self.created_by,
             "avatar_url": self.avatar_url,
+            "pinned": self.pinned,
+            "pinned_at": self.pinned_at,
+            "archived": self.archived,
+            "archived_at": self.archived_at,
             "metadata": self.metadata,
             "created_at": self.created_at,
             "updated_at": self.updated_at,

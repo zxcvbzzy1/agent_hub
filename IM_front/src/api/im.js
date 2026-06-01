@@ -76,4 +76,31 @@ export const imApi = {
   artifacts() {
     return http.get('/api/im/artifacts')
   },
+  toolsCatalog() {
+    return http.get('/api/im/tools')
+  },
+  uploadArtifact(payload) {
+    return http.post('/api/im/artifacts/upload', payload)
+  },
+  favorites(scopeType, scopeId) {
+    return http.get('/api/im/favorites', { params: { scope_type: scopeType, scope_id: scopeId } })
+  },
+  createFavorite(payload) {
+    return http.post('/api/im/favorites', payload)
+  },
+  favoriteMessage(messageId, payload) {
+    return http.post('/api/im/messages/' + messageId + '/favorite', payload)
+  },
+  updateFavorite(favoriteId, payload) {
+    return http.patch('/api/im/favorites/' + favoriteId, payload)
+  },
+  deleteFavorite(favoriteId) {
+    return http.delete('/api/im/favorites/' + favoriteId)
+  },
+  updateConversation(conversationId, payload) {
+    return http.patch('/api/im/conversations/' + conversationId, payload)
+  },
+  regenerateConversationMessage(conversationId, messageId) {
+    return http.post('/api/im/conversations/' + conversationId + '/messages/' + messageId + '/regenerate', {})
+  },
 }

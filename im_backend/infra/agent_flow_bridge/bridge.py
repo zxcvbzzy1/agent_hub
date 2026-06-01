@@ -69,6 +69,9 @@ class AgentFlowBridge:
     def list_agents(self) -> list[dict[str, Any]]:
         return self.agents.list_agents()
 
+    def list_tools(self) -> list[dict[str, Any]]:
+        return self.tools.list_tools()
+
     def list_contexts(self) -> list[dict[str, Any]]:
         return self.contexts.list_contexts()
 
@@ -216,6 +219,7 @@ class AgentFlowBridge:
         conversation_id: str | None = None,
         message_id: str | None = None,
         auto_start: bool = True,
+        pinned_context: list[str] | None = None,
     ) -> dict[str, Any]:
         return self.runs.create_run(
             prompt=prompt,
@@ -228,6 +232,7 @@ class AgentFlowBridge:
             conversation_id=conversation_id,
             message_id=message_id,
             auto_start=auto_start,
+            pinned_context=pinned_context or [],
         )
 
     def cancel_run(self, run_id: str) -> dict[str, Any]:

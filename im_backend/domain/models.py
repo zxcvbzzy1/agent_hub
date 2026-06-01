@@ -14,6 +14,7 @@ from im_backend.domain.common import (
 )
 from im_backend.domain.content import ContentPart
 from im_backend.domain.conversations import Conversation
+from im_backend.domain.favorites import Favorite, FavoriteScope
 from im_backend.domain.messages import Message
 from im_backend.domain.rooms import Room
 
@@ -25,6 +26,8 @@ __all__ = [
     "ContentPart",
     "ContentPartType",
     "Conversation",
+    "Favorite",
+    "FavoriteScope",
     "Message",
     "MessageAction",
     "MessageStatus",

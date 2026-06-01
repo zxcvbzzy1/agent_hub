@@ -9,8 +9,9 @@ from im_backend.application.services.agents import IMAgentService
 from im_backend.application.services.cleanup import IMCleanupService
 from im_backend.application.services.coding_agents import CodingAgentService
 from im_backend.application.services.events import RoomEventStreamService
+from im_backend.application.services.favorites import FavoriteService
 from im_backend.application.services.inline_artifacts import collect_inline_artifact_parts
-from im_backend.domain.models import AgentRuntimeProfile, ContentPart, Conversation, Message
+from im_backend.domain.models import AgentRuntimeProfile, ContentPart, Conversation, Message, now_ts
 from im_backend.infra.agent_flow_bridge.bridge import AgentFlowBridge
 
 
@@ -26,6 +27,7 @@ class ConversationService:
         default_workdir: str | Path,
         agents: IMAgentService,
         coding_agents: CodingAgentService,
+        favorites: FavoriteService,
         cleanup: IMCleanupService | None = None,
     ) -> None:
         self._store = store
@@ -33,6 +35,7 @@ class ConversationService:
         self._events = events
         self._agents = agents
         self._coding_agents = coding_agents
+        self._favorites = favorites
         self._default_workdir = str(Path(default_workdir).expanduser().resolve())
         self._agent_locks: dict[str, asyncio.Lock] = {}
         self._reply_tasks: dict[str, asyncio.Task] = {}
@@ -72,11 +75,91 @@ class ConversationService:
                 {
                     **conversation,
                     "agent_id": agent_id,
+                    "pinned": bool(conversation.get("pinned", False)),
+                    "archived": bool(conversation.get("archived", False)),
                     "last_message": last_message,
                     "message_count": len(self.list_conversation_messages(conversation["conversation_id"])),
                 }
             )
+        # store 已按 updated_at 倒序；这里稳定排序把置顶提到最前，组内顺序不变。
+        conversations.sort(key=lambda item: not item.get("pinned", False))
         return conversations
+
+    def update_conversation(
+        self,
+        conversation_id: str,
+        *,
+        pinned: bool | None = None,
+        archived: bool | None = None,
+        title: str | None = None,
+    ) -> dict[str, Any]:
+        self.get_conversation(conversation_id)
+        updates: dict[str, Any] = {}
+        timestamp = now_ts()
+        if title is not None:
+            cleaned = title.strip()
+            if cleaned:
+                updates["title"] = cleaned
+        if pinned is not None:
+            updates["pinned"] = bool(pinned)
+            updates["pinned_at"] = timestamp if pinned else 0.0
+        if archived is not None:
+            updates["archived"] = bool(archived)
+            updates["archived_at"] = timestamp if archived else 0.0
+            # 归档时自动取消置顶。
+            if archived and pinned is None:
+                updates["pinned"] = False
+                updates["pinned_at"] = 0.0
+        if not updates:
+            return self.get_conversation(conversation_id)
+        record = self._store.update_one("im_conversations", {"conversation_id": conversation_id}, updates)
+        record = record or self.get_conversation(conversation_id)
+        self._events.publish(conversation_id, "conversation.updated", {"conversation": record})
+        return record
+
+    async def regenerate_reply(
+        self,
+        *,
+        conversation_id: str,
+        message_id: str,
+        auto_start: bool = True,
+    ) -> dict[str, Any]:
+        self.get_conversation(conversation_id)
+        message = self._get_message(message_id)
+        if message.get("conversation_id") != conversation_id:
+            raise ValueError("message 不属于该 conversation")
+        if message.get("sender_type") != "user":
+            raise ValueError("只能对用户消息重新生成回复")
+
+        # 取消可能仍在运行的旧回复任务，并等它完全结算（状态写回 cancelled、回调 pop）后再继续，
+        # 否则被取消的旧任务会在新任务注册后才把用户消息改回 cancelled，并把新任务从 _reply_tasks 中 pop 掉。
+        task = self._reply_tasks.get(message_id)
+        if task and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        # 删除上一轮该用户消息触发的 agent 回复（含同条消息内的内联产物）。
+        removed = 0
+        for reply in self.list_conversation_messages(conversation_id):
+            if reply.get("sender_type") != "agent":
+                continue
+            if (reply.get("metadata") or {}).get("reply_to") == message_id:
+                self._cleanup.delete_message(reply)
+                removed += 1
+
+        # 重置用户消息状态并重新触发回复。
+        self._store.update_one("im_messages", {"message_id": message_id}, {"status": "sent", "run_id": ""})
+        self._events.publish(
+            conversation_id,
+            "message.regenerated",
+            {"message_id": message_id, "removed": removed},
+        )
+        result = await self.reply_to_conversation_message(
+            conversation_id=conversation_id,
+            message_id=message_id,
+            auto_start=auto_start,
+        )
+        return {"type": "dm_regenerated", "message_id": message_id, "removed": removed, "reply": result}
 
     def create_agent_conversation(
         self,
@@ -196,7 +279,11 @@ class ConversationService:
                 ),
             )
             self._reply_tasks[message_id] = task
-            task.add_done_callback(lambda _task, mid=message_id: self._reply_tasks.pop(mid, None))
+            task.add_done_callback(
+            lambda finished, mid=message_id: (
+                self._reply_tasks.pop(mid, None) if self._reply_tasks.get(mid) is finished else None
+            )
+        )
             return {"type": "dm_reply_started", "message_id": message_id, "agent_id": agent_id, "run": result}
 
         task = asyncio.create_task(
@@ -207,7 +294,11 @@ class ConversationService:
             )
         )
         self._reply_tasks[message_id] = task
-        task.add_done_callback(lambda _task, mid=message_id: self._reply_tasks.pop(mid, None))
+        task.add_done_callback(
+            lambda finished, mid=message_id: (
+                self._reply_tasks.pop(mid, None) if self._reply_tasks.get(mid) is finished else None
+            )
+        )
         return {"type": "dm_reply_started", "message_id": message_id, "agent_id": agent_id}
 
     def _runtime_profile(self, agent_id: str) -> AgentRuntimeProfile:
@@ -260,6 +351,7 @@ class ConversationService:
                 return
             self._rebuild_agent_history(agent, conversation_id=conversation_id, before_message_id=message_id)
             prompt = self._message_text(message)
+            self._apply_pinned_context(agent, conversation_id)
             self._bridge.register_agent_runtime_scope(agent_id, conversation_id)
             registered = True
             self._events.publish(
@@ -374,6 +466,12 @@ class ConversationService:
         if message is None:
             raise KeyError(f"消息不存在: {message_id}")
         return message
+
+    def _apply_pinned_context(self, agent, conversation_id: str) -> None:
+        """把当前会话的收藏作为固定上下文写入 agent state。"""
+        states = getattr(agent, "states", None)
+        if isinstance(states, dict):
+            states["pinned_context"] = self._favorites.context_items("conversation", conversation_id)
 
     def _rebuild_agent_history(self, agent, *, conversation_id: str, before_message_id: str) -> None:
         memory = agent.context_engine.get_memory()

@@ -55,6 +55,8 @@ class AgentCreateRequest(BaseModel):
     context_id: str = "default_executor"
     role_prompt: str = ""
     metadata: dict[str, Any] = Field(default_factory=dict)
+    tool_names: list[str] = Field(default_factory=list)
+    tool_fields: list[str] = Field(default_factory=list)
 
 
 class AgentConversationCreateRequest(BaseModel):
@@ -99,3 +101,31 @@ class ArtifactUploadRequest(BaseModel):
     filename: str
     content_base64: str
     content_type: str = "application/octet-stream"
+
+
+class ConversationUpdateRequest(BaseModel):
+    pinned: bool | None = None
+    archived: bool | None = None
+    title: str | None = None
+
+
+class RegenerateRequest(BaseModel):
+    auto_start: bool = True
+
+
+class FavoriteCreateRequest(BaseModel):
+    scope_type: Literal["conversation", "room"]
+    scope_id: str
+    content: str
+    title: str = ""
+    source_message_id: str = ""
+
+
+class FavoriteUpdateRequest(BaseModel):
+    title: str | None = None
+    content: str | None = None
+    enabled: bool | None = None
+
+
+class MessageFavoriteRequest(BaseModel):
+    title: str = ""

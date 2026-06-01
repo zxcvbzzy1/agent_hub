@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import {
   BranchesOutlined,
@@ -69,6 +69,79 @@ const diffRows = computed(() => {
   }
   return rows
 })
+
+// diff 折叠逻辑
+// expandedSegments: 已展开的折叠段 id 集合（用 reactive Set）
+const expandedSegments = reactive(new Set())
+
+// 每当 diffRows 变化时，重置展开状态
+watch(diffRows, () => {
+  expandedSegments.clear()
+})
+
+const CONTEXT = 3
+
+// 计算显示段结构：type='rows' | type='collapsed'
+const diffSegments = computed(() => {
+  const rows = diffRows.value
+  if (rows.length === 0) return []
+
+  const hasAnyChanged = rows.some((r) => r.changed)
+
+  // 全部未改动时：整体折叠为一个占位，可展开
+  if (!hasAnyChanged) {
+    const segId = 'all'
+    if (expandedSegments.has(segId)) {
+      return [{ type: 'rows', rows, segId: null }]
+    }
+    return [{ type: 'collapsed', rows, hiddenCount: rows.length, segId }]
+  }
+
+  // 标记每行是否“可见”（在某个改动行的 CONTEXT 范围内）
+  const visible = new Array(rows.length).fill(false)
+  for (let i = 0; i < rows.length; i += 1) {
+    if (rows[i].changed) {
+      for (let j = Math.max(0, i - CONTEXT); j <= Math.min(rows.length - 1, i + CONTEXT); j += 1) {
+        visible[j] = true
+      }
+    }
+  }
+
+  // 按连续可见/不可见分段
+  const segments = []
+  let segIdx = 0
+  let i = 0
+  while (i < rows.length) {
+    if (visible[i]) {
+      // 连续可见行段
+      const start = i
+      while (i < rows.length && visible[i]) i += 1
+      segments.push({ type: 'rows', rows: rows.slice(start, i), segId: null })
+    } else {
+      // 连续不可见行段
+      const start = i
+      while (i < rows.length && !visible[i]) i += 1
+      const hiddenRows = rows.slice(start, i)
+      const segId = `collapsed-${segIdx}`
+      segIdx += 1
+      if (expandedSegments.has(segId)) {
+        segments.push({ type: 'rows', rows: hiddenRows, segId })
+      } else {
+        segments.push({ type: 'collapsed', rows: hiddenRows, hiddenCount: hiddenRows.length, segId })
+      }
+    }
+  }
+
+  return segments
+})
+
+function toggleSegment(segId) {
+  if (expandedSegments.has(segId)) {
+    expandedSegments.delete(segId)
+  } else {
+    expandedSegments.add(segId)
+  }
+}
 
 function defaultTitle(type) {
   return { message: '消息', image: '图片', diff: '代码改动', document: '文档', web: '网页预览' }[type] || '产物'
@@ -158,15 +231,32 @@ function downloadDocument() {
     <div v-else-if="artifactType === 'diff'" class="artifact-body artifact-diff-body">
       <table class="artifact-diff-table">
         <tbody>
-          <tr v-for="row in diffRows" :key="row.index" :class="{ changed: row.changed }">
-            <td class="diff-gutter">{{ row.index }}</td>
-            <td class="diff-before" :class="{ removed: row.changed && row.before }">
-              <span class="diff-sign">{{ row.changed && row.before ? '-' : '' }}</span>{{ row.before }}
-            </td>
-            <td class="diff-after" :class="{ added: row.changed && row.after }">
-              <span class="diff-sign">{{ row.changed && row.after ? '+' : '' }}</span>{{ row.after }}
-            </td>
-          </tr>
+          <template v-for="(seg, segIndex) in diffSegments" :key="segIndex">
+            <!-- 折叠占位行 -->
+            <tr
+              v-if="seg.type === 'collapsed'"
+              class="diff-collapsed-row"
+              @click="toggleSegment(seg.segId)"
+            >
+              <td colspan="3">⋯ 展开 {{ seg.hiddenCount }} 行未改动 ⋯</td>
+            </tr>
+            <!-- 普通行段 -->
+            <template v-else>
+              <tr
+                v-for="row in seg.rows"
+                :key="row.index"
+                :class="{ changed: row.changed }"
+              >
+                <td class="diff-gutter">{{ row.index }}</td>
+                <td class="diff-before" :class="{ removed: row.changed && row.before }">
+                  <span class="diff-sign">{{ row.changed && row.before ? '-' : '' }}</span>{{ row.before }}
+                </td>
+                <td class="diff-after" :class="{ added: row.changed && row.after }">
+                  <span class="diff-sign">{{ row.changed && row.after ? '+' : '' }}</span>{{ row.after }}
+                </td>
+              </tr>
+            </template>
+          </template>
         </tbody>
       </table>
     </div>
@@ -317,6 +407,25 @@ function downloadDocument() {
   background: rgba(34, 197, 94, 0.14);
   color: #15803d;
 }
+.diff-collapsed-row {
+  cursor: pointer;
+  user-select: none;
+}
+.diff-collapsed-row td {
+  text-align: center;
+  padding: 4px 8px;
+  color: #6b7280;
+  background: rgba(0, 0, 0, 0.03);
+  border-top: 1px dashed var(--ant-color-border, #e5e7eb);
+  border-bottom: 1px dashed var(--ant-color-border, #e5e7eb);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  transition: background 0.15s;
+}
+.diff-collapsed-row:hover td {
+  background: rgba(37, 99, 235, 0.06);
+  color: #2563eb;
+}
 .artifact-doc-editor :deep(textarea),
 .artifact-doc-preview {
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
@@ -348,7 +457,7 @@ function downloadDocument() {
 }
 .artifact-web-frame {
   width: 100%;
-  height: 360px;
+  height: 65vh;
   border: 0;
   display: block;
   background: #fff;

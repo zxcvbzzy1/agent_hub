@@ -4,17 +4,28 @@ import { Modal, message } from 'ant-design-vue'
 import {
   BranchesOutlined,
   CheckOutlined,
+  CloseOutlined,
   CloudUploadOutlined,
   CopyOutlined,
   DeleteOutlined,
   DeploymentUnitOutlined,
+  EllipsisOutlined,
+  ExpandAltOutlined,
   FileTextOutlined,
+  InboxOutlined,
   InfoCircleOutlined,
+  MenuFoldOutlined,
+  MenuUnfoldOutlined,
+  MessageOutlined,
   PlusOutlined,
+  PushpinOutlined,
+  ReloadOutlined,
   RightOutlined,
   RobotOutlined,
   SafetyCertificateOutlined,
+  SearchOutlined,
   SendOutlined,
+  StarOutlined,
   StopOutlined,
   TeamOutlined,
   UserAddOutlined,
@@ -52,6 +63,13 @@ const composer = ref('')
 const mentions = ref([])
 const drawerPlannerId = ref('default_planner')
 const traceOpenOverrides = ref({})
+const sidebarCollapsed = ref(false)
+const previewMessage = ref(null)
+const replyTarget = ref(null)
+const quoteTarget = ref(null)
+const conversationQuery = ref('')
+const archivedOpen = ref(false)
+const uploadingAvatar = ref(false)
 const roomForm = reactive({
   type: 'group',
   title: '',
@@ -66,7 +84,19 @@ const agentForm = reactive({
   role_prompt: '',
   workdir: '',
   permission_profile: 'human_confirm',
+  avatar_url: '',
+  tool_names: [],
+  tool_fields: [],
 })
+
+const toolFieldLabels = {
+  system: '系统',
+  search: '搜索',
+  memory: '记忆',
+  human: '人工协作',
+  write_agent: '编写 Agent',
+  other: '其它',
+}
 const agentKindOptions = [
   { label: 'Native', value: 'native' },
   { label: 'Claude Code', value: 'claude_code' },
@@ -83,6 +113,42 @@ const dispatchOptions = reactive({
 })
 
 const isNativeAgentForm = computed(() => agentForm.agent_kind === 'native')
+
+const showToolPicker = computed(() => isNativeAgentForm.value && agentForm.agent_type === 'executor')
+
+const groupedTools = computed(() => {
+  const order = ['system', 'search', 'memory', 'human', 'write_agent', 'other']
+  const buckets = {}
+  for (const tool of im.tools || []) {
+    const field = tool.field || 'other'
+    if (!buckets[field]) buckets[field] = []
+    buckets[field].push(tool)
+  }
+  return order
+    .filter((field) => buckets[field]?.length)
+    .map((field) => ({
+      field,
+      label: toolFieldLabels[field] || field,
+      tools: buckets[field],
+    }))
+})
+
+const conversationGroups = computed(() => {
+  const query = conversationQuery.value.trim().toLowerCase()
+  const matches = (item) => {
+    if (!query) return true
+    const title = (item.title || '').toLowerCase()
+    const text = (latestMessageText(item) || '').toLowerCase()
+    return title.includes(query) || text.includes(query)
+  }
+  const list = (im.conversations || []).filter(matches)
+  // 归档优先级高于置顶（与后端"归档自动取消置顶"一致），保证三组互斥。
+  return {
+    pinned: list.filter((item) => item.pinned === true && item.archived !== true),
+    normal: list.filter((item) => item.pinned !== true && item.archived !== true),
+    archived: list.filter((item) => item.archived === true),
+  }
+})
 
 const currentMembers = computed(() => {
   const ids = im.currentRoom?.member_agent_ids || []
@@ -398,17 +464,21 @@ async function createAgent() {
     const agentKindValue = agentForm.agent_kind || 'native'
     const agentTypeValue = agentKindValue === 'native' ? agentForm.agent_type : 'executor'
     const contextId = agentTypeValue === 'planner' ? 'default_planner' : 'default_executor'
+    const useToolPicker = isNativeAgentForm.value && agentTypeValue === 'executor'
     await im.createAgent({
       name: agentForm.name.trim(),
       agent_type: agentTypeValue,
       context_id: isNativeAgentForm.value ? (agentForm.context_id || contextId) : 'default_executor',
       role_prompt: isNativeAgentForm.value ? agentForm.role_prompt : '',
+      tool_names: useToolPicker ? [...agentForm.tool_names] : [],
+      tool_fields: useToolPicker ? [...agentForm.tool_fields] : [],
       metadata: {
         agent_kind: agentKindValue,
         description: agentForm.description,
         capabilities: agentForm.description ? [agentForm.description] : [],
         workdir: agentForm.workdir,
         permission_profile: agentForm.permission_profile || 'human_confirm',
+        avatar_url: agentForm.avatar_url || '',
       },
     })
     agentCreateOpen.value = false
@@ -420,6 +490,9 @@ async function createAgent() {
     agentForm.role_prompt = ''
     agentForm.workdir = ''
     agentForm.permission_profile = 'human_confirm'
+    agentForm.avatar_url = ''
+    agentForm.tool_names = []
+    agentForm.tool_fields = []
     message.success('Agent 已创建')
   } finally {
     creatingAgent.value = false
@@ -508,13 +581,16 @@ async function send() {
   if (!composer.value.trim()) return
   sending.value = true
   try {
+    const payload = {
+      sender_type: 'user',
+      content_parts: [{ type: 'text', text: composer.value.trim() }],
+      mentions: [...mentions.value],
+      metadata: { client: 'IM_front' },
+    }
+    if (replyTarget.value?.message_id) payload.reply_to = replyTarget.value.message_id
+    if (quoteTarget.value?.message_id) payload.quote_of = quoteTarget.value.message_id
     await im.sendMessage(
-      {
-        sender_type: 'user',
-        content_parts: [{ type: 'text', text: composer.value.trim() }],
-        mentions: [...mentions.value],
-        metadata: { client: 'IM_front' },
-      },
+      payload,
       {
         auto_start: im.currentRoom?.type === 'group' ? dispatchOptions.auto_start : true,
         planner_agent_id: im.currentRoom?.metadata?.planner_agent_id || drawerPlannerId.value || 'default_planner',
@@ -525,6 +601,8 @@ async function send() {
     composer.value = ''
     mentions.value = []
     mentionOpen.value = false
+    replyTarget.value = null
+    quoteTarget.value = null
     await scrollToBottom()
   } finally {
     sending.value = false
@@ -556,6 +634,113 @@ async function approveConfirmation(part, confirmationMessage) {
 function copyText(text) {
   navigator.clipboard?.writeText(text)
   message.success('已复制')
+}
+
+function messagePlainText(item) {
+  if (!item) return ''
+  return (item.content_parts || [])
+    .map((part) => part.text || part.diff || part.title || part.description || part.url || '')
+    .filter(Boolean)
+    .join('\n')
+    .trim()
+}
+
+function messageById(messageId) {
+  if (!messageId) return null
+  return im.messages.find((item) => item.message_id === messageId) || null
+}
+
+function quoteRefSummary(item) {
+  const text = messagePlainText(item)
+  return text.length > 80 ? `${text.slice(0, 80)}…` : (text || '（无文本内容）')
+}
+
+function isRegenerable(item) {
+  return item.sender_type === 'agent' && im.currentRoom?.type !== 'group'
+}
+
+function copyMessage(item) {
+  copyText(messagePlainText(item))
+}
+
+function setReplyTarget(item) {
+  replyTarget.value = item
+  nextTick(() => composerRef.value?.focus?.())
+}
+
+function setQuoteTarget(item) {
+  quoteTarget.value = item
+  nextTick(() => composerRef.value?.focus?.())
+}
+
+function clearReplyTarget() {
+  replyTarget.value = null
+}
+
+function clearQuoteTarget() {
+  quoteTarget.value = null
+}
+
+function openPreview(item) {
+  previewMessage.value = item
+}
+
+function closePreview() {
+  previewMessage.value = null
+}
+
+async function regenerateMessage(item) {
+  try {
+    await im.regenerateReply(item)
+    message.success('已请求重新生成')
+  } catch (error) {
+    message.error('重新生成失败')
+  }
+}
+
+async function favoriteMessageAction(item) {
+  try {
+    await im.favoriteMessage(item.message_id)
+    message.success('已加入固定上下文')
+  } catch (error) {
+    message.error('收藏失败')
+  }
+}
+
+async function toggleSidePinned(item) {
+  await im.toggleConversationPinned(item.conversation_id, !item.pinned)
+}
+
+async function toggleSideArchived(item) {
+  await im.toggleConversationArchived(item.conversation_id, !item.archived)
+}
+
+async function handleAvatarUpload(file) {
+  uploadingAvatar.value = true
+  try {
+    const url = await im.uploadAvatar(file)
+    if (url) {
+      agentForm.avatar_url = url
+      message.success('头像已上传')
+    }
+  } catch (error) {
+    message.error('头像上传失败')
+  } finally {
+    uploadingAvatar.value = false
+  }
+  return false
+}
+
+function toggleToolField(field, tools) {
+  const names = tools.map((tool) => tool.name)
+  const allSelected = names.every((name) => agentForm.tool_names.includes(name))
+  if (allSelected) {
+    agentForm.tool_names = agentForm.tool_names.filter((name) => !names.includes(name))
+  } else {
+    const next = new Set(agentForm.tool_names)
+    names.forEach((name) => next.add(name))
+    agentForm.tool_names = [...next]
+  }
 }
 
 async function scrollToBottom() {
@@ -598,6 +783,23 @@ watch(
   { immediate: true },
 )
 
+watch(
+  () => agentCreateOpen.value,
+  (open) => {
+    if (open && !(im.tools || []).length) im.fetchTools()
+  },
+)
+
+watch(
+  () => [im.currentConversation?.conversation_id, im.currentRoom?.room_id],
+  () => {
+    previewMessage.value = null
+    replyTarget.value = null
+    quoteTarget.value = null
+    conversationQuery.value = ''
+  },
+)
+
 onMounted(async () => {
   await im.bootstrap()
   const defaultPlanner = im.plannerAgents.find((agent) => agent.agent_id === 'default_planner') || im.plannerAgents[0]
@@ -607,7 +809,7 @@ onMounted(async () => {
 </script>
 
 <template>
-  <main class="im-workspace">
+  <main class="im-workspace" :class="{ 'sidebar-collapsed': sidebarCollapsed }">
     <aside class="im-sidebar">
       <div class="sidebar-head">
         <div>
@@ -623,6 +825,11 @@ onMounted(async () => {
           <a-tooltip title="创建 Agent 群聊">
             <a-button shape="circle" @click="createOpen = true">
               <template #icon><PlusOutlined /></template>
+            </a-button>
+          </a-tooltip>
+          <a-tooltip title="收起侧栏">
+            <a-button class="sidebar-toggle" shape="circle" @click="sidebarCollapsed = true">
+              <template #icon><MenuFoldOutlined /></template>
             </a-button>
           </a-tooltip>
         </div>
@@ -689,32 +896,144 @@ onMounted(async () => {
             新对话
           </a-button>
         </div>
-        <a-empty v-if="!sideItems.length" description="暂无记录" />
-        <button
-          v-for="item in sideItems"
-          :key="item.conversation_id || item.message_id || item.task_id"
-          class="feed-item"
-          :class="{ active: item.conversation_id && item.conversation_id === im.currentConversation?.conversation_id }"
-          @click="openSideItem(item)"
-        >
-          <strong>{{ sideItemTitle(item) }}</strong>
-          <span>{{ latestMessageText(item) }}</span>
-          <small>{{ formatTime(sideItemTime(item)) }}</small>
-          <a-button
-            v-if="item.conversation_id"
-            class="feed-delete"
-            type="text"
-            danger
-            size="small"
-            @click.stop="confirmDeleteConversation(item)"
+
+        <template v-if="im.currentRoom?.type === 'group'">
+          <a-empty v-if="!sideItems.length" description="暂无记录" />
+          <button
+            v-for="item in sideItems"
+            :key="item.task_id || item.message_id"
+            class="feed-item"
+            @click="openSideItem(item)"
           >
-            <template #icon><DeleteOutlined /></template>
-          </a-button>
-        </button>
+            <strong>{{ sideItemTitle(item) }}</strong>
+            <span>{{ latestMessageText(item) }}</span>
+            <small>{{ formatTime(sideItemTime(item)) }}</small>
+          </button>
+        </template>
+
+        <template v-else>
+          <a-input
+            v-model:value="conversationQuery"
+            class="side-search"
+            allow-clear
+            size="small"
+            placeholder="搜索对话标题或内容"
+          >
+            <template #prefix><SearchOutlined /></template>
+          </a-input>
+
+          <a-empty
+            v-if="!conversationGroups.pinned.length && !conversationGroups.normal.length && !conversationGroups.archived.length"
+            description="暂无记录"
+          />
+
+          <template v-if="conversationGroups.pinned.length">
+            <div class="feed-group-title">
+              <PushpinOutlined />
+              <span>置顶</span>
+            </div>
+            <button
+              v-for="item in conversationGroups.pinned"
+              :key="item.conversation_id"
+              class="feed-item"
+              :class="{ active: item.conversation_id === im.currentConversation?.conversation_id }"
+              @click="openSideItem(item)"
+            >
+              <strong>{{ sideItemTitle(item) }}</strong>
+              <span>{{ latestMessageText(item) }}</span>
+              <small>{{ formatTime(sideItemTime(item)) }}</small>
+              <div class="feed-actions" @click.stop>
+                <a-dropdown :trigger="['click']" placement="bottomRight">
+                  <a-button class="feed-menu" type="text" size="small">
+                    <template #icon><EllipsisOutlined /></template>
+                  </a-button>
+                  <template #overlay>
+                    <a-menu>
+                      <a-menu-item @click="toggleSidePinned(item)">取消置顶</a-menu-item>
+                      <a-menu-item @click="toggleSideArchived(item)">归档</a-menu-item>
+                      <a-menu-item danger @click="confirmDeleteConversation(item)">删除</a-menu-item>
+                    </a-menu>
+                  </template>
+                </a-dropdown>
+              </div>
+            </button>
+          </template>
+
+          <template v-if="conversationGroups.normal.length">
+            <div v-if="conversationGroups.pinned.length || conversationGroups.archived.length" class="feed-group-title">
+              <MessageOutlined />
+              <span>全部对话</span>
+            </div>
+            <button
+              v-for="item in conversationGroups.normal"
+              :key="item.conversation_id"
+              class="feed-item"
+              :class="{ active: item.conversation_id === im.currentConversation?.conversation_id }"
+              @click="openSideItem(item)"
+            >
+              <strong>{{ sideItemTitle(item) }}</strong>
+              <span>{{ latestMessageText(item) }}</span>
+              <small>{{ formatTime(sideItemTime(item)) }}</small>
+              <div class="feed-actions" @click.stop>
+                <a-dropdown :trigger="['click']" placement="bottomRight">
+                  <a-button class="feed-menu" type="text" size="small">
+                    <template #icon><EllipsisOutlined /></template>
+                  </a-button>
+                  <template #overlay>
+                    <a-menu>
+                      <a-menu-item @click="toggleSidePinned(item)">置顶</a-menu-item>
+                      <a-menu-item @click="toggleSideArchived(item)">归档</a-menu-item>
+                      <a-menu-item danger @click="confirmDeleteConversation(item)">删除</a-menu-item>
+                    </a-menu>
+                  </template>
+                </a-dropdown>
+              </div>
+            </button>
+          </template>
+
+          <template v-if="conversationGroups.archived.length">
+            <button class="feed-group-title feed-group-toggle" @click="archivedOpen = !archivedOpen">
+              <InboxOutlined />
+              <span>已归档 ({{ conversationGroups.archived.length }})</span>
+              <RightOutlined class="feed-group-chevron" :class="{ open: archivedOpen }" />
+            </button>
+            <template v-if="archivedOpen">
+              <button
+                v-for="item in conversationGroups.archived"
+                :key="item.conversation_id"
+                class="feed-item feed-item-archived"
+                :class="{ active: item.conversation_id === im.currentConversation?.conversation_id }"
+                @click="openSideItem(item)"
+              >
+                <strong>{{ sideItemTitle(item) }}</strong>
+                <span>{{ latestMessageText(item) }}</span>
+                <small>{{ formatTime(sideItemTime(item)) }}</small>
+                <div class="feed-actions" @click.stop>
+                  <a-dropdown :trigger="['click']" placement="bottomRight">
+                    <a-button class="feed-menu" type="text" size="small">
+                      <template #icon><EllipsisOutlined /></template>
+                    </a-button>
+                    <template #overlay>
+                      <a-menu>
+                        <a-menu-item @click="toggleSideArchived(item)">取消归档</a-menu-item>
+                        <a-menu-item danger @click="confirmDeleteConversation(item)">删除</a-menu-item>
+                      </a-menu>
+                    </template>
+                  </a-dropdown>
+                </div>
+              </button>
+            </template>
+          </template>
+        </template>
       </section>
     </aside>
 
-    <section class="chat-main">
+    <section class="chat-main" :class="{ 'preview-open': previewMessage }">
+      <a-tooltip v-if="sidebarCollapsed" title="展开侧栏" placement="right">
+        <a-button class="sidebar-expand" shape="circle" @click="sidebarCollapsed = false">
+          <template #icon><MenuUnfoldOutlined /></template>
+        </a-button>
+      </a-tooltip>
       <header class="chat-hero" @click="drawerOpen = true">
         <div class="hero-title">
           <a-avatar :size="44">
@@ -748,6 +1067,7 @@ onMounted(async () => {
         </div>
       </header>
 
+      <div class="chat-body">
       <div ref="listRef" class="message-list">
         <a-empty v-if="!chatItems.length" description="暂无消息" />
         <template v-for="entry in chatItems" :key="entry.key">
@@ -758,6 +1078,14 @@ onMounted(async () => {
           >
             <a-avatar class="message-avatar">{{ avatarText(messageTitle(entry.message)) }}</a-avatar>
             <div class="message-bubble">
+              <div
+                v-if="messageById(entry.message.reply_to) || messageById(entry.message.quote_of)"
+                class="message-quote-ref"
+              >
+                <span class="quote-ref-tag">{{ entry.message.reply_to ? '回复' : '引用' }}</span>
+                <strong>{{ messageTitle(messageById(entry.message.reply_to || entry.message.quote_of)) }}</strong>
+                <span class="quote-ref-text">{{ quoteRefSummary(messageById(entry.message.reply_to || entry.message.quote_of)) }}</span>
+              </div>
               <div class="message-meta">
                 <strong>{{ messageTitle(entry.message) }}</strong>
                 <span>{{ formatTime(entry.message.created_at) }}</span>
@@ -765,6 +1093,38 @@ onMounted(async () => {
                 <a-tag v-if="entry.message.run_id && im.currentRoom?.type === 'group'" size="small" color="blue">
                   run {{ shortId(entry.message.run_id) }}
                 </a-tag>
+                <div class="message-actions">
+                  <a-tooltip title="复制">
+                    <a-button type="text" size="small" @click.stop="copyMessage(entry.message)">
+                      <template #icon><CopyOutlined /></template>
+                    </a-button>
+                  </a-tooltip>
+                  <a-tooltip title="回复">
+                    <a-button type="text" size="small" @click.stop="setReplyTarget(entry.message)">
+                      <template #icon><MessageOutlined /></template>
+                    </a-button>
+                  </a-tooltip>
+                  <a-tooltip title="引用">
+                    <a-button type="text" size="small" @click.stop="setQuoteTarget(entry.message)">
+                      <template #icon><BranchesOutlined /></template>
+                    </a-button>
+                  </a-tooltip>
+                  <a-tooltip v-if="isRegenerable(entry.message)" title="重新生成">
+                    <a-button type="text" size="small" @click.stop="regenerateMessage(entry.message)">
+                      <template #icon><ReloadOutlined /></template>
+                    </a-button>
+                  </a-tooltip>
+                  <a-tooltip title="展开预览">
+                    <a-button type="text" size="small" @click.stop="openPreview(entry.message)">
+                      <template #icon><ExpandAltOutlined /></template>
+                    </a-button>
+                  </a-tooltip>
+                  <a-tooltip title="收藏到固定上下文">
+                    <a-button type="text" size="small" @click.stop="favoriteMessageAction(entry.message)">
+                      <template #icon><StarOutlined /></template>
+                    </a-button>
+                  </a-tooltip>
+                </div>
               </div>
 
               <div v-for="(part, index) in entry.message.content_parts" :key="`${entry.message.message_id}-${index}`" class="part">
@@ -893,7 +1253,82 @@ onMounted(async () => {
         </template>
       </div>
 
+      <aside v-if="previewMessage" class="chat-preview-panel">
+        <div class="preview-head">
+          <div class="preview-title">
+            <ExpandAltOutlined />
+            <div>
+              <strong>{{ messageTitle(previewMessage) }}</strong>
+              <small>{{ formatTime(previewMessage.created_at) }}</small>
+            </div>
+          </div>
+          <a-button type="text" size="small" @click="closePreview">
+            <template #icon><CloseOutlined /></template>
+          </a-button>
+        </div>
+        <div class="preview-body">
+          <div
+            v-for="(part, index) in previewMessage.content_parts"
+            :key="`preview-${previewMessage.message_id}-${index}`"
+            class="part"
+          >
+            <p v-if="part.type === 'text'" class="text-part">{{ part.text }}</p>
+            <pre v-else-if="part.type === 'code'" class="code-part"><code>{{ part.text }}</code></pre>
+            <img v-else-if="part.type === 'image'" class="image-part" :src="part.url" :alt="part.name || 'image'" />
+            <a-button v-else-if="part.type === 'file'" :href="part.url" target="_blank">
+              <template #icon><FileTextOutlined /></template>
+              {{ part.name || '文件' }}
+            </a-button>
+            <a :href="part.url" target="_blank" v-else-if="part.type === 'web_preview'" class="web-card">
+              <strong>{{ part.title || part.url }}</strong>
+              <span>{{ part.description }}</span>
+            </a>
+            <div v-else-if="part.type === 'diff'" class="diff-card">
+              <div class="card-title">
+                <BranchesOutlined />
+                <span>{{ part.title || 'Diff' }}</span>
+                <a-button size="small" type="text" @click="copyText(part.diff)">
+                  <template #icon><CopyOutlined /></template>
+                </a-button>
+              </div>
+              <pre><code>{{ part.diff }}</code></pre>
+            </div>
+            <ArtifactCard
+              v-else-if="part.type === 'artifact'"
+              :artifact="part.metadata?.artifact || part"
+            />
+            <div v-else-if="part.type === 'deploy'" class="deploy-card">
+              <div class="card-title">
+                <DeploymentUnitOutlined />
+                <span>{{ part.title || '操作卡片' }}</span>
+              </div>
+              <p>{{ part.description }}</p>
+            </div>
+            <a-tag v-else color="default">{{ part.type }}</a-tag>
+          </div>
+        </div>
+      </aside>
+      </div>
+
       <footer class="composer">
+        <div v-if="replyTarget || quoteTarget" class="composer-refs">
+          <div v-if="replyTarget" class="composer-ref">
+            <MessageOutlined />
+            <span class="composer-ref-label">回复 @{{ messageTitle(replyTarget) }}：</span>
+            <span class="composer-ref-text">{{ quoteRefSummary(replyTarget) }}</span>
+            <a-button type="text" size="small" @click="clearReplyTarget">
+              <template #icon><CloseOutlined /></template>
+            </a-button>
+          </div>
+          <div v-if="quoteTarget" class="composer-ref">
+            <BranchesOutlined />
+            <span class="composer-ref-label">引用 @{{ messageTitle(quoteTarget) }}：</span>
+            <span class="composer-ref-text">{{ quoteRefSummary(quoteTarget) }}</span>
+            <a-button type="text" size="small" @click="clearQuoteTarget">
+              <template #icon><CloseOutlined /></template>
+            </a-button>
+          </div>
+        </div>
         <div class="mention-wrap">
           <div v-if="mentionCandidates.length" class="mention-popover">
             <button v-for="agent in mentionCandidates" :key="agent.agent_id" @click="insertMention(agent)">
@@ -944,6 +1379,29 @@ onMounted(async () => {
 
     <a-modal v-model:open="agentCreateOpen" title="创建 Agent" :footer="null">
       <a-form layout="vertical">
+        <a-form-item label="头像">
+          <div class="agent-avatar-upload">
+            <a-avatar :size="56" :src="agentForm.avatar_url">{{ avatarText(agentForm.name) }}</a-avatar>
+            <a-upload
+              :show-upload-list="false"
+              :before-upload="handleAvatarUpload"
+              accept="image/*"
+            >
+              <a-button :loading="uploadingAvatar">
+                <template #icon><CloudUploadOutlined /></template>
+                上传头像
+              </a-button>
+            </a-upload>
+            <a-button
+              v-if="agentForm.avatar_url"
+              type="text"
+              size="small"
+              @click="agentForm.avatar_url = ''"
+            >
+              清除
+            </a-button>
+          </div>
+        </a-form-item>
         <a-form-item label="名称">
           <a-input v-model:value="agentForm.name" placeholder="例如：前端组件工程师" />
         </a-form-item>
@@ -984,6 +1442,32 @@ onMounted(async () => {
         </a-form-item>
         <a-form-item v-if="isNativeAgentForm" label="Role Prompt">
           <a-textarea v-model:value="agentForm.role_prompt" :auto-size="{ minRows: 4, maxRows: 8 }" />
+        </a-form-item>
+        <a-form-item v-if="showToolPicker" label="可用工具">
+          <a-empty v-if="!groupedTools.length" description="暂无可用工具" :image="false" />
+          <a-collapse v-else class="tool-collapse" ghost>
+            <a-collapse-panel
+              v-for="group in groupedTools"
+              :key="group.field"
+              :header="`${group.label} (${group.tools.length})`"
+            >
+              <template #extra>
+                <a-button
+                  type="link"
+                  size="small"
+                  @click.stop="toggleToolField(group.field, group.tools)"
+                >
+                  全选/反选
+                </a-button>
+              </template>
+              <a-checkbox-group v-model:value="agentForm.tool_names" class="tool-checkbox-group">
+                <a-checkbox v-for="tool in group.tools" :key="tool.name" :value="tool.name">
+                  <span class="tool-name">{{ tool.name }}</span>
+                  <small v-if="tool.description" class="tool-desc">{{ tool.description }}</small>
+                </a-checkbox>
+              </a-checkbox-group>
+            </a-collapse-panel>
+          </a-collapse>
         </a-form-item>
         <a-button type="primary" html-type="submit" block :loading="creatingAgent" @click="createAgent">
           创建 Agent

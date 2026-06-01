@@ -6,6 +6,7 @@ from typing import Any
 from im_backend.application.services.agents import IMAgentService
 from im_backend.application.services.coding_agents import CodingAgentService
 from im_backend.application.services.events import RoomEventStreamService
+from im_backend.application.services.favorites import FavoriteService
 from im_backend.application.services.messages import GroupMessageService
 from im_backend.application.services.rooms import RoomService
 from im_backend.domain.models import AgentRuntimeProfile
@@ -23,6 +24,7 @@ class GroupRunService:
         messages: GroupMessageService,
         coding_agents: CodingAgentService,
         agents: IMAgentService,
+        favorites: FavoriteService,
         default_workdir: str | Path,
     ) -> None:
         self._store = store
@@ -32,6 +34,7 @@ class GroupRunService:
         self._messages = messages
         self._coding_agents = coding_agents
         self._agents = agents
+        self._favorites = favorites
         self._default_workdir = str(Path(default_workdir).expanduser().resolve())
 
     def list_room_tasks(self, room_id: str) -> list[dict[str, Any]]:
@@ -221,6 +224,7 @@ class GroupRunService:
             conversation_id=runtime_conversation["conversation_id"],
             message_id=runtime_message["message_id"],
             auto_start=auto_start,
+            pinned_context=self._favorites.context_items("room", room["room_id"]),
         )
 
     def _room_history_before(self, room_id: str, message_id: str) -> list[dict[str, Any]]:

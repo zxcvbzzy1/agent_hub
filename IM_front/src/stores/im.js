@@ -20,6 +20,8 @@ export const useIMStore = defineStore('im', {
     events: [],
     loading: false,
     source: null,
+    tools: [],
+    favorites: [],
   }),
   getters: {
     executorAgents(state) {
@@ -45,6 +47,7 @@ export const useIMStore = defineStore('im', {
         } else if (this.executorAgents[0]) {
           await this.selectAgent(this.executorAgents[0].agent_id)
         }
+        this.fetchTools().catch(() => {})
       } finally {
         this.loading = false
       }
@@ -219,6 +222,7 @@ export const useIMStore = defineStore('im', {
       this.tasks = []
       this.connectConversation(conversationId)
       await this.fetchConversations(this.currentAgentId)
+      this.loadFavorites().catch(() => {})
     },
     async selectGroupRoom(roomId) {
       const [roomResponse, messageResponse] = await Promise.all([
@@ -235,6 +239,7 @@ export const useIMStore = defineStore('im', {
       this.conversations = []
       this.connectRoom(roomId)
       await this.fetchTasks(roomId)
+      this.loadFavorites().catch(() => {})
     },
     async sendMessage(payload, options = {}) {
       if (this.mode === 'agent' && this.currentAgentId) {
@@ -290,6 +295,65 @@ export const useIMStore = defineStore('im', {
     async recordAction(messageId, payload) {
       return imApi.action(messageId, payload)
     },
+    async fetchTools() {
+      if (this.tools.length) return this.tools
+      const r = await imApi.toolsCatalog()
+      this.tools = r.items || []
+      return this.tools
+    },
+    async uploadAvatar(file) {
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader()
+        reader.onload = (e) => resolve(e.target.result.split(',')[1])
+        reader.onerror = reject
+        reader.readAsDataURL(file)
+      })
+      const r = await imApi.uploadArtifact({
+        filename: file.name,
+        content_base64: base64,
+        content_type: file.type,
+      })
+      const artifact_id = r.item.artifact_id
+      return API_BASE_URL + '/api/im/artifacts/' + artifact_id
+    },
+    async loadFavorites() {
+      let scopeType, scopeId
+      if (this.currentRoom?.type === 'group') {
+        scopeType = 'room'
+        scopeId = this.currentRoom.room_id
+      } else if (this.currentConversation) {
+        scopeType = 'conversation'
+        scopeId = this.currentConversation.conversation_id
+      } else {
+        this.favorites = []
+        return
+      }
+      const r = await imApi.favorites(scopeType, scopeId)
+      this.favorites = r.items || []
+    },
+    async favoriteMessage(messageId, title = '') {
+      await imApi.favoriteMessage(messageId, { title })
+      await this.loadFavorites()
+    },
+    async removeFavorite(favoriteId) {
+      await imApi.deleteFavorite(favoriteId)
+      await this.loadFavorites()
+    },
+    async toggleConversationPinned(conversationId, pinned) {
+      await imApi.updateConversation(conversationId, { pinned })
+      await this.fetchConversations()
+    },
+    async toggleConversationArchived(conversationId, archived) {
+      await imApi.updateConversation(conversationId, { archived })
+      await this.fetchConversations()
+    },
+    async regenerateReply(agentMessage) {
+      const userId = agentMessage?.metadata?.reply_to
+      if (!userId || !this.currentConversation) return
+      await imApi.regenerateConversationMessage(this.currentConversation.conversation_id, userId)
+      await this.refreshMessages()
+      await this.fetchConversations()
+    },
     closeStream() {
       if (this.source) {
         this.source.close()
@@ -326,6 +390,15 @@ export const useIMStore = defineStore('im', {
       }
       if (event.name === 'confirmation.requested' && event.payload?.confirmation) {
         this.mergeMessage(event.payload.confirmation)
+      }
+      if (event.name === 'message.regenerated') {
+        this.refreshMessages().catch(() => {})
+      }
+      if (event.name === 'conversation.updated' && this.currentAgentId) {
+        this.fetchConversations().catch(() => {})
+      }
+      if (event.name === 'favorite.created' || event.name === 'favorite.updated' || event.name === 'favorite.deleted') {
+        this.loadFavorites().catch(() => {})
       }
       if (event.name === 'run.created' && this.currentRoom?.type === 'group') {
         this.fetchTasks().catch(() => {})

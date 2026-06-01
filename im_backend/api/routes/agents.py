@@ -27,6 +27,15 @@ async def list_contexts(
     return {"items": service.list_visible_contexts(current_user["user_id"])}
 
 
+@router.get("/tools")
+async def list_tools(
+    current_user: dict = Depends(get_current_user),
+    service: IMAgentService = Depends(get_agent_catalog),
+):
+    _ = current_user
+    return {"items": service.list_tools()}
+
+
 @router.post("/agents")
 async def create_agent(
     request: AgentCreateRequest,
@@ -41,6 +50,8 @@ async def create_agent(
             role_prompt=request.role_prompt,
             metadata={**request.metadata, "created_by": current_user["user_id"], "created_by_username": current_user["username"]},
             owner_user_id=current_user["user_id"],
+            tool_names=request.tool_names,
+            tool_fields=request.tool_fields,
         )
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

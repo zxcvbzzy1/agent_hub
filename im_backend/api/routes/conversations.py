@@ -4,7 +4,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from im_backend.api.core import get_current_user, get_im_service, get_room_events
-from im_backend.api.schemas import MessageCreateRequest, ReplyRequest
+from im_backend.api.schemas import (
+    ConversationUpdateRequest,
+    MessageCreateRequest,
+    RegenerateRequest,
+    ReplyRequest,
+)
 from im_backend.application.services.events import RoomEventStreamService
 from im_backend.application.services.facade import IMService
 
@@ -88,6 +93,50 @@ async def cancel_conversation_message(
         item = await service.cancel_conversation_reply(
             conversation_id=conversation_id,
             message_id=message_id,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"item": item}
+
+
+@router.patch("/conversations/{conversation_id}")
+async def update_conversation(
+    conversation_id: str,
+    request: ConversationUpdateRequest,
+    current_user: dict = Depends(get_current_user),
+    service: IMService = Depends(get_im_service),
+):
+    _ = current_user
+    try:
+        item = service.update_conversation(
+            conversation_id,
+            pinned=request.pinned,
+            archived=request.archived,
+            title=request.title,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"item": item}
+
+
+@router.post("/conversations/{conversation_id}/messages/{message_id}/regenerate")
+async def regenerate_conversation_message(
+    conversation_id: str,
+    message_id: str,
+    request: RegenerateRequest = RegenerateRequest(),
+    current_user: dict = Depends(get_current_user),
+    service: IMService = Depends(get_im_service),
+):
+    _ = current_user
+    try:
+        item = await service.regenerate_conversation_reply(
+            conversation_id=conversation_id,
+            message_id=message_id,
+            auto_start=request.auto_start,
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

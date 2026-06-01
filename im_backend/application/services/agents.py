@@ -18,6 +18,16 @@ class IMAgentService:
     def list_agents(self) -> list[dict[str, Any]]:
         return self._bridge.list_agents()
 
+    def list_tools(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "name": tool.get("name", ""),
+                "description": tool.get("description", ""),
+                "field": tool.get("field"),
+            }
+            for tool in self._bridge.list_tools()
+        ]
+
     def list_visible_agents(self, user_id: str) -> list[dict[str, Any]]:
         return [
             record
@@ -44,6 +54,8 @@ class IMAgentService:
         role_prompt: str = "",
         metadata: dict[str, Any] | None = None,
         owner_user_id: str = "",
+        tool_names: list[str] | None = None,
+        tool_fields: list[str] | None = None,
     ) -> dict[str, Any]:
         if not name.strip():
             raise ValueError("Agent 名称不能为空")
@@ -55,8 +67,19 @@ class IMAgentService:
             raise ValueError("agent_kind 必须是 native、claude_code、codex 或 human_proxy")
         if agent_kind != "native" and agent_type != "executor":
             raise ValueError("第三方 Agent 只能创建为 executor")
-        if owner_user_id:
-            self.ensure_context_access(context_id, owner_user_id)
+
+        # 选了具体工具/字段时，为该 native executor 单独克隆一个限定工具的 context。
+        effective_context_id = context_id
+        if agent_kind == "native" and agent_type == "executor" and (tool_names or tool_fields):
+            effective_context_id = self._build_tool_context(
+                name=name.strip(),
+                tool_names=tool_names or [],
+                tool_fields=tool_fields or [],
+                owner_user_id=owner_user_id,
+            )
+        elif owner_user_id:
+            self.ensure_context_access(effective_context_id, owner_user_id)
+
         agent_metadata = {
             **requested_metadata,
             "agent_kind": agent_kind,
@@ -70,10 +93,47 @@ class IMAgentService:
         return self._bridge.create_agent(
             name=name.strip(),
             agent_type=agent_type,
-            context_id=context_id,
+            context_id=effective_context_id,
             role_prompt=role_prompt,
             metadata=agent_metadata,
         )
+
+    def _build_tool_context(
+        self,
+        *,
+        name: str,
+        tool_names: list[str],
+        tool_fields: list[str],
+        owner_user_id: str = "",
+    ) -> str:
+        """克隆 executor 默认模板，把 available_tools provider 限定为所选工具/字段。"""
+        contexts = self._bridge.contexts
+        template = contexts.default_template("executor")
+        tool_params = {
+            "available_fields": list(tool_fields or []),
+            "available_tools": list(tool_names or []),
+        }
+        replaced = False
+        for item in template:
+            if item.get("provider_id") == "available_tools":
+                item["params"] = tool_params
+                item["enabled"] = True
+                replaced = True
+        if not replaced:
+            template.append({"provider_id": "available_tools", "enabled": True, "params": tool_params})
+        record = contexts.create_context(
+            kind="executor",
+            name=f"{name} 工具集",
+            provider_config=template,
+        )
+        context_id = record["context_id"]
+        if owner_user_id:
+            self._bridge.store.update_one(
+                "contexts",
+                {"context_id": context_id},
+                {"metadata": {"owner_user_id": owner_user_id, "visibility": "private", "kind_label": "tool_set"}},
+            )
+        return context_id
 
     def delete_agent(self, agent_id: str, *, user_id: str = "") -> dict[str, Any]:
         if agent_id in self.PROTECTED_AGENT_IDS:

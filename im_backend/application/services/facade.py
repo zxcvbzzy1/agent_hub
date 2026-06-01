@@ -9,6 +9,7 @@ from im_backend.application.services.cleanup import IMCleanupService
 from im_backend.application.services.coding_agents import CodingAgentService
 from im_backend.application.services.conversations import ConversationService
 from im_backend.application.services.events import RoomEventStreamService
+from im_backend.application.services.favorites import FavoriteService
 from im_backend.application.services.messages import GroupMessageService
 from im_backend.application.services.rooms import RoomService
 from im_backend.application.services.runs import GroupRunService
@@ -28,6 +29,7 @@ class IMService:
         self._bridge = bridge
         self._events = room_events
         self.cleanup = IMCleanupService(store)
+        self.favorites = FavoriteService(store=store, events=room_events)
         self.agents = IMAgentService(bridge=bridge, cleanup=self.cleanup)
         self.rooms = RoomService(store=store, bridge=bridge, events=room_events, cleanup=self.cleanup, agents=self.agents)
         self.messages = GroupMessageService(store=store, bridge=bridge, events=room_events, rooms=self.rooms)
@@ -40,6 +42,7 @@ class IMService:
             default_workdir=default_workdir,
             agents=self.agents,
             coding_agents=self.coding_agents,
+            favorites=self.favorites,
             cleanup=self.cleanup,
         )
         self.runs = GroupRunService(
@@ -50,6 +53,7 @@ class IMService:
             messages=self.messages,
             coding_agents=self.coding_agents,
             agents=self.agents,
+            favorites=self.favorites,
             default_workdir=default_workdir,
         )
 
@@ -110,6 +114,31 @@ class IMService:
 
     def delete_conversation(self, conversation_id: str) -> dict[str, Any]:
         return self.conversations.delete_conversation(conversation_id)
+
+    def update_conversation(self, conversation_id: str, **kwargs) -> dict[str, Any]:
+        return self.conversations.update_conversation(conversation_id, **kwargs)
+
+    async def regenerate_conversation_reply(self, **kwargs) -> dict[str, Any]:
+        return await self.conversations.regenerate_reply(**kwargs)
+
+    # ── favorites / pinned context ────────────────────────────────
+    def list_favorites(self, *, scope_type: str, scope_id: str) -> list[dict[str, Any]]:
+        return self.favorites.list_favorites(scope_type=scope_type, scope_id=scope_id)
+
+    def create_favorite(self, **kwargs) -> dict[str, Any]:
+        return self.favorites.create_favorite(**kwargs)
+
+    def favorite_message(self, **kwargs) -> dict[str, Any]:
+        return self.favorites.favorite_message(**kwargs)
+
+    def update_favorite(self, favorite_id: str, **kwargs) -> dict[str, Any]:
+        return self.favorites.update_favorite(favorite_id, **kwargs)
+
+    def delete_favorite(self, favorite_id: str) -> dict[str, Any]:
+        return self.favorites.delete_favorite(favorite_id)
+
+    def list_tools(self) -> list[dict[str, Any]]:
+        return self.agents.list_tools()
 
     def add_conversation_message(self, **kwargs) -> dict[str, Any]:
         return self.conversations.add_conversation_message(**kwargs)
