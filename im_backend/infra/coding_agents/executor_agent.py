@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from typing import Any
 
 from im_backend.domain.models import AgentRuntimeProfile
 from im_backend.infra.agent_flow_bridge.pathing import ensure_agent_flow_path
+from im_backend.infra.coding_agents.artifacts_protocol import (
+    ArtifactProtocolProvider,
+    ArtifactStreamParser,
+)
 from im_backend.infra.coding_agents.runners import runner_for_kind
 
 ensure_agent_flow_path()
@@ -15,6 +20,7 @@ from domain.context.context import ContextEngine  # type: ignore  # noqa: E402
 from domain.context.providers import HistoryProvider, UserPromptProvider  # type: ignore  # noqa: E402
 from domain.context.strategy import FullHistoryStrategy, RecencyStrategy  # type: ignore  # noqa: E402
 from domain.memory.short.default_short_term_memory import DefaultShortTermMemory  # type: ignore  # noqa: E402
+from infra.tool.builtin.artifacts import InlineArtifactTool  # type: ignore  # noqa: E402
 
 
 class CodingExecutorAgent(AgentBase):
@@ -34,6 +40,7 @@ class CodingExecutorAgent(AgentBase):
         context = ContextEngine(
             providers=[
                 HistoryProvider(memory, "agent_history", FullHistoryStrategy() | RecencyStrategy(15)),
+                ArtifactProtocolProvider(),
                 UserPromptProvider(),
             ],
             memory=memory,
@@ -49,9 +56,16 @@ class CodingExecutorAgent(AgentBase):
             self.work_path = profile.workdir
 
     async def start(self, prompt: str) -> None:
+        await self._run_coding_agent(prompt, load_runtime_history=True)
+
+    async def start_with_history(self, prompt: str) -> None:
+        await self._run_coding_agent(prompt, load_runtime_history=False)
+
+    async def _run_coding_agent(self, prompt: str, *, load_runtime_history: bool) -> None:
         self.prepare_start(prompt, keep_history=True)
         run_id = self._run_id_provider(self.id)
-        self._load_runtime_history(run_id)
+        if load_runtime_history:
+            self._load_runtime_history(run_id)
         final_prompt = self.context_engine.build(self.states) or prompt
         runner = runner_for_kind(self.profile.agent_kind)
         if runner is None:
@@ -62,6 +76,9 @@ class CodingExecutorAgent(AgentBase):
         final_text = ""
         failed = ""
         emitted_final = False
+        delta_parser = ArtifactStreamParser()
+        final_parser = ArtifactStreamParser()
+        seen_artifacts: set[str] = set()
         try:
             async for event in runner.run(
                 prompt=final_prompt,
@@ -75,16 +92,46 @@ class CodingExecutorAgent(AgentBase):
                     **event.payload,
                 }
                 if event.type == "agent.delta":
-                    final_chunks.append(str(payload.get("delta", "")))
-                elif event.type == "agent.final":
-                    final_text = str(payload.get("final", "")) or final_text
+                    clean, markers = delta_parser.feed(str(payload.get("delta", "")))
+                    self._emit_artifacts(run_id, markers, seen_artifacts)
+                    if not clean:
+                        continue
+                    final_chunks.append(clean)
+                    payload["delta"] = clean
+                    self._publish(run_id, "agent.delta", payload)
+                    continue
+                if event.type == "agent.final":
+                    clean, markers = final_parser.feed(str(payload.get("final", "")))
+                    tail_clean, tail_markers = final_parser.flush()
+                    clean += tail_clean
+                    self._emit_artifacts(run_id, markers + tail_markers, seen_artifacts)
+                    final_text = clean or final_text
                     emitted_final = True
-                elif event.type == "agent.failed":
+                    payload["final"] = clean
+                    self._publish(run_id, "agent.final", payload)
+                    continue
+                if event.type == "agent.failed":
                     failed = str(payload.get("stderr") or payload.get("error") or "Coding agent 执行失败")
                 self._publish(run_id, event.type, payload)
         except Exception as exc:
             self._mark_failed(str(exc), run_id)
             return
+
+        # 冲刷流式缓冲里残留的标记/文本
+        tail_clean, tail_markers = delta_parser.flush()
+        self._emit_artifacts(run_id, tail_markers, seen_artifacts)
+        if tail_clean:
+            final_chunks.append(tail_clean)
+            self._publish(
+                run_id,
+                "agent.delta",
+                {
+                    "run_id": run_id,
+                    "agent_id": self.id,
+                    "agent_kind": self.profile.agent_kind,
+                    "delta": tail_clean,
+                },
+            )
 
         if failed:
             self._mark_failed(failed, run_id)
@@ -151,6 +198,40 @@ class CodingExecutorAgent(AgentBase):
                 "error": error,
             },
         )
+
+    def _emit_artifacts(
+        self,
+        run_id: str,
+        markers: list[dict[str, Any]],
+        seen: set[str],
+    ) -> None:
+        """把解析出的标记块复用 InlineArtifactTool 构造成 artifacts.<type> 事件。
+
+        seen 用于去重：delta 流与 final 复述里可能出现同一个标记块，只发一次。
+        """
+        for marker in markers:
+            key = json.dumps(marker, sort_keys=True, ensure_ascii=False)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                artifact_payload = InlineArtifactTool().build_event_payload(
+                    {**marker, "agent_id": self.id, "run_id": run_id}
+                )
+            except Exception as exc:
+                self._publish(
+                    run_id,
+                    "artifact.failed",
+                    {
+                        "run_id": run_id,
+                        "agent_id": self.id,
+                        "agent_kind": self.profile.agent_kind,
+                        "error": str(exc),
+                        "marker": marker,
+                    },
+                )
+                continue
+            self._publish(run_id, artifact_payload["event_name"], artifact_payload)
 
     def _publish(self, run_id: str, name: str, payload: dict[str, Any]) -> None:
         if not run_id:

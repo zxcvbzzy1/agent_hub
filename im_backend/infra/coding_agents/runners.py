@@ -41,7 +41,7 @@ class CodingAgentRunner(ABC):
         process = await asyncio.create_subprocess_exec(
             *command,
             cwd=workdir or None,
-            stdin=asyncio.subprocess.PIPE if self.prompt_via_stdin else None,
+            stdin=asyncio.subprocess.PIPE if self.prompt_via_stdin else asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -91,6 +91,20 @@ class CodingAgentRunner(ABC):
             value = data.get(key)
             if isinstance(value, str):
                 return value
+        for key in ("item", "delta", "message"):
+            value = data.get(key)
+            if isinstance(value, dict):
+                text = self._extract_text(value)
+                if text:
+                    return text
+        content = data.get("content")
+        if isinstance(content, list):
+            parts = [
+                item.get("text", "")
+                for item in content
+                if isinstance(item, dict) and item.get("type") in {"text", "input_text", "output_text"}
+            ]
+            return "".join(parts)
         message = data.get("message")
         if isinstance(message, dict):
             content = message.get("content")
@@ -100,7 +114,7 @@ class CodingAgentRunner(ABC):
                 parts = [
                     item.get("text", "")
                     for item in content
-                    if isinstance(item, dict) and item.get("type") in {"text", "output_text"}
+                    if isinstance(item, dict) and item.get("type") in {"text", "input_text", "output_text"}
                 ]
                 return "".join(parts)
         return ""
@@ -163,30 +177,55 @@ class CodexRunner(CodingAgentRunner):
         attachments: list[str] | None = None,
         permission_profile: str = "",
     ) -> list[str]:
+        sandbox, approval_policy, bypass = self._permission_config(permission_profile)
         command = [
             "codex",
             "exec",
             "--json",
             "-C",
             str(Path(workdir).expanduser().resolve()),
-            "--sandbox",
-            "read-only",
-            "--ask-for-approval",
-            "never",
+            "--skip-git-repo-check",
         ]
+        if bypass:
+            command.append("--dangerously-bypass-approvals-and-sandbox")
+        else:
+            command.extend(["--sandbox", sandbox])
+            command.extend(["-c", f"approval_policy={json.dumps(approval_policy)}"])
         for attachment in attachments or []:
             command.extend(["--image", attachment])
         command.append(prompt)
         return command
 
+    def _permission_config(self, permission_profile: str) -> tuple[str, str, bool]:
+        if permission_profile == "plan":
+            return "read-only", "never", False
+        if permission_profile in {"acceptEdits", "auto", "dontAsk"}:
+            return "workspace-write", "never", False
+        if permission_profile == "bypassPermissions":
+            return "danger-full-access", "never", True
+        if permission_profile == "default":
+            return "workspace-write", "on-failure", False
+        return "workspace-write", "on-request", False
+
     def parse_json_event(self, data: dict) -> Iterable[CodingAgentEvent]:
         event_type = data.get("type", data.get("event", ""))
+        if event_type == "item.completed":
+            item = data.get("item")
+            item_type = item.get("type", "") if isinstance(item, dict) else ""
+            text = self._extract_text(data)
+            if item_type == "agent_message":
+                return [CodingAgentEvent(type="agent.final", payload={"final": text, "raw": data})] if text else []
+            if item_type in {"command_execution", "tool_call", "function_call", "mcp_tool_call"}:
+                return [CodingAgentEvent(type="tool.called", payload={"raw": data})]
+            return [CodingAgentEvent(type="agent.delta", payload={"delta": text, "raw": data})] if text else []
         if event_type in {"agent_message_delta", "message_delta", "response.output_text.delta"}:
             return [CodingAgentEvent(type="agent.delta", payload={"delta": self._extract_text(data), "raw": data})]
         if event_type in {"agent_message", "message", "response.completed", "final"}:
             return [CodingAgentEvent(type="agent.final", payload={"final": self._extract_text(data), "raw": data})]
         if event_type in {"exec_command_begin", "exec_command_end", "tool_call"}:
             return [CodingAgentEvent(type="tool.called", payload={"raw": data})]
+        if event_type in {"thread.started", "turn.started", "turn.completed", "item.started", "item.updated"}:
+            return []
         return super().parse_json_event(data)
 
 

@@ -269,14 +269,20 @@ class ConversationService:
                 scope_id=conversation_id,
                 message_id=message_id,
                 run_id=run_id,
-                prompt=self._compose_prompt(message),
+                prompt=self._compose_prompt_with_history(
+                    conversation_id=conversation_id,
+                    message=message,
+                ),
                 profile=profile,
                 mode="direct_coding_agent",
-                final_message_writer=lambda final: self.add_conversation_message(
+                final_message_writer=lambda final, artifact_parts: self.add_conversation_message(
                     conversation_id=conversation_id,
                     sender_type="agent",
                     sender_id=agent_id,
-                    content_parts=[{"type": "text", "text": final or "Coding agent 已完成回复"}],
+                    content_parts=[
+                        {"type": "text", "text": final or "Coding agent 已完成回复"},
+                        *artifact_parts,
+                    ],
                     run_id=run_id,
                     status="finished",
                     metadata={
@@ -497,6 +503,19 @@ class ConversationService:
             lookup=lambda mid: find_im_message(self._store, mid),
             text_of=message_text,
         )
+
+    def _compose_prompt_with_history(self, *, conversation_id: str, message: dict[str, Any]) -> str:
+        """为外部 coding agent 拼接单聊历史。
+
+        Claude Code / Codex 直通 CLI，不走 AgentBase 的 ContextEngine 记忆重建；
+        因此这里把当前消息之前的对话历史显式拼进 prompt。
+        """
+        history = self._conversation_history_before(conversation_id, message["message_id"])
+        current = self._compose_prompt(message)
+        if not history:
+            return current
+        history_text = "\n\n".join(self._format_history_message(item) for item in history)
+        return f"## 对话历史\n{history_text}\n\n## 当前消息\n{current}"
 
     def _apply_native_workdir(self, agent, agent_id: str) -> None:
         """把 native agent 的工作目录落到运行实例的 work_path（按 profile 取，含默认值）。"""

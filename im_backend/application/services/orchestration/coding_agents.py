@@ -1,13 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
 from typing import Any
 
+from im_backend.application.services._shared.inline_artifacts import artifact_to_content_part
 from im_backend.application.services.platform.events import RoomEventStreamService
 from im_backend.application.services.messaging.messages import GroupMessageService
 from im_backend.domain.models import AgentRuntimeProfile
+from im_backend.infra.agent_flow_bridge.pathing import ensure_agent_flow_path
+from im_backend.infra.coding_agents.artifacts_protocol import (
+    ARTIFACT_PROTOCOL_INSTRUCTION,
+    ArtifactStreamParser,
+)
 from im_backend.infra.coding_agents.runners import runner_for_kind
+
+ensure_agent_flow_path()
+
+from infra.tool.builtin.artifacts import InlineArtifactTool  # type: ignore  # noqa: E402
 
 
 class CodingAgentService:
@@ -44,11 +55,14 @@ class CodingAgentService:
             prompt=prompt,
             profile=profile,
             mode="coding_agent",
-            final_message_writer=lambda final: self._messages.add_message(
+            final_message_writer=lambda final, artifact_parts: self._messages.add_message(
                 room_id=room_id,
                 sender_type="agent",
                 sender_id=profile.agent_id,
-                content_parts=[{"type": "text", "text": final or "Coding agent 执行完成"}],
+                content_parts=[
+                    {"type": "text", "text": final or "Coding agent 执行完成"},
+                    *artifact_parts,
+                ],
                 run_id=run_id,
                 status="finished",
                 metadata={"agent_kind": profile.agent_kind},
@@ -78,7 +92,7 @@ class CodingAgentService:
         prompt: str,
         profile: AgentRuntimeProfile,
         mode: str,
-        final_message_writer: Callable[[str], dict[str, Any]],
+        final_message_writer: Callable[[str, list[dict[str, Any]]], dict[str, Any]],
     ) -> tuple[dict[str, str], asyncio.Task]:
         if runner_for_kind(profile.agent_kind) is None:
             raise ValueError(f"不支持的 coding agent: {profile.agent_kind}")
@@ -131,16 +145,20 @@ class CodingAgentService:
         profile: AgentRuntimeProfile,
         prompt: str,
         mode: str,
-        final_message_writer: Callable[[str], dict[str, Any]],
+        final_message_writer: Callable[[str, list[dict[str, Any]]], dict[str, Any]],
     ) -> None:
         runner = runner_for_kind(profile.agent_kind)
         if runner is None:
             return
         final_chunks: list[str] = []
         emitted_final = False
+        delta_parser = ArtifactStreamParser()
+        final_parser = ArtifactStreamParser()
+        seen_artifacts: set[str] = set()
+        artifact_parts: list[dict[str, Any]] = []
         try:
             async for event in runner.run(
-                prompt=prompt,
+                prompt=self._prompt_with_artifact_protocol(prompt),
                 workdir=profile.workdir,
                 permission_profile=profile.permission_profile,
             ):
@@ -154,17 +172,34 @@ class CodingAgentService:
                     **event.payload,
                 }
                 if event.type == "agent.delta":
-                    final_chunks.append(payload.get("delta", ""))
+                    clean, markers = delta_parser.feed(str(payload.get("delta", "")))
+                    artifact_parts.extend(self._emit_artifacts(scope_id, run_id, profile.agent_id, markers, seen_artifacts))
+                    if not clean:
+                        continue
+                    final_chunks.append(clean)
+                    payload["delta"] = clean
                     # 高频流式增量不落库、不做订阅者扇出，避免逐 chunk 同步 insert_one 阻塞事件循环
                     # 并在前端造成卡死/重连重放；最终文本由下面的 agent.final + 落库消息承载。
                     self._events.no_store_publish(scope_id, event.type, payload)
                     continue
                 if event.type == "agent.final" and payload.get("final"):
-                    final_chunks.append(payload["final"])
+                    clean, markers = final_parser.feed(str(payload.get("final", "")))
+                    tail_clean, tail_markers = final_parser.flush()
+                    clean += tail_clean
+                    artifact_parts.extend(
+                        self._emit_artifacts(scope_id, run_id, profile.agent_id, markers + tail_markers, seen_artifacts)
+                    )
+                    if clean:
+                        final_chunks.append(clean)
+                    payload["final"] = clean
                     emitted_final = True
                 self._events.publish(scope_id, event.type, payload)
+            tail_clean, tail_markers = delta_parser.flush()
+            artifact_parts.extend(self._emit_artifacts(scope_id, run_id, profile.agent_id, tail_markers, seen_artifacts))
+            if tail_clean:
+                final_chunks.append(tail_clean)
             final = "".join(final_chunks).strip()
-            reply = final_message_writer(final)
+            reply = final_message_writer(final, artifact_parts)
             self._store.update_one("im_messages", {"message_id": message_id}, {"status": "finished"})
             if not emitted_final:
                 self._events.publish(
@@ -198,6 +233,7 @@ class CodingAgentService:
                     "final": final,
                 },
             )
+
         except asyncio.CancelledError:
             current = self._store.find_one("im_messages", {"message_id": message_id}) or {}
             self._store.update_one("im_messages", {"message_id": message_id}, {"status": "cancelled"})
@@ -245,3 +281,53 @@ class CodingAgentService:
                     "error": str(exc),
                 },
             )
+
+    def _prompt_with_artifact_protocol(self, prompt: str) -> str:
+        if ARTIFACT_PROTOCOL_INSTRUCTION in prompt:
+            return prompt
+        return f"{ARTIFACT_PROTOCOL_INSTRUCTION}\n\n{prompt}"
+
+    def _emit_artifacts(
+        self,
+        scope_id: str,
+        run_id: str,
+        agent_id: str,
+        markers: list[dict[str, Any]],
+        seen: set[str],
+    ) -> list[dict[str, Any]]:
+        parts: list[dict[str, Any]] = []
+        for marker in markers:
+            key = json.dumps(marker, sort_keys=True, ensure_ascii=False)
+            if key in seen:
+                continue
+            seen.add(key)
+            try:
+                artifact_payload = InlineArtifactTool().build_event_payload(
+                    {**marker, "agent_id": agent_id, "run_id": run_id}
+                )
+            except Exception as exc:
+                self._events.publish(
+                    scope_id,
+                    "artifact.failed",
+                    {
+                        "run_id": run_id,
+                        "scope_id": scope_id,
+                        "agent_id": agent_id,
+                        "error": str(exc),
+                        "marker": marker,
+                    },
+                )
+                continue
+            event = self._events.publish(scope_id, artifact_payload["event_name"], artifact_payload)
+            parts.append(
+                artifact_to_content_part(
+                    artifact_payload.get("artifact") or {},
+                    source={
+                        "event_id": event.get("event_id", ""),
+                        "agent_id": agent_id,
+                        "run_id": run_id,
+                        "created_at": event.get("created_at", 0),
+                    },
+                )
+            )
+        return parts
