@@ -35,6 +35,7 @@ import {
   buildGroupTimelineItems,
   compactLlmEvents,
   eventActor,
+  eventActorId,
   eventColor,
   eventContent,
   eventTitle,
@@ -79,7 +80,6 @@ const agentForm = reactive({
   name: '',
   agent_kind: 'native',
   agent_type: 'executor',
-  context_id: 'default_executor',
   description: '',
   role_prompt: '',
   workdir: '',
@@ -175,21 +175,16 @@ const activeSubtitle = computed(() => {
   return '开始一次协作'
 })
 
+const heroAvatar = computed(() => {
+  if (im.currentRoom?.type === 'group') return im.currentRoom?.avatar_url || ''
+  return im.currentAgent?.metadata?.avatar_url || ''
+})
+
 const roomAgentOptions = computed(() => {
   return im.executorAgents.map((agent) => ({
     label: `${agent.name} · ${agent.metadata?.agent_kind || 'native'}`,
     value: agent.agent_id,
 }))
-})
-
-const contextOptions = computed(() => {
-  const expectedKind = agentForm.agent_type === 'planner' ? 'planner' : 'executor'
-  return im.contexts
-    .filter((context) => !context.kind || context.kind === expectedKind)
-    .map((context) => ({
-      label: `${context.name || context.context_id} · ${context.kind || 'context'}`,
-      value: context.context_id,
-    }))
 })
 
 const mentionCandidates = computed(() => {
@@ -305,6 +300,24 @@ function agentKind(agentId) {
 
 function avatarText(value = '') {
   return (value || 'A').slice(0, 1).toUpperCase()
+}
+
+function agentAvatar(agentId) {
+  return agentById(agentId)?.metadata?.avatar_url || ''
+}
+
+function messageAvatar(item) {
+  if (item.sender_type === 'agent') return agentAvatar(item.sender_id)
+  if (item.sender_type === 'user' && item.sender_id === auth.user?.user_id) return auth.user?.avatar_url || ''
+  return ''
+}
+
+function traceAvatar(trace) {
+  return agentAvatar(trace.actor_id)
+}
+
+function eventAvatar(event) {
+  return agentAvatar(eventActorId(event))
 }
 
 function itemAvatar(item) {
@@ -471,12 +484,11 @@ async function createAgent() {
   try {
     const agentKindValue = agentForm.agent_kind || 'native'
     const agentTypeValue = agentKindValue === 'native' ? agentForm.agent_type : 'executor'
-    const contextId = agentTypeValue === 'planner' ? 'default_planner' : 'default_executor'
     const useToolPicker = isNativeAgentForm.value && agentTypeValue === 'executor'
+    // 后端会按模版为新 Agent 自动新建一份独立的上下文/记忆，前端不再选择或传 context_id。
     await im.createAgent({
       name: agentForm.name.trim(),
       agent_type: agentTypeValue,
-      context_id: isNativeAgentForm.value ? (agentForm.context_id || contextId) : 'default_executor',
       role_prompt: isNativeAgentForm.value ? agentForm.role_prompt : '',
       tool_names: useToolPicker ? [...agentForm.tool_names] : [],
       tool_fields: useToolPicker ? [...agentForm.tool_fields] : [],
@@ -493,7 +505,6 @@ async function createAgent() {
     agentForm.name = ''
     agentForm.agent_kind = 'native'
     agentForm.agent_type = 'executor'
-    agentForm.context_id = 'default_executor'
     agentForm.description = ''
     agentForm.role_prompt = ''
     agentForm.workdir = ''
@@ -821,23 +832,12 @@ async function scrollToBottom() {
 // )
 
 watch(
-  () => agentForm.agent_type,
-  (value) => {
-    if (!isNativeAgentForm.value) return
-    agentForm.context_id = value === 'planner' ? 'default_planner' : 'default_executor'
-  },
-)
-
-watch(
   () => agentForm.agent_kind,
   (value) => {
     if (value !== 'native') {
       agentForm.agent_type = 'executor'
-      agentForm.context_id = 'default_executor'
       agentForm.role_prompt = ''
-      return
     }
-    agentForm.context_id = agentForm.agent_type === 'planner' ? 'default_planner' : 'default_executor'
   },
 )
 
@@ -1112,7 +1112,7 @@ onUnmounted(() => {
       </a-tooltip>
       <header class="chat-hero" @click="drawerOpen = true">
         <div class="hero-title">
-          <a-avatar :size="44">
+          <a-avatar :size="44" :src="heroAvatar">
             <TeamOutlined v-if="im.currentRoom?.type === 'group'" />
             <RobotOutlined v-else />
           </a-avatar>
@@ -1152,7 +1152,7 @@ onUnmounted(() => {
             class="message-row"
             :class="messageClass(entry.message)"
           >
-            <a-avatar class="message-avatar">{{ avatarText(messageTitle(entry.message)) }}</a-avatar>
+            <a-avatar class="message-avatar" :src="messageAvatar(entry.message)">{{ avatarText(messageTitle(entry.message)) }}</a-avatar>
             <div class="message-bubble">
               <div
                 v-if="messageById(entry.message.reply_to) || messageById(entry.message.quote_of)"
@@ -1274,7 +1274,7 @@ onUnmounted(() => {
           <article v-else-if="entry.kind === 'trace'" class="trace-card" :class="{ open: isTraceOpen(entry.trace) }">
             <button class="trace-summary" @click="toggleTrace(entry.trace)">
               <span class="trace-rail"></span>
-              <a-avatar class="trace-avatar">{{ avatarText(traceActorName(entry.trace)) }}</a-avatar>
+              <a-avatar class="trace-avatar" :src="traceAvatar(entry.trace)">{{ avatarText(traceActorName(entry.trace)) }}</a-avatar>
               <div class="trace-main">
                 <strong>{{ traceActorName(entry.trace) }}</strong>
                 <span>{{ traceTitle(entry.trace) }}</span>
@@ -1324,7 +1324,7 @@ onUnmounted(() => {
           </article>
 
           <article v-else-if="entry.kind === 'artifact'" class="message-row artifact-row">
-            <a-avatar class="message-avatar">{{ avatarText(eventActor(entry.event, agentName)) }}</a-avatar>
+            <a-avatar class="message-avatar" :src="eventAvatar(entry.event)">{{ avatarText(eventActor(entry.event, agentName)) }}</a-avatar>
             <div class="message-bubble artifact-bubble">
               <div class="message-meta">
                 <strong>{{ eventActor(entry.event, agentName) }}</strong>
@@ -1336,7 +1336,7 @@ onUnmounted(() => {
           </article>
 
           <article v-else class="message-row event-row">
-            <a-avatar class="message-avatar">{{ avatarText(eventActor(entry.event, agentName)) }}</a-avatar>
+            <a-avatar class="message-avatar" :src="eventAvatar(entry.event)">{{ avatarText(eventActor(entry.event, agentName)) }}</a-avatar>
             <div class="message-bubble event-bubble" :class="eventTone(entry.event.name)">
               <div class="message-meta">
                 <strong>{{ eventActor(entry.event, agentName) }}</strong>
@@ -1404,7 +1404,7 @@ onUnmounted(() => {
         <div class="mention-wrap">
           <div v-if="mentionCandidates.length" class="mention-popover">
             <button v-for="agent in mentionCandidates" :key="agent.agent_id" @click="insertMention(agent)">
-              <a-avatar :size="24">{{ avatarText(agent.name) }}</a-avatar>
+              <a-avatar :size="24" :src="agentAvatar(agent.agent_id)">{{ avatarText(agent.name) }}</a-avatar>
               <span>{{ agent.name }}</span>
               <small>{{ agentKind(agent.agent_id) }}</small>
             </button>
@@ -1557,14 +1557,6 @@ onUnmounted(() => {
               { label: 'Executor', value: 'executor' },
               { label: 'Planner', value: 'planner' },
             ]"
-          />
-        </a-form-item>
-        <a-form-item v-if="isNativeAgentForm" label="Context">
-          <a-select
-            v-model:value="agentForm.context_id"
-            :options="contextOptions"
-            :placeholder="agentForm.agent_type === 'planner' ? 'default_planner' : 'default_executor'"
-            show-search
           />
         </a-form-item>
         <a-form-item label="工作目录">

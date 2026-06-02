@@ -5,6 +5,7 @@ from typing import Any
 from im_backend.application.services.platform.cleanup import IMCleanupService
 from im_backend.domain.common import AgentKind
 from im_backend.infra.agent_flow_bridge.bridge import AgentFlowBridge
+from im_backend.infra.static_configs.context_templates import agent_context_template
 
 
 class IMAgentService:
@@ -68,11 +69,14 @@ class IMAgentService:
         if agent_kind != "native" and agent_type != "executor":
             raise ValueError("第三方 Agent 只能创建为 executor")
 
-        # 选了具体工具/字段时，为该 native executor 单独克隆一个限定工具的 context。
+        # native Agent 一律按模版克隆一份独立的上下文管理 / 记忆，不再复用传入的 context_id；
+        # executor 选了具体工具/字段时，在模版基础上限定 available_tools。
+        # 第三方 Agent（claude_code / codex）由各自 CLI 自管上下文，沿用默认 context。
         effective_context_id = context_id
-        if agent_kind == "native" and agent_type == "executor" and (tool_names or tool_fields):
-            effective_context_id = self._build_tool_context(
+        if agent_kind == "native":
+            effective_context_id = self._build_agent_context(
                 name=name.strip(),
+                agent_type=agent_type,
                 tool_names=tool_names or [],
                 tool_fields=tool_fields or [],
                 owner_user_id=owner_user_id,
@@ -98,40 +102,46 @@ class IMAgentService:
             metadata=agent_metadata,
         )
 
-    def _build_tool_context(
+    def _build_agent_context(
         self,
         *,
         name: str,
+        agent_type: str,
         tool_names: list[str],
         tool_fields: list[str],
         owner_user_id: str = "",
     ) -> str:
-        """克隆 executor 默认模板，把 available_tools provider 限定为所选工具/字段。"""
-        contexts = self._bridge.contexts
-        template = contexts.default_template("executor")
-        tool_params = {
-            "available_fields": list(tool_fields or []),
-            "available_tools": list(tool_names or []),
-        }
-        replaced = False
-        for item in template:
-            if item.get("provider_id") == "available_tools":
-                item["params"] = tool_params
-                item["enabled"] = True
-                replaced = True
-        if not replaced:
-            template.append({"provider_id": "available_tools", "enabled": True, "params": tool_params})
-        record = contexts.create_context(
-            kind="executor",
-            name=f"{name} 工具集",
-            provider_config=template,
+        """按上下文模版为新建 native Agent 克隆一份独立的上下文管理 / 记忆。
+
+        模版来自 ``context_templates``（对齐 static_agents.py 的 provider 配置），
+        executor 选了具体工具/字段时，在模版基础上把 available_tools 限定为所选项。
+        """
+        kind = "planner" if agent_type == "planner" else "executor"
+        provider_config = agent_context_template(kind)
+        if kind == "executor" and (tool_names or tool_fields):
+            tool_params = {
+                "available_fields": list(tool_fields or []),
+                "available_tools": list(tool_names or []),
+            }
+            replaced = False
+            for item in provider_config:
+                if item.get("provider_id") == "available_tools":
+                    item["params"] = tool_params
+                    item["enabled"] = True
+                    replaced = True
+            if not replaced:
+                provider_config.append({"provider_id": "available_tools", "enabled": True, "params": tool_params})
+        record = self._bridge.contexts.create_context(
+            kind=kind,
+            name=f"{name} 上下文",
+            provider_config=provider_config,
         )
         context_id = record["context_id"]
         if owner_user_id:
             self._bridge.store.update_one(
                 "contexts",
                 {"context_id": context_id},
-                {"metadata": {"owner_user_id": owner_user_id, "visibility": "private", "kind_label": "tool_set"}},
+                {"metadata": {"owner_user_id": owner_user_id, "visibility": "private", "kind_label": "agent_context"}},
             )
         return context_id
 

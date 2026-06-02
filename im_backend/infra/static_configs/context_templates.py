@@ -1,0 +1,85 @@
+"""新建 Agent 时使用的上下文模版。
+
+每个新建的 native Agent 都会按这里的模版克隆出一份**独立**的上下文管理 / 记忆，
+而不是复用别人选定的 context。模版内容对齐 ``static_agents.py`` 里 operator / planner
+的 ContextEngine 配置，但这里只用纯 dict 描述 provider_config（与
+``agent_flow`` 的 ``ContextService.create_context`` 入参一致），因此**不依赖也不引用**
+``static_agents.py``，避免在创建流程里实例化种子 Agent。
+
+provider_config 结构：``[{"provider_id": str, "enabled": bool, "params": dict}, ...]``
+``ContextService._build_provider`` 会据此构造对应 provider，并配套一份
+``DefaultShortTermMemory(["tool_respond", "agent_history", "error"])`` 记忆。
+"""
+
+from __future__ import annotations
+
+import copy
+from typing import Any
+
+# 工具反馈：完整历史 + 仅保留最近 15 条（对齐 static_agents.py 的
+# ``FullHistoryStrategy() | RecencyStrategy(15)``）。
+_TOOL_OUTPUT_STRATEGY = {"pipeline": [{"type": "full_history"}, {"type": "recency", "keep_last": 15}]}
+# 对话历史：完整历史（对齐 ``FullHistoryStrategy()``）。
+_HISTORY_STRATEGY = {"pipeline": [{"type": "full_history"}]}
+# 新建 Agent 默认只放开系统类工具，与 static_agents.py 的 ``AvailableToolsProvider(["system"])`` 一致。
+DEFAULT_TOOL_FIELDS = ["system"]
+
+
+def _executor_template() -> list[dict[str, Any]]:
+    return [
+        {"provider_id": "user_prompt", "enabled": True, "params": {}},
+        {"provider_id": "state", "enabled": True, "params": {}},
+        {
+            "provider_id": "available_tools",
+            "enabled": True,
+            "params": {"available_fields": list(DEFAULT_TOOL_FIELDS), "available_tools": []},
+        },
+        {"provider_id": "error", "enabled": True, "params": {}},
+        {"provider_id": "pinned_context", "enabled": True, "params": {}},
+        {
+            "provider_id": "history",
+            "enabled": True,
+            "params": {"memory_field": "agent_history", "strategy_config": _HISTORY_STRATEGY},
+        },
+        {
+            "provider_id": "tool_output",
+            "enabled": True,
+            "params": {"memory_field": "tool_respond", "strategy_config": _TOOL_OUTPUT_STRATEGY},
+        },
+    ]
+
+
+def _planner_template() -> list[dict[str, Any]]:
+    return [
+        {"provider_id": "user_prompt", "enabled": True, "params": {}},
+        {"provider_id": "state", "enabled": True, "params": {}},
+        {"provider_id": "available_executors", "enabled": True, "params": {}},
+        {
+            "provider_id": "available_tools",
+            "enabled": True,
+            "params": {"available_fields": list(DEFAULT_TOOL_FIELDS), "available_tools": []},
+        },
+        {"provider_id": "pinned_context", "enabled": True, "params": {}},
+        {"provider_id": "error", "enabled": True, "params": {}},
+        {"provider_id": "plan_observations", "enabled": True, "params": {}},
+        {"provider_id": "executor_status", "enabled": True, "params": {}},
+        {
+            "provider_id": "history",
+            "enabled": True,
+            "params": {"memory_field": "agent_history", "strategy_config": _HISTORY_STRATEGY},
+        },
+        {
+            "provider_id": "tool_output",
+            "enabled": True,
+            "params": {"memory_field": "tool_respond", "strategy_config": _TOOL_OUTPUT_STRATEGY},
+        },
+    ]
+
+
+def agent_context_template(kind: str) -> list[dict[str, Any]]:
+    """返回某类 Agent 的 provider_config 模版（深拷贝，调用方可安全修改）。"""
+    if kind == "planner":
+        return copy.deepcopy(_planner_template())
+    if kind == "executor":
+        return copy.deepcopy(_executor_template())
+    raise ValueError(f"未知上下文类型: {kind}")
