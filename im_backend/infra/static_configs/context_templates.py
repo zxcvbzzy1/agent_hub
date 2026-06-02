@@ -27,20 +27,20 @@ DEFAULT_TOOL_FIELDS = ["system"]
 
 def _executor_template() -> list[dict[str, Any]]:
     return [
-        {"provider_id": "user_prompt", "enabled": True, "params": {}},
         {"provider_id": "state", "enabled": True, "params": {}},
         {
             "provider_id": "available_tools",
             "enabled": True,
             "params": {"available_fields": list(DEFAULT_TOOL_FIELDS), "available_tools": []},
         },
-        {"provider_id": "error", "enabled": True, "params": {}},
         {"provider_id": "pinned_context", "enabled": True, "params": {}},
         {
             "provider_id": "history",
             "enabled": True,
             "params": {"memory_field": "agent_history", "strategy_config": _HISTORY_STRATEGY},
         },
+        {"provider_id": "user_prompt", "enabled": True, "params": {}},
+        {"provider_id": "error", "enabled": True, "params": {}},
         {
             "provider_id": "tool_output",
             "enabled": True,
@@ -51,7 +51,6 @@ def _executor_template() -> list[dict[str, Any]]:
 
 def _planner_template() -> list[dict[str, Any]]:
     return [
-        {"provider_id": "user_prompt", "enabled": True, "params": {}},
         {"provider_id": "state", "enabled": True, "params": {}},
         {"provider_id": "available_executors", "enabled": True, "params": {}},
         {
@@ -59,15 +58,16 @@ def _planner_template() -> list[dict[str, Any]]:
             "enabled": True,
             "params": {"available_fields": list(DEFAULT_TOOL_FIELDS), "available_tools": []},
         },
-        {"provider_id": "pinned_context", "enabled": True, "params": {}},
-        {"provider_id": "error", "enabled": True, "params": {}},
-        {"provider_id": "plan_observations", "enabled": True, "params": {}},
         {"provider_id": "executor_status", "enabled": True, "params": {}},
+        {"provider_id": "pinned_context", "enabled": True, "params": {}},
+        {"provider_id": "plan_observations", "enabled": True, "params": {}},
         {
             "provider_id": "history",
             "enabled": True,
             "params": {"memory_field": "agent_history", "strategy_config": _HISTORY_STRATEGY},
         },
+        {"provider_id": "user_prompt", "enabled": True, "params": {}},
+        {"provider_id": "error", "enabled": True, "params": {}},
         {
             "provider_id": "tool_output",
             "enabled": True,
