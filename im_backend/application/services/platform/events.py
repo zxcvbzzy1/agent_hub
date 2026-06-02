@@ -27,6 +27,24 @@ class RoomEventStreamService:
             queue.put_nowait(event)
         return event
 
+    def no_store_publish(self, room_id: str, name: str, payload: dict[str, Any]) -> dict[str, Any]:
+        """只向在线订阅者推送、不落库。
+
+        用于 agent.delta 这类高频流式增量：逐 chunk 同步 insert_one 会阻塞 asyncio 事件循环，
+        且会被 SSE 重连时全量重放。最终结果另由 agent.final + 落库消息承载，故增量无需持久化。
+        """
+        event = {
+            "event_id": str(uuid.uuid4()),
+            "scope_id": room_id,
+            "room_id": room_id,
+            "name": name,
+            "payload": payload,
+            "created_at": time.time(),
+        }
+        for queue in list(self._queues.get(room_id, [])):
+            queue.put_nowait(event)
+        return event
+
     def list_events(self, room_id: str) -> list[dict[str, Any]]:
         events = self._store.find_many(
             "im_events",

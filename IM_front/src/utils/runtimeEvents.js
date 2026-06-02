@@ -98,30 +98,44 @@ export const sseEventNames = [
   'artifacts.web',
 ]
 
+// llm.delta（原生模型流式）与 agent.delta（第三方 coding agent 流式）都会逐 token/chunk 发出。
+// 这里把同一路流式的增量合并成「单个」合成事件，避免成百上千条增量撑爆 events 数组与轨迹内列表。
+function streamingKey(event) {
+  const payload = event.payload || {}
+  const run = payload.run_id || event.run_id || 'scope'
+  const agent = payload.agent_id || 'agent'
+  // agent.delta / agent.final 没有 call_role，统一用 'agent' 角色段，让收尾事件能命中并清掉合成流式事件。
+  const isAgentStream = event.name === 'agent.delta' || event.name === 'agent.final'
+  const role = isAgentStream ? 'agent' : (payload.call_role || 'call')
+  return `${run}:${agent}:${role}`
+}
+
 export function compactLlmEvents(events) {
   const compacted = []
   const streaming = new Map()
   for (const event of events) {
-    if (event.name === 'llm.delta') {
+    if (event.name === 'llm.delta' || event.name === 'agent.delta') {
       const payload = event.payload || {}
-      const key = `${payload.run_id || event.run_id || 'scope'}:${payload.agent_id || 'agent'}:${payload.call_role || 'call'}`
+      const isAgent = event.name === 'agent.delta'
+      const key = streamingKey(event)
       const current = streaming.get(key) || {
         ...event,
         event_id: `streaming-${key}`,
-        name: 'llm.streaming',
-        payload: { ...payload, content: '', token_chunks: 0, streaming: true },
+        name: isAgent ? 'agent.delta' : 'llm.streaming',
+        payload: { ...payload, content: '', delta: '', token_chunks: 0, streaming: true },
       }
       current.payload.content += payload.delta || ''
+      // agent.delta 渲染读 payload.delta，llm.streaming 渲染读 payload.content；两者都同步成累计文本。
+      current.payload.delta = current.payload.content
       current.payload.token_chunks = payload.sequence || current.payload.token_chunks + 1
       current.created_at = event.created_at
       streaming.set(key, current)
       continue
     }
     if (event.name === 'llm.started') continue
-    if (event.name === 'llm.completed') {
-      const payload = event.payload || {}
-      const key = `${payload.run_id || event.run_id || 'scope'}:${payload.agent_id || 'agent'}:${payload.call_role || 'call'}`
-      streaming.delete(key)
+    if (event.name === 'llm.completed' || event.name === 'agent.final') {
+      // 收尾事件落地前，丢弃对应的合成流式事件（最终结果由 llm.completed / agent.final 自身呈现）。
+      streaming.delete(streamingKey(event))
     }
     compacted.push(event)
   }

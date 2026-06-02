@@ -155,6 +155,10 @@ class CodingAgentService:
                 }
                 if event.type == "agent.delta":
                     final_chunks.append(payload.get("delta", ""))
+                    # 高频流式增量不落库、不做订阅者扇出，避免逐 chunk 同步 insert_one 阻塞事件循环
+                    # 并在前端造成卡死/重连重放；最终文本由下面的 agent.final + 落库消息承载。
+                    self._events.no_store_publish(scope_id, event.type, payload)
+                    continue
                 if event.type == "agent.final" and payload.get("final"):
                     final_chunks.append(payload["final"])
                     emitted_final = True

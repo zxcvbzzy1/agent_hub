@@ -3,6 +3,29 @@ import { API_BASE_URL } from '@/api/http'
 import { imApi } from '@/api/im'
 import { sseEventNames } from '@/utils/runtimeEvents'
 
+// 高频流式增量事件：后端快速输出时每个 token/chunk 都会发一条，
+// 若每条都同步并入 reactive events 数组，会触发整条 computed 链（compactLlmEvents /
+// chatItems）全量重算 + 整列表重渲染，主线程被打满导致页面卡死。这里把它们合批。
+const HIGH_FREQUENCY_EVENTS = new Set(['llm.delta', 'agent.delta'])
+// 非 reactive 的流式状态：去重索引 + 待落库缓冲 + 刷新句柄，放在模块级避免 Pinia 代理开销。
+let seenEventIds = new Set()
+let pendingEvents = []
+let rafHandle = null
+let timeoutHandle = null
+
+function cancelEventFlush() {
+  if (rafHandle !== null && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(rafHandle)
+  if (timeoutHandle !== null) clearTimeout(timeoutHandle)
+  rafHandle = null
+  timeoutHandle = null
+}
+
+function resetEventStreamState() {
+  cancelEventFlush()
+  seenEventIds = new Set()
+  pendingEvents = []
+}
+
 export const useIMStore = defineStore('im', {
   state: () => ({
     agents: [],
@@ -359,6 +382,8 @@ export const useIMStore = defineStore('im', {
         this.source.close()
         this.source = null
       }
+      // 切换/断开会话时清空去重索引与增量缓冲，避免跨会话串味或残留 rAF 把旧 batch 并入新数组。
+      resetEventStreamState()
     },
     connectRoom(roomId) {
       this.connectStream(`/api/im/rooms/${roomId}/events`)
@@ -379,8 +404,36 @@ export const useIMStore = defineStore('im', {
       }
       this.source = source
     },
+    flushPendingEvents() {
+      cancelEventFlush()
+      if (!pendingEvents.length) return
+      const batch = pendingEvents
+      pendingEvents = []
+      // 单次 reactive 赋值合并整批增量，把每帧的重算/重渲染压到一次。
+      this.events = this.events.concat(batch)
+    },
+    scheduleEventFlush() {
+      if (rafHandle !== null || timeoutHandle !== null) return
+      const flush = () => this.flushPendingEvents()
+      if (typeof requestAnimationFrame === 'function') rafHandle = requestAnimationFrame(flush)
+      // 安全网：后台标签页里 rAF 会暂停，用 timeout 兜底，避免缓冲无限增长。
+      timeoutHandle = setTimeout(flush, 200)
+    },
     consumeEvent(event) {
-      if (!event?.event_id || this.events.some((item) => item.event_id === event.event_id)) return
+      if (!event?.event_id || seenEventIds.has(event.event_id)) return
+      seenEventIds.add(event.event_id)
+
+      // 高频流式增量先进缓冲区，rAF 合批落库，避免逐 token 卡死主线程。
+      // 这类事件在下方 if 链里没有任何副作用，缓冲不影响业务逻辑。
+      if (HIGH_FREQUENCY_EVENTS.has(event.name)) {
+        pendingEvents.push(event)
+        this.scheduleEventFlush()
+        return
+      }
+
+      // 控制类事件即时处理：先把缓冲的尾部增量落库（保证顺序、不丢 llm.completed/agent.final 前的尾 token），
+      // 再 push 自身并执行副作用。
+      this.flushPendingEvents()
       this.events.push(event)
       if (event.name === 'message.created') {
         const messageItem = event.payload?.message
