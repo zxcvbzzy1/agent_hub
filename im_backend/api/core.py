@@ -12,10 +12,10 @@ from im_backend.infra.env import load_backend_env
 load_backend_env()
 
 from im_backend.application.auth_service import AuthError, AuthService
-from im_backend.application.services.agents import IMAgentService
-from im_backend.application.services.events import RoomEventStreamService
+from im_backend.application.services.messaging.agents import IMAgentService
+from im_backend.application.services.platform.events import RoomEventStreamService
 from im_backend.application.services.facade import IMService
-from im_backend.application.services.static_imports import StaticConfigImportService
+from im_backend.application.services.platform.bootstrap import StaticConfigImportService
 from im_backend.infra.agent_flow_bridge.bridge import AgentFlowBridge
 from im_backend.infra.storage.artifacts import ArtifactStorage
 from im_backend.infra.storage.document_store import create_document_store

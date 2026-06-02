@@ -1567,7 +1567,7 @@ onUnmounted(() => {
             show-search
           />
         </a-form-item>
-        <a-form-item v-if="!isNativeAgentForm" label="工作目录">
+        <a-form-item label="工作目录">
           <a-input v-model:value="agentForm.workdir" placeholder="留空则使用后端默认工作目录" />
         </a-form-item>
         <a-form-item v-if="!isNativeAgentForm" label="权限策略">

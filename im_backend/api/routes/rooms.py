@@ -5,7 +5,7 @@ from fastapi.responses import StreamingResponse
 
 from im_backend.api.core import get_current_user, get_im_service, get_room_events
 from im_backend.api.schemas import DispatchRequest, MessageCreateRequest, RoomCreateRequest, RoomUpdateRequest
-from im_backend.application.services.events import RoomEventStreamService
+from im_backend.application.services.platform.events import RoomEventStreamService
 from im_backend.application.services.facade import IMService
 
 

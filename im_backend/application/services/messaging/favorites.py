@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from typing import Any
 
-from im_backend.application.services.events import RoomEventStreamService
-from im_backend.domain.models import ContentPart, Favorite, Message
+from im_backend.application.services._shared.lookup import require_im_message
+from im_backend.application.services._shared.message_text import message_text
+from im_backend.application.services.platform.events import RoomEventStreamService
+from im_backend.domain.models import Favorite
 
 
 class FavoriteService:
@@ -65,11 +67,9 @@ class FavoriteService:
         return record
 
     def favorite_message(self, *, message_id: str, title: str = "", created_by: str = "user") -> dict[str, Any]:
-        message = self._store.find_one("im_messages", {"message_id": message_id})
-        if message is None:
-            raise KeyError(f"消息不存在: {message_id}")
+        message = require_im_message(self._store, message_id)
         scope_type, scope_id = self._resolve_message_scope(message)
-        content = self._message_text(message) or "(空消息)"
+        content = message_text(message) or "(空消息)"
         return self.create_favorite(
             scope_type=scope_type,
             scope_id=scope_id,
@@ -127,14 +127,3 @@ class FavoriteService:
         if message.get("conversation_id"):
             return "conversation", message["conversation_id"]
         raise ValueError("消息既不属于 room 也不属于 conversation")
-
-    def _message_text(self, message: dict[str, Any]) -> str:
-        parts = [ContentPart.from_dict(part) for part in message.get("content_parts", [])]
-        return Message(
-            message_id=message["message_id"],
-            room_id=message.get("room_id", ""),
-            conversation_id=message.get("conversation_id", ""),
-            sender_type=message["sender_type"],
-            sender_id=message["sender_id"],
-            content_parts=parts,
-        ).text_content()

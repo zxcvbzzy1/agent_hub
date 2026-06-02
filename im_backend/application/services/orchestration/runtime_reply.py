@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from im_backend.application.services.messages import GroupMessageService
+from im_backend.application.services.messaging.messages import GroupMessageService
 
 
 class PlannerFinalReplyWriter:

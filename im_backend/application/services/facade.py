@@ -3,17 +3,17 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from im_backend.application.services.actions import MessageActionService
-from im_backend.application.services.agents import IMAgentService
-from im_backend.application.services.cleanup import IMCleanupService
-from im_backend.application.services.coding_agents import CodingAgentService
-from im_backend.application.services.conversations import ConversationService
-from im_backend.application.services.events import RoomEventStreamService
-from im_backend.application.services.favorites import FavoriteService
-from im_backend.application.services.messages import GroupMessageService
-from im_backend.application.services.rooms import RoomService
-from im_backend.application.services.runs import GroupRunService
-from im_backend.application.services.runtime_reply import PlannerFinalReplyWriter
+from im_backend.application.services.messaging.actions import MessageActionService
+from im_backend.application.services.messaging.agents import IMAgentService
+from im_backend.application.services.platform.cleanup import IMCleanupService
+from im_backend.application.services.orchestration.coding_agents import CodingAgentService
+from im_backend.application.services.messaging.conversations import ConversationService
+from im_backend.application.services.platform.events import RoomEventStreamService
+from im_backend.application.services.messaging.favorites import FavoriteService
+from im_backend.application.services.messaging.messages import GroupMessageService
+from im_backend.application.services.messaging.rooms import RoomService
+from im_backend.application.services.orchestration.runs import GroupRunService
+from im_backend.application.services.orchestration.runtime_reply import PlannerFinalReplyWriter
 from im_backend.infra.agent_flow_bridge.bridge import AgentFlowBridge
 
 
@@ -33,7 +33,7 @@ class IMService:
         self.favorites = FavoriteService(store=store, events=room_events)
         self.agents = IMAgentService(bridge=bridge, cleanup=self.cleanup)
         self.rooms = RoomService(store=store, bridge=bridge, events=room_events, cleanup=self.cleanup, agents=self.agents)
-        self.messages = GroupMessageService(store=store, bridge=bridge, events=room_events, rooms=self.rooms)
+        self.messages = GroupMessageService(store=store, bridge=bridge, events=room_events, rooms=self.rooms, agents=self.agents)
         self.actions = MessageActionService(store=store, events=room_events)
         self.coding_agents = CodingAgentService(store=store, events=room_events, messages=self.messages)
         self.conversations = ConversationService(
@@ -86,9 +86,7 @@ class IMService:
         return self.messages.add_message(**kwargs)
 
     def list_agent_messages(self, agent_id: str, user_id: str = "") -> list[dict[str, Any]]:
-        if user_id:
-            self.agents.ensure_agent_access(agent_id, user_id)
-        return self.messages.list_agent_messages(agent_id)
+        return self.messages.list_agent_messages(agent_id, user_id=user_id)
 
     def list_room_tasks(self, room_id: str) -> list[dict[str, Any]]:
         return self.runs.list_room_tasks(room_id)
@@ -109,9 +107,7 @@ class IMService:
         return self.conversations.list_conversation_messages(conversation_id)
 
     def list_agent_conversations(self, agent_id: str, user_id: str = "") -> list[dict[str, Any]]:
-        if user_id:
-            self.agents.ensure_agent_access(agent_id, user_id)
-        return self.conversations.list_agent_conversations(agent_id)
+        return self.conversations.list_agent_conversations(agent_id, user_id=user_id)
 
     def create_agent_conversation(self, **kwargs) -> dict[str, Any]:
         return self.conversations.create_agent_conversation(**kwargs)

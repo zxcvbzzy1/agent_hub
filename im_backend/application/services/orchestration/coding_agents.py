@@ -4,8 +4,8 @@ import asyncio
 from collections.abc import Callable
 from typing import Any
 
-from im_backend.application.services.events import RoomEventStreamService
-from im_backend.application.services.messages import GroupMessageService
+from im_backend.application.services.platform.events import RoomEventStreamService
+from im_backend.application.services.messaging.messages import GroupMessageService
 from im_backend.domain.models import AgentRuntimeProfile
 from im_backend.infra.coding_agents.runners import runner_for_kind
 

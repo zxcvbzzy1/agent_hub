@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from im_backend.application.services.events import RoomEventStreamService
-from im_backend.application.services.rooms import RoomService
+from im_backend.application.services._shared.lookup import require_im_message
+from im_backend.application.services._shared.message_text import message_text as extract_message_text
+from im_backend.application.services.messaging.agents import IMAgentService
+from im_backend.application.services.platform.events import RoomEventStreamService
+from im_backend.application.services.messaging.rooms import RoomService
 from im_backend.domain.models import ContentPart, Message
 from im_backend.infra.agent_flow_bridge.bridge import AgentFlowBridge
 
@@ -16,11 +19,13 @@ class GroupMessageService:
         bridge: AgentFlowBridge,
         events: RoomEventStreamService,
         rooms: RoomService,
+        agents: IMAgentService,
     ) -> None:
         self._store = store
         self._bridge = bridge
         self._events = events
         self._rooms = rooms
+        self._agents = agents
 
     def list_messages(self, room_id: str) -> list[dict[str, Any]]:
         self._rooms.ensure_group_room(room_id)
@@ -31,10 +36,7 @@ class GroupMessageService:
         )
 
     def get_message(self, message_id: str) -> dict[str, Any]:
-        message = self._store.find_one("im_messages", {"message_id": message_id})
-        if message is None:
-            raise KeyError(f"消息不存在: {message_id}")
-        return message
+        return require_im_message(self._store, message_id)
 
     def add_message(
         self,
@@ -75,8 +77,11 @@ class GroupMessageService:
         self._events.publish(room_id, "message.created", {"message": record})
         return record
 
-    def list_agent_messages(self, agent_id: str) -> list[dict[str, Any]]:
-        self._bridge.ensure_agent_exists(agent_id)
+    def list_agent_messages(self, agent_id: str, user_id: str = "") -> list[dict[str, Any]]:
+        if user_id:
+            self._agents.ensure_agent_access(agent_id, user_id)
+        else:
+            self._bridge.ensure_agent_exists(agent_id)
         rooms = self._store.find_many("im_rooms", {"type": "group"})
         group_room_ids = {
             room.get("room_id")
@@ -98,12 +103,4 @@ class GroupMessageService:
         return messages[:50]
 
     def message_text(self, message: dict[str, Any]) -> str:
-        parts = [ContentPart.from_dict(part) for part in message.get("content_parts", [])]
-        return Message(
-            message_id=message["message_id"],
-            room_id=message.get("room_id", ""),
-            conversation_id=message.get("conversation_id", ""),
-            sender_type=message["sender_type"],
-            sender_id=message["sender_id"],
-            content_parts=parts,
-        ).text_content()
+        return extract_message_text(message)

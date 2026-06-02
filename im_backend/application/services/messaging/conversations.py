@@ -5,12 +5,17 @@ import time
 from pathlib import Path
 from typing import Any
 
-from im_backend.application.services.agents import IMAgentService
-from im_backend.application.services.cleanup import IMCleanupService
-from im_backend.application.services.coding_agents import CodingAgentService
-from im_backend.application.services.events import RoomEventStreamService
-from im_backend.application.services.favorites import FavoriteService
-from im_backend.application.services.inline_artifacts import collect_inline_artifact_parts
+from im_backend.application.services.messaging.agents import IMAgentService
+from im_backend.application.services.platform.cleanup import IMCleanupService
+from im_backend.application.services.orchestration.coding_agents import CodingAgentService
+from im_backend.application.services.platform.events import RoomEventStreamService
+from im_backend.application.services.messaging.favorites import FavoriteService
+from im_backend.application.services._shared.history import history_before
+from im_backend.application.services._shared.lookup import find_im_message, require_im_message
+from im_backend.application.services._shared.message_text import message_text
+from im_backend.application.services._shared.runtime_profile import build_runtime_profile
+from im_backend.application.services._shared.inline_artifacts import collect_inline_artifact_parts
+from im_backend.application.services._shared.prompting import compose_prompt_with_references
 from im_backend.domain.models import AgentRuntimeProfile, ContentPart, Conversation, Message, now_ts
 from im_backend.infra.agent_flow_bridge.bridge import AgentFlowBridge
 
@@ -55,8 +60,11 @@ class ConversationService:
             sort=[("created_at", 1)],
         )
 
-    def list_agent_conversations(self, agent_id: str) -> list[dict[str, Any]]:
-        self._bridge.ensure_agent_exists(agent_id)
+    def list_agent_conversations(self, agent_id: str, user_id: str = "") -> list[dict[str, Any]]:
+        if user_id:
+            self._agents.ensure_agent_access(agent_id, user_id)
+        else:
+            self._bridge.ensure_agent_exists(agent_id)
         conversations: list[dict[str, Any]] = []
         records = self._store.find_many(
             "im_conversations",
@@ -261,7 +269,7 @@ class ConversationService:
                 scope_id=conversation_id,
                 message_id=message_id,
                 run_id=run_id,
-                prompt=self._message_text(message),
+                prompt=self._compose_prompt(message),
                 profile=profile,
                 mode="direct_coding_agent",
                 final_message_writer=lambda final: self.add_conversation_message(
@@ -303,10 +311,7 @@ class ConversationService:
 
     def _runtime_profile(self, agent_id: str) -> AgentRuntimeProfile:
         record = self._bridge.ensure_agent_exists(agent_id)
-        profile = AgentRuntimeProfile.from_agent_record(record)
-        if not profile.workdir:
-            profile.workdir = self._default_workdir
-        return profile
+        return build_runtime_profile(record, default_workdir=self._default_workdir)
 
     async def cancel_conversation_reply(self, *, conversation_id: str, message_id: str) -> dict[str, Any]:
         conversation = self.get_conversation(conversation_id)
@@ -350,7 +355,8 @@ class ConversationService:
             if message.get("status") == "cancelled":
                 return
             self._rebuild_agent_history(agent, conversation_id=conversation_id, before_message_id=message_id)
-            prompt = self._message_text(message)
+            prompt = self._compose_prompt(message)
+            self._apply_native_workdir(agent, agent_id)
             self._apply_pinned_context(agent, conversation_id)
             self._bridge.register_agent_runtime_scope(agent_id, conversation_id)
             registered = True
@@ -462,10 +468,7 @@ class ConversationService:
             )
 
     def _get_message(self, message_id: str) -> dict[str, Any]:
-        message = self._store.find_one("im_messages", {"message_id": message_id})
-        if message is None:
-            raise KeyError(f"消息不存在: {message_id}")
-        return message
+        return require_im_message(self._store, message_id)
 
     def _apply_pinned_context(self, agent, conversation_id: str) -> None:
         """把当前会话的收藏作为固定上下文写入 agent state。"""
@@ -481,25 +484,26 @@ class ConversationService:
             memory.store("agent_history", "dialogue", self._format_history_message(history_message))
 
     def _conversation_history_before(self, conversation_id: str, message_id: str) -> list[dict[str, Any]]:
-        history: list[dict[str, Any]] = []
-        for message in self.list_conversation_messages(conversation_id):
-            if message.get("message_id") == message_id:
-                break
-            if message.get("sender_type") in {"user", "agent"}:
-                history.append(message)
-        return history
+        return history_before(self.list_conversation_messages(conversation_id), message_id)
 
     def _format_history_message(self, message: dict[str, Any]) -> str:
         role = "用户" if message.get("sender_type") == "user" else "Agent"
-        return f"### 历史消息\n{role}：{self._message_text(message)}"
+        return f"### 历史消息\n{role}：{message_text(message)}"
 
-    def _message_text(self, message: dict[str, Any]) -> str:
-        parts = [ContentPart.from_dict(part) for part in message.get("content_parts", [])]
-        return Message(
-            message_id=message["message_id"],
-            room_id=message.get("room_id", ""),
-            conversation_id=message.get("conversation_id", ""),
-            sender_type=message["sender_type"],
-            sender_id=message["sender_id"],
-            content_parts=parts,
-        ).text_content()
+    def _compose_prompt(self, message: dict[str, Any]) -> str:
+        """拼接被回复/引用消息的上下文，让 agent 看到完整意图。"""
+        return compose_prompt_with_references(
+            message,
+            lookup=lambda mid: find_im_message(self._store, mid),
+            text_of=message_text,
+        )
+
+    def _apply_native_workdir(self, agent, agent_id: str) -> None:
+        """把 native agent 的工作目录落到运行实例的 work_path（按 profile 取，含默认值）。"""
+        profile = self._runtime_profile(agent_id)
+        if profile.agent_kind not in {"native", "human_proxy"} or not profile.workdir:
+            return
+        if hasattr(agent, "inject_attribute"):
+            agent.inject_attribute(work_path=profile.workdir)
+        elif hasattr(agent, "work_path"):
+            agent.work_path = profile.workdir

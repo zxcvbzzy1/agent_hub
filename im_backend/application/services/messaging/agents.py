@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from im_backend.application.services.cleanup import IMCleanupService
+from im_backend.application.services.platform.cleanup import IMCleanupService
 from im_backend.domain.common import AgentKind
 from im_backend.infra.agent_flow_bridge.bridge import AgentFlowBridge
 

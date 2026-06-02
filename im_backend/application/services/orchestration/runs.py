@@ -3,12 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from im_backend.application.services.agents import IMAgentService
-from im_backend.application.services.coding_agents import CodingAgentService
-from im_backend.application.services.events import RoomEventStreamService
-from im_backend.application.services.favorites import FavoriteService
-from im_backend.application.services.messages import GroupMessageService
-from im_backend.application.services.rooms import RoomService
+from im_backend.application.services.messaging.agents import IMAgentService
+from im_backend.application.services.orchestration.coding_agents import CodingAgentService
+from im_backend.application.services.platform.events import RoomEventStreamService
+from im_backend.application.services.messaging.favorites import FavoriteService
+from im_backend.application.services._shared.history import history_before
+from im_backend.application.services._shared.lookup import find_im_message
+from im_backend.application.services._shared.runtime_profile import build_runtime_profile
+from im_backend.application.services.messaging.messages import GroupMessageService
+from im_backend.application.services._shared.prompting import compose_prompt_with_references
+from im_backend.application.services.messaging.rooms import RoomService
 from im_backend.domain.models import AgentRuntimeProfile
 from im_backend.infra.agent_flow_bridge.bridge import AgentFlowBridge
 
@@ -89,7 +93,11 @@ class GroupRunService:
         if message.get("sender_type") != "user":
             raise ValueError("只能派发 user 消息")
 
-        prompt = self._messages.message_text(message)
+        prompt = compose_prompt_with_references(
+            message,
+            lookup=lambda mid: find_im_message(self._store, mid),
+            text_of=self._messages.message_text,
+        )
         target_agent_ids = self._select_target_agents(room, message)
         profiles = [self._runtime_profile(agent_id, user_id=user_id) for agent_id in target_agent_ids]
         external_profiles = [profile for profile in profiles if profile.agent_kind in {"claude_code", "codex"}]
@@ -167,10 +175,7 @@ class GroupRunService:
 
     def _runtime_profile(self, agent_id: str, *, user_id: str = "") -> AgentRuntimeProfile:
         record = self._agents.ensure_agent_access(agent_id, user_id) if user_id else self._bridge.ensure_agent_exists(agent_id)
-        profile = AgentRuntimeProfile.from_agent_record(record)
-        if not profile.workdir:
-            profile.workdir = self._default_workdir
-        return profile
+        return build_runtime_profile(record, default_workdir=self._default_workdir)
 
     def _create_agent_flow_run(
         self,
@@ -228,13 +233,12 @@ class GroupRunService:
         )
 
     def _room_history_before(self, room_id: str, message_id: str) -> list[dict[str, Any]]:
-        history: list[dict[str, Any]] = []
-        for message in self._messages.list_messages(room_id):
-            if message.get("message_id") == message_id:
-                break
-            if message.get("sender_type") in {"user", "agent"} and self._messages.message_text(message):
-                history.append(message)
-        return history[-15:]
+        return history_before(
+            self._messages.list_messages(room_id),
+            message_id,
+            require_text=self._messages.message_text,
+            tail=15,
+        )
 
     def _mark_dispatched(self, room_id: str, message_id: str, run: dict[str, Any]) -> dict[str, Any]:
         self._store.update_one(

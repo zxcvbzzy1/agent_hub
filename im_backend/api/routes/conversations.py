@@ -10,7 +10,7 @@ from im_backend.api.schemas import (
     RegenerateRequest,
     ReplyRequest,
 )
-from im_backend.application.services.events import RoomEventStreamService
+from im_backend.application.services.platform.events import RoomEventStreamService
 from im_backend.application.services.facade import IMService
 
 

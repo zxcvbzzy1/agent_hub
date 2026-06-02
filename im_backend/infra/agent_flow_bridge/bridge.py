@@ -15,7 +15,7 @@ from application.events.bridge import FrontendEventBridge  # type: ignore  # noq
 from application.events.human_confirmation import HumanConfirmationService  # type: ignore  # noqa: E402
 from application.services.agents import AgentFactoryService  # type: ignore  # noqa: E402
 from application.services.contexts import ContextService  # type: ignore  # noqa: E402
-from application.services.conversations import ConversationService  # type: ignore  # noqa: E402
+from application.services.conversations import ConversationService as RuntimeConversationService  # type: ignore  # noqa: E402
 from application.services.events import EventStreamService  # type: ignore  # noqa: E402
 from application.services.runs import RunOrchestrationService  # type: ignore  # noqa: E402
 from application.services.tools import ToolRegistryService  # type: ignore  # noqa: E402
@@ -60,7 +60,8 @@ class AgentFlowBridge:
             self.events,
             self.frontend_bridge,
         )
-        self.conversations = ConversationService(self._store)
+        # agent_flow 侧的 runtime 会话服务，与 im_backend 的 ConversationService 同名，用别名区分。
+        self.conversations = RuntimeConversationService(self._store)
 
     @property
     def store(self):

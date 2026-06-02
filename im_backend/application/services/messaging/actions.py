@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from im_backend.application.services.events import RoomEventStreamService
+from im_backend.application.services._shared.lookup import require_im_message
+from im_backend.application.services.platform.events import RoomEventStreamService
 from im_backend.domain.models import MessageAction
 
 
@@ -12,10 +13,7 @@ class MessageActionService:
         self._events = events
 
     def get_message(self, message_id: str) -> dict[str, Any]:
-        message = self._store.find_one("im_messages", {"message_id": message_id})
-        if message is None:
-            raise KeyError(f"消息不存在: {message_id}")
-        return message
+        return require_im_message(self._store, message_id)
 
     def record_action(
         self,
