@@ -18,9 +18,9 @@ from typing import Any
 
 # 工具反馈：完整历史 + 仅保留最近 15 条（对齐 static_agents.py 的
 # ``FullHistoryStrategy() | RecencyStrategy(15)``）。
-_TOOL_OUTPUT_STRATEGY = {"pipeline": [{"type": "full_history"}, {"type": "recency", "keep_last": 15}]}
+_TOOL_OUTPUT_STRATEGY = {"pipeline": [{"type": "full_history"}, {"type": "recency", "keep_last": 35}]}
 # 对话历史：完整历史（对齐 ``FullHistoryStrategy()``）。
-_HISTORY_STRATEGY = {"pipeline": [{"type": "full_history"}]}
+_HISTORY_STRATEGY = {"pipeline": [{"type": "full_history"}, {"type": "recency", "keep_last": 35}]}
 # 新建 Agent 默认只放开系统类工具，与 static_agents.py 的 ``AvailableToolsProvider(["system"])`` 一致。
 DEFAULT_TOOL_FIELDS = ["system"]
 

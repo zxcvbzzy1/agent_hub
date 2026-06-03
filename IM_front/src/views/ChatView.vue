@@ -175,7 +175,10 @@ const conversationGroups = computed(() => {
     const text = (latestMessageText(item) || '').toLowerCase()
     return title.includes(query) || text.includes(query)
   }
-  const list = (feedConversations.value || []).filter(matches)
+  const list = (feedConversations.value || [])
+    .filter(matches)
+    .slice()
+    .sort((a, b) => (sideItemTime(b) || 0) - (sideItemTime(a) || 0))
   // 归档优先级高于置顶（与后端"归档自动取消置顶"一致），保证三组互斥。
   return {
     pinned: list.filter((item) => item.pinned === true && item.archived !== true),
@@ -1879,7 +1882,7 @@ onUnmounted(() => {
       </a-tabs>
     </a-modal>
 
-    <a-drawer v-model:open="drawerOpen" title="上下文信息" width="420">
+    <a-drawer v-model:open="drawerOpen" title="上下文信息" width="520">
       <section class="drawer-section">
         <h3>{{ im.currentRoom?.type === 'group' ? '群内 Agent' : 'Agent 信息' }}</h3>
         <div v-if="im.currentRoom?.type === 'group'" class="orchestrator-card">
