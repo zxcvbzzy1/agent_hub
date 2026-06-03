@@ -65,6 +65,17 @@ const mentions = ref([])
 const drawerPlannerId = ref('default_planner')
 const traceOpenOverrides = ref({})
 const sidebarCollapsed = ref(false)
+// 侧栏分栏（Agents / Agent 群 / 对话列表）折叠状态，持久化到 localStorage。
+function loadSidebarBool(key, defaultVal = true) {
+  const raw = localStorage.getItem(key)
+  return raw === null ? defaultVal : raw === 'true'
+}
+const agentsSectionOpen = ref(loadSidebarBool('im:sidebar:agents-open'))
+const groupsSectionOpen = ref(loadSidebarBool('im:sidebar:groups-open'))
+const feedSectionOpen = ref(loadSidebarBool('im:sidebar:feed-open'))
+watch(agentsSectionOpen, (v) => localStorage.setItem('im:sidebar:agents-open', v))
+watch(groupsSectionOpen, (v) => localStorage.setItem('im:sidebar:groups-open', v))
+watch(feedSectionOpen, (v) => localStorage.setItem('im:sidebar:feed-open', v))
 const previewMessage = ref(null)
 const replyTarget = ref(null)
 const quoteTarget = ref(null)
@@ -88,6 +99,13 @@ const agentForm = reactive({
   tool_names: [],
   tool_fields: [],
 })
+// 对话式创建：本地维护聊天记录与草稿，最终应用到 agentForm 后仍走原有 createAgent。
+const agentCreateTab = ref('form')
+const builderMessages = ref([])
+const builderInput = ref('')
+const builderDraft = ref(null)
+const builderReady = ref(false)
+const builderSending = ref(false)
 
 const toolFieldLabels = {
   system: '系统',
@@ -518,6 +536,41 @@ async function createAgent() {
   }
 }
 
+async function sendBuilderMessage() {
+  const text = builderInput.value.trim()
+  if (!text || builderSending.value) return
+  builderMessages.value.push({ role: 'user', content: text })
+  builderInput.value = ''
+  builderSending.value = true
+  try {
+    const r = await im.builderChat({ messages: builderMessages.value, draft: builderDraft.value })
+    builderMessages.value.push({ role: 'assistant', content: r.reply || '' })
+    if (r.draft) builderDraft.value = r.draft
+    builderReady.value = !!r.ready
+  } catch (error) {
+    message.error('创建助手暂时不可用')
+    builderMessages.value.push({ role: 'assistant', content: '（助手调用失败，请稍后再试或改用表单创建）' })
+  } finally {
+    builderSending.value = false
+  }
+}
+
+function applyDraftToForm() {
+  const d = builderDraft.value || {}
+  agentForm.name = d.name || ''
+  agentForm.agent_kind = d.agent_kind || 'native'
+  agentForm.agent_type = d.agent_type || 'executor'
+  agentForm.description = d.description || ''
+  agentForm.role_prompt = d.role_prompt || ''
+  agentForm.workdir = d.workdir || ''
+  agentForm.permission_profile = d.permission_profile || 'human_confirm'
+  agentForm.tool_names = [...(d.tool_names || [])]
+  agentForm.tool_fields = [...(d.tool_fields || [])]
+  if (!(im.tools || []).length) im.fetchTools()
+  agentCreateTab.value = 'form'
+  message.success('已填入表单，请复核后点击创建')
+}
+
 function confirmDeleteAgent(agent) {
   Modal.confirm({
     title: `删除 Agent「${agent.name}」？`,
@@ -853,6 +906,13 @@ watch(
   () => agentCreateOpen.value,
   (open) => {
     if (open && !(im.tools || []).length) im.fetchTools()
+    if (!open) {
+      agentCreateTab.value = 'form'
+      builderMessages.value = []
+      builderInput.value = ''
+      builderDraft.value = null
+      builderReady.value = false
+    }
   },
 )
 
@@ -912,7 +972,11 @@ onUnmounted(() => {
       </div>
 
       <section class="nav-section">
-        <div class="section-title">Agents</div>
+        <button class="section-title section-title-toggle" @click="agentsSectionOpen = !agentsSectionOpen">
+          <span>Agents</span>
+          <RightOutlined class="feed-group-chevron" :class="{ open: agentsSectionOpen }" />
+        </button>
+        <template v-if="agentsSectionOpen">
         <button
           v-for="agent in im.executorAgents"
           :key="agent.agent_id"
@@ -937,10 +1001,15 @@ onUnmounted(() => {
             <template #icon><DeleteOutlined /></template>
           </a-button>
         </button>
+        </template>
       </section>
 
       <section class="nav-section">
-        <div class="section-title">Agent 群</div>
+        <button class="section-title section-title-toggle" @click="groupsSectionOpen = !groupsSectionOpen">
+          <span>Agent 群</span>
+          <RightOutlined class="feed-group-chevron" :class="{ open: groupsSectionOpen }" />
+        </button>
+        <template v-if="groupsSectionOpen">
         <button
           v-for="room in im.groupRooms"
           :key="room.room_id"
@@ -957,21 +1026,26 @@ onUnmounted(() => {
             <template #icon><DeleteOutlined /></template>
           </a-button>
         </button>
+        </template>
       </section>
 
       <section class="side-feed">
         <div class="side-feed-head">
-          <div class="section-title">{{ im.currentRoom?.type === 'group' ? '编排任务' : '对话列表' }}</div>
+          <button class="section-title section-title-toggle" @click="feedSectionOpen = !feedSectionOpen">
+            <span>{{ im.currentRoom?.type === 'group' ? '编排任务' : '对话列表' }}</span>
+            <RightOutlined class="feed-group-chevron" :class="{ open: feedSectionOpen }" />
+          </button>
           <a-button
             v-if="im.currentAgentId && im.currentRoom?.type !== 'group'"
             type="text"
             size="small"
-            @click="newConversation"
+            @click.stop="newConversation"
           >
             <template #icon><PlusOutlined /></template>
             新对话
           </a-button>
         </div>
+        <template v-if="feedSectionOpen">
 
         <template v-if="im.currentRoom?.type === 'group'">
           <a-empty v-if="!sideItems.length" description="暂无记录" />
@@ -1100,6 +1174,7 @@ onUnmounted(() => {
               </button>
             </template>
           </template>
+        </template>
         </template>
       </section>
     </aside>
@@ -1517,6 +1592,8 @@ onUnmounted(() => {
     </a-modal>
 
     <a-modal v-model:open="agentCreateOpen" title="创建 Agent" :footer="null">
+      <a-tabs v-model:activeKey="agentCreateTab">
+        <a-tab-pane key="form" tab="表单创建">
       <a-form layout="vertical">
         <a-form-item label="头像">
           <div class="agent-avatar-upload">
@@ -1604,6 +1681,53 @@ onUnmounted(() => {
           创建 Agent
         </a-button>
       </a-form>
+        </a-tab-pane>
+        <a-tab-pane key="chat" tab="对话式创建">
+          <div class="builder-chat">
+            <div class="builder-messages">
+              <a-empty
+                v-if="!builderMessages.length"
+                description="用一句话描述你想要的 Agent，我来引导你完成配置"
+                :image="false"
+              />
+              <div
+                v-for="(msg, index) in builderMessages"
+                :key="`builder-${index}`"
+                class="builder-msg"
+                :class="msg.role"
+              >
+                <span class="builder-role">{{ msg.role === 'user' ? '你' : '助手' }}</span>
+                <p>{{ msg.content }}</p>
+              </div>
+            </div>
+            <div v-if="builderDraft" class="builder-draft">
+              <div class="builder-draft-head">
+                <strong>当前草稿</strong>
+                <a-tag v-if="builderReady" color="green">可创建</a-tag>
+                <a-tag v-else color="orange">完善中</a-tag>
+              </div>
+              <ul>
+                <li>名称：{{ builderDraft.name || '（待定）' }}</li>
+                <li>运行类型：{{ builderDraft.agent_kind }} · {{ builderDraft.agent_type }}</li>
+                <li v-if="builderDraft.description">能力：{{ builderDraft.description }}</li>
+                <li v-if="builderDraft.tool_names?.length">工具：{{ builderDraft.tool_names.join('、') }}</li>
+              </ul>
+              <a-button type="primary" block @click="applyDraftToForm">应用到表单</a-button>
+            </div>
+            <div class="builder-input">
+              <a-textarea
+                v-model:value="builderInput"
+                :auto-size="{ minRows: 1, maxRows: 4 }"
+                placeholder="例如：我想要一个会写 Python 单测的 native executor"
+                @pressEnter.prevent="sendBuilderMessage"
+              />
+              <a-button type="primary" :loading="builderSending" @click="sendBuilderMessage">
+                <template #icon><SendOutlined /></template>
+              </a-button>
+            </div>
+          </div>
+        </a-tab-pane>
+      </a-tabs>
     </a-modal>
 
     <a-drawer v-model:open="drawerOpen" title="上下文信息" width="420">

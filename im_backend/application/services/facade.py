@@ -6,7 +6,6 @@ from typing import Any
 from im_backend.application.services.messaging.actions import MessageActionService
 from im_backend.application.services.messaging.agents import IMAgentService
 from im_backend.application.services.platform.cleanup import IMCleanupService
-from im_backend.application.services.orchestration.coding_agents import CodingAgentService
 from im_backend.application.services.messaging.conversations import ConversationService
 from im_backend.application.services.platform.events import RoomEventStreamService
 from im_backend.application.services.messaging.favorites import FavoriteService
@@ -35,14 +34,12 @@ class IMService:
         self.rooms = RoomService(store=store, bridge=bridge, events=room_events, cleanup=self.cleanup, agents=self.agents)
         self.messages = GroupMessageService(store=store, bridge=bridge, events=room_events, rooms=self.rooms, agents=self.agents)
         self.actions = MessageActionService(store=store, events=room_events)
-        self.coding_agents = CodingAgentService(store=store, events=room_events, messages=self.messages)
         self.conversations = ConversationService(
             store=store,
             bridge=bridge,
             events=room_events,
             default_workdir=default_workdir,
             agents=self.agents,
-            coding_agents=self.coding_agents,
             favorites=self.favorites,
             cleanup=self.cleanup,
         )
@@ -52,7 +49,6 @@ class IMService:
             events=room_events,
             rooms=self.rooms,
             messages=self.messages,
-            coding_agents=self.coding_agents,
             agents=self.agents,
             favorites=self.favorites,
             default_workdir=default_workdir,

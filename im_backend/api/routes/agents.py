@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from im_backend.api.core import get_agent_catalog, get_current_user, get_im_service
-from im_backend.api.schemas import AgentConversationCreateRequest, AgentCreateRequest
+from im_backend.api.core import get_agent_builder, get_agent_catalog, get_current_user, get_im_service
+from im_backend.api.schemas import AgentBuilderChatRequest, AgentConversationCreateRequest, AgentCreateRequest
+from im_backend.application.services.messaging.agent_builder import AgentBuilderService
 from im_backend.application.services.messaging.agents import IMAgentService
 from im_backend.application.services.facade import IMService
 
@@ -34,6 +35,25 @@ async def list_tools(
 ):
     _ = current_user
     return {"items": service.list_tools()}
+
+
+@router.post("/agents/builder/chat")
+async def agent_builder_chat(
+    request: AgentBuilderChatRequest,
+    current_user: dict = Depends(get_current_user),
+    builder: AgentBuilderService = Depends(get_agent_builder),
+):
+    _ = current_user
+    try:
+        return await builder.chat(
+            messages=[m.model_dump() for m in request.messages],
+            draft=request.draft.model_dump() if request.draft else None,
+        )
+    except RuntimeError as exc:
+        # LLM key 未配置等运行期错误，回成可读的网关错误而非 500。
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/agents")

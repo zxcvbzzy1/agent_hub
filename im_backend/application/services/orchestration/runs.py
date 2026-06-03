@@ -4,7 +4,6 @@ from pathlib import Path
 from typing import Any
 
 from im_backend.application.services.messaging.agents import IMAgentService
-from im_backend.application.services.orchestration.coding_agents import CodingAgentService
 from im_backend.application.services.platform.events import RoomEventStreamService
 from im_backend.application.services.messaging.favorites import FavoriteService
 from im_backend.application.services._shared.history import history_before
@@ -26,7 +25,6 @@ class GroupRunService:
         events: RoomEventStreamService,
         rooms: RoomService,
         messages: GroupMessageService,
-        coding_agents: CodingAgentService,
         agents: IMAgentService,
         favorites: FavoriteService,
         default_workdir: str | Path,
@@ -36,7 +34,6 @@ class GroupRunService:
         self._events = events
         self._rooms = rooms
         self._messages = messages
-        self._coding_agents = coding_agents
         self._agents = agents
         self._favorites = favorites
         self._default_workdir = str(Path(default_workdir).expanduser().resolve())
@@ -142,11 +139,9 @@ class GroupRunService:
         if not messages:
             raise KeyError(f"run 不属于该 room: {run_id}")
         message_id = messages[0].get("message_id", "")
-        if run_id.startswith("coding-"):
-            self._coding_agents.cancel_run(run_id)
-            run = {"run_id": run_id, "status": "cancelled", "mode": "coding_agent"}
-        else:
-            run = self._bridge.cancel_run(run_id)
+        # 群聊 coding agent 跑在 agent_flow plan run 内，run_id 即 agent_flow run_id（不再有
+        # "coding-" 前缀的独立 run），统一通过 bridge.cancel_run 取消。
+        run = self._bridge.cancel_run(run_id)
         self._store.update_one(
             "im_messages",
             {"message_id": message_id},

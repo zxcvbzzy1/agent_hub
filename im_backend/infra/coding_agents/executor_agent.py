@@ -6,10 +6,7 @@ from typing import Any
 
 from im_backend.domain.models import AgentRuntimeProfile
 from im_backend.infra.agent_flow_bridge.pathing import ensure_agent_flow_path
-from im_backend.infra.coding_agents.artifacts_protocol import (
-    ArtifactProtocolProvider,
-    ArtifactStreamParser,
-)
+from im_backend.infra.coding_agents.artifacts_protocol import ArtifactStreamParser
 from im_backend.infra.coding_agents.runners import runner_for_kind
 
 ensure_agent_flow_path()
@@ -17,9 +14,6 @@ ensure_agent_flow_path()
 from application.services.events import EventStreamService  # type: ignore  # noqa: E402
 from domain.agent_base import AgentBase  # type: ignore  # noqa: E402
 from domain.context.context import ContextEngine  # type: ignore  # noqa: E402
-from domain.context.providers import HistoryProvider, UserPromptProvider  # type: ignore  # noqa: E402
-from domain.context.strategy import FullHistoryStrategy, RecencyStrategy  # type: ignore  # noqa: E402
-from domain.memory.short.default_short_term_memory import DefaultShortTermMemory  # type: ignore  # noqa: E402
 from infra.tool.builtin.artifacts import InlineArtifactTool  # type: ignore  # noqa: E402
 
 
@@ -31,21 +25,15 @@ class CodingExecutorAgent(AgentBase):
         *,
         profile: AgentRuntimeProfile,
         name: str,
+        context_engine: ContextEngine,
         description: str = "",
         store,
         streams: EventStreamService,
         run_id_provider: Callable[[str], str],
     ) -> None:
-        memory = DefaultShortTermMemory(["agent_history", "tool_respond"])
-        context = ContextEngine(
-            providers=[
-                HistoryProvider(memory, "agent_history", FullHistoryStrategy() | RecencyStrategy(15)),
-                ArtifactProtocolProvider(),
-                UserPromptProvider(),
-            ],
-            memory=memory,
-        )
-        super().__init__(id=profile.agent_id, name=name, llm=None, context=context)
+        # ContextEngine 由 ContextService 按 "coding" 模版构建（含 user_prompt / pinned_context /
+        # artifact_protocol / history(agent_history)），不再在此硬编码 provider 列表。
+        super().__init__(id=profile.agent_id, name=name, llm=None, context=context_engine)
         self.profile = profile
         self.description = description
         self._store = store

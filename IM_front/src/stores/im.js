@@ -172,6 +172,10 @@ export const useIMStore = defineStore('im', {
       await this.selectAgent(response.item.agent_id)
       return response.item
     },
+    async builderChat(payload) {
+      // 仅转发：对话式创建的草稿/回复由 ChatView 本地维护，不入全局 store。
+      return imApi.builderChat(payload)
+    },
     async deleteAgent(agentId) {
       await imApi.deleteAgent(agentId)
       if (this.currentAgentId === agentId) {

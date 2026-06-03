@@ -81,6 +81,14 @@ class IMAgentService:
                 tool_fields=tool_fields or [],
                 owner_user_id=owner_user_id,
             )
+        elif agent_kind in {"claude_code", "codex"}:
+            # coding agent 克隆一份独立的 "coding" 上下文（含 user_prompt / pinned_context /
+            # artifact_protocol / history），使其与 native agent 一样通过 provider 统一管理上下文，
+            # 并能注入收藏/回复/引用等消息操作。
+            effective_context_id = self._build_coding_context(
+                name=name.strip(),
+                owner_user_id=owner_user_id,
+            )
         elif owner_user_id:
             self.ensure_context_access(effective_context_id, owner_user_id)
 
@@ -135,6 +143,26 @@ class IMAgentService:
             kind=kind,
             name=f"{name} 上下文",
             provider_config=provider_config,
+        )
+        context_id = record["context_id"]
+        if owner_user_id:
+            self._bridge.store.update_one(
+                "contexts",
+                {"context_id": context_id},
+                {"metadata": {"owner_user_id": owner_user_id, "visibility": "private", "kind_label": "agent_context"}},
+            )
+        return context_id
+
+    def _build_coding_context(self, *, name: str, owner_user_id: str = "") -> str:
+        """为 coding agent（claude_code / codex）克隆一份独立的 "coding" 上下文 / 记忆。
+
+        provider 配置单一来源于 ``ContextService.default_template("coding")``，避免与
+        im_backend 侧重复定义产生漂移。
+        """
+        record = self._bridge.contexts.create_context(
+            kind="coding",
+            name=f"{name} 上下文",
+            provider_config=self._bridge.contexts.default_template("coding"),
         )
         context_id = record["context_id"]
         if owner_user_id:

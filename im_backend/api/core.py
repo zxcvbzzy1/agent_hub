@@ -12,6 +12,7 @@ from im_backend.infra.env import load_backend_env
 load_backend_env()
 
 from im_backend.application.auth_service import AuthError, AuthService
+from im_backend.application.services.messaging.agent_builder import AgentBuilderService
 from im_backend.application.services.messaging.agents import IMAgentService
 from im_backend.application.services.platform.events import RoomEventStreamService
 from im_backend.application.services.facade import IMService
@@ -58,6 +59,11 @@ def get_auth_service() -> AuthService:
 
 def get_agent_catalog() -> IMAgentService:
     return get_container().agents
+
+
+def get_agent_builder() -> AgentBuilderService:
+    # 每次请求新建（构造很轻），让 system prompt 始终反映最新的工具目录（工具可运行时上传）。
+    return AgentBuilderService(agents=get_container().agents)
 
 
 def get_room_events() -> RoomEventStreamService:

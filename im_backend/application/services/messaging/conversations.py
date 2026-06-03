@@ -7,7 +7,6 @@ from typing import Any
 
 from im_backend.application.services.messaging.agents import IMAgentService
 from im_backend.application.services.platform.cleanup import IMCleanupService
-from im_backend.application.services.orchestration.coding_agents import CodingAgentService
 from im_backend.application.services.platform.events import RoomEventStreamService
 from im_backend.application.services.messaging.favorites import FavoriteService
 from im_backend.application.services._shared.history import history_before
@@ -31,7 +30,6 @@ class ConversationService:
         events: RoomEventStreamService,
         default_workdir: str | Path,
         agents: IMAgentService,
-        coding_agents: CodingAgentService,
         favorites: FavoriteService,
         cleanup: IMCleanupService | None = None,
     ) -> None:
@@ -39,7 +37,6 @@ class ConversationService:
         self._bridge = bridge
         self._events = events
         self._agents = agents
-        self._coding_agents = coding_agents
         self._favorites = favorites
         self._default_workdir = str(Path(default_workdir).expanduser().resolve())
         self._agent_locks: dict[str, asyncio.Lock] = {}
@@ -249,7 +246,8 @@ class ConversationService:
             raise ValueError("只能回复 user 消息")
 
         agent_id = conversation.get("agent_id", "")
-        profile = self._runtime_profile(agent_id)
+        # 触发前先校验 agent 存在（缺失会抛 KeyError），再决定是否启动回复任务。
+        self._runtime_profile(agent_id)
         if not auto_start:
             self._events.publish(conversation_id, "agent.reply.pending", {"message_id": message_id, "agent_id": agent_id})
             return {"type": "dm_reply_pending", "message_id": message_id, "agent_id": agent_id}
@@ -262,44 +260,8 @@ class ConversationService:
             "agent.reply.started",
             {"message_id": message_id, "agent_id": agent_id, "conversation_id": conversation_id},
         )
-        if profile.agent_kind in {"claude_code", "codex"}:
-            run_id = f"coding-{message_id}-{agent_id}"
-            self._store.update_one("im_messages", {"message_id": message_id}, {"run_id": run_id})
-            result, task = self._coding_agents.start_coding_agent(
-                scope_id=conversation_id,
-                message_id=message_id,
-                run_id=run_id,
-                prompt=self._compose_prompt_with_history(
-                    conversation_id=conversation_id,
-                    message=message,
-                ),
-                profile=profile,
-                mode="direct_coding_agent",
-                final_message_writer=lambda final, artifact_parts: self.add_conversation_message(
-                    conversation_id=conversation_id,
-                    sender_type="agent",
-                    sender_id=agent_id,
-                    content_parts=[
-                        {"type": "text", "text": final or "Coding agent 已完成回复"},
-                        *artifact_parts,
-                    ],
-                    run_id=run_id,
-                    status="finished",
-                    metadata={
-                        "source": "direct_coding_agent_reply",
-                        "reply_to": message_id,
-                        "agent_kind": profile.agent_kind,
-                    },
-                ),
-            )
-            self._reply_tasks[message_id] = task
-            task.add_done_callback(
-            lambda finished, mid=message_id: (
-                self._reply_tasks.pop(mid, None) if self._reply_tasks.get(mid) is finished else None
-            )
-        )
-            return {"type": "dm_reply_started", "message_id": message_id, "agent_id": agent_id, "run": result}
-
+        # native 与 coding（claude_code / codex）统一走 _run_reply_task：coding agent 现在也是
+        # 一个 provider 化的 CodingExecutorAgent，由 ContextEngine 注入历史/收藏/回复引用/产物协议。
         task = asyncio.create_task(
             self._run_reply_task(
                 conversation_id=conversation_id,
@@ -362,7 +324,7 @@ class ConversationService:
                 return
             self._rebuild_agent_history(agent, conversation_id=conversation_id, before_message_id=message_id)
             prompt = self._compose_prompt(message)
-            self._apply_native_workdir(agent, agent_id)
+            self._apply_agent_workdir(agent, agent_id)
             self._apply_pinned_context(agent, conversation_id)
             self._bridge.register_agent_runtime_scope(agent_id, conversation_id)
             registered = True
@@ -504,23 +466,13 @@ class ConversationService:
             text_of=message_text,
         )
 
-    def _compose_prompt_with_history(self, *, conversation_id: str, message: dict[str, Any]) -> str:
-        """为外部 coding agent 拼接单聊历史。
+    def _apply_agent_workdir(self, agent, agent_id: str) -> None:
+        """把 agent 的工作目录落到运行实例的 work_path（按 profile 取，含默认值）。
 
-        Claude Code / Codex 直通 CLI，不走 AgentBase 的 ContextEngine 记忆重建；
-        因此这里把当前消息之前的对话历史显式拼进 prompt。
+        native / human_proxy / coding（claude_code、codex）都按各自 profile.workdir 落盘。
         """
-        history = self._conversation_history_before(conversation_id, message["message_id"])
-        current = self._compose_prompt(message)
-        if not history:
-            return current
-        history_text = "\n\n".join(self._format_history_message(item) for item in history)
-        return f"## 对话历史\n{history_text}\n\n## 当前消息\n{current}"
-
-    def _apply_native_workdir(self, agent, agent_id: str) -> None:
-        """把 native agent 的工作目录落到运行实例的 work_path（按 profile 取，含默认值）。"""
         profile = self._runtime_profile(agent_id)
-        if profile.agent_kind not in {"native", "human_proxy"} or not profile.workdir:
+        if not profile.workdir:
             return
         if hasattr(agent, "inject_attribute"):
             agent.inject_attribute(work_path=profile.workdir)
