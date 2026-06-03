@@ -89,8 +89,41 @@ async function handleStopDeployment() {
   }
 }
 
-onMounted(() => {
-  if (artifactType.value === 'deploy' && deployStatus.value === 'running') {
+async function downloadDeploy() {
+  const id = props.artifact?.deployment_id
+  const dir = props.artifact?.download_dir
+  try {
+    const blob = await imApi.downloadDeployment(id, dir)
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = `${(props.artifact?.title || 'deploy').replace(/\s+/g, '_')}.zip`
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(url)
+  } catch {
+    message.error('下载失败')
+  }
+}
+
+onMounted(async () => {
+  if (artifactType.value !== 'deploy') return
+  // failed 状态不查询、不覆盖
+  if (deployStatus.value !== 'running') return
+  // 持久化的 status 是 running：与后端实时对账，避免刷新后误显示“运行中”
+  try {
+    const res = await imApi.listDeployments()
+    const items = res?.items || []
+    const live = items.find((it) => it.deployment_id === props.artifact?.deployment_id)
+    if (live && live.status === 'running') {
+      deployStatus.value = 'running'
+      startHeartbeat()
+    } else {
+      deployStatus.value = 'stopped'
+    }
+  } catch {
+    // 查询失败：退回原有行为（视为运行中并启动心跳）
     startHeartbeat()
   }
 })
@@ -373,6 +406,14 @@ function downloadArtifact() {
         <a v-if="artifact.url && deployStatus === 'running'" :href="artifact.url" target="_blank" rel="noopener" class="artifact-open-link">
           <LinkOutlined /> 打开
         </a>
+        <a-button
+          v-if="artifact.download_dir || artifact.downloadable"
+          type="text"
+          size="small"
+          @click="downloadDeploy"
+        >
+          <template #icon><DownloadOutlined /></template>
+        </a-button>
         <a-popconfirm
           v-if="deployStatus === 'running'"
           title="确认关闭该端口？关闭后服务将停止。"

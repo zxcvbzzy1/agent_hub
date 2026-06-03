@@ -320,28 +320,35 @@ export function buildGroupTimelineItems({ messages = [], events = [] }) {
   const buckets = new Map()
   const consumedEventIds = new Set()
   const artifactsByScope = new Map()
-  const artifactSeenByScope = new Map()
+  // scope -> Map(identity -> 该产物在数组中的下标)，用于「同身份产物保留最新」
+  const artifactIndexByScope = new Map()
 
   for (const event of sortedEvents) {
     if (!isArtifactEvent(event)) continue
     const scope = eventRunScope(event)
     const artifact = event.payload?.artifact || {}
     const identity = artifactIdentity(artifact)
-    let seen = artifactSeenByScope.get(scope)
-    if (!seen) {
-      seen = new Set()
-      artifactSeenByScope.set(scope, seen)
-    }
-    if (identity && seen.has(identity)) continue
-    if (identity) seen.add(identity)
-    const artifacts = artifactsByScope.get(scope) || []
-    artifacts.push({
+    const item = {
       key: `artifact-summary-${event.event_id || `${event.name}-${event.created_at}`}`,
       event,
       actor_id: eventActorId(event),
       artifact,
       created_at: event.created_at || 0,
-    })
+    }
+    const artifacts = artifactsByScope.get(scope) || []
+    let indexByIdentity = artifactIndexByScope.get(scope)
+    if (!indexByIdentity) {
+      indexByIdentity = new Map()
+      artifactIndexByScope.set(scope, indexByIdentity)
+    }
+    // sortedEvents 已按 created_at 升序，后出现者更新。同身份产物（例如 deploy 失败被回收后
+    // 重试拿到同端口同 url）用最新覆盖最早，避免汇总停留在第一个失败版本。
+    if (identity && indexByIdentity.has(identity)) {
+      artifacts[indexByIdentity.get(identity)] = item
+    } else {
+      if (identity) indexByIdentity.set(identity, artifacts.length)
+      artifacts.push(item)
+    }
     artifactsByScope.set(scope, artifacts)
   }
 

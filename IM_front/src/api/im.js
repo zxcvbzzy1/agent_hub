@@ -130,4 +130,7 @@ export const imApi = {
   touchDeployment(deploymentId) {
     return http.post(`/api/im/deployments/${deploymentId}/touch`)
   },
+  downloadDeployment(deploymentId, dir) {
+    return http.get('/api/im/deployments/' + deploymentId + '/download', { params: { dir }, responseType: 'blob' })
+  },
 }

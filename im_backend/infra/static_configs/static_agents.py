@@ -10,7 +10,7 @@ from domain.context.providers import *  # type: ignore  # noqa: E402,F403
 from domain.context.strategy import RecencyStrategy  # type: ignore  # noqa: E402
 from domain.memory.short.default_short_term_memory import DefaultShortTermMemory  # type: ignore  # noqa: E402
 
-nums = 3
+nums = 1
 
 class OperatorExecutor(AgentBase):
     """负责系统操作步骤的 ReACT executor"""
@@ -69,7 +69,7 @@ for i in range(nums):
   operators.append(operator)
 
 
-plan_nums = 2
+plan_nums = 1
 plans =[]
 
 for i in range(plan_nums):
