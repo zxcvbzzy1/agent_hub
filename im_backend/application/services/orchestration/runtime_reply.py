@@ -48,6 +48,7 @@ class PlannerFinalReplyWriter:
         planner_id = payload.get("planner_id") or payload.get("agent_id") or "default_planner"
         self._messages.add_message(
             room_id=room_id,
+            conversation_id=user_message.get("conversation_id", ""),
             sender_type="agent",
             sender_id=planner_id,
             content_parts=[{"type": "text", "text": final}],

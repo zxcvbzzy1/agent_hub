@@ -64,6 +64,18 @@ export const imApi = {
   tasks(roomId) {
     return http.get(`/api/im/rooms/${roomId}/tasks`)
   },
+  roomConversations(roomId) {
+    return http.get('/api/im/rooms/' + roomId + '/conversations')
+  },
+  createRoomConversation(roomId, payload) {
+    return http.post('/api/im/rooms/' + roomId + '/conversations', payload)
+  },
+  roomMessages(roomId, conversationId) {
+    return http.get('/api/im/rooms/' + roomId + '/messages', { params: conversationId ? { conversation_id: conversationId } : {} })
+  },
+  roomTasks(roomId, conversationId) {
+    return http.get('/api/im/rooms/' + roomId + '/tasks', { params: conversationId ? { conversation_id: conversationId } : {} })
+  },
   addMessage(roomId, payload) {
     return http.post(`/api/im/rooms/${roomId}/messages`, payload)
   },
@@ -99,6 +111,9 @@ export const imApi = {
   },
   deleteFavorite(favoriteId) {
     return http.delete('/api/im/favorites/' + favoriteId)
+  },
+  bundleArtifacts(payload) {
+    return http.post('/api/im/artifacts/bundle', payload, { responseType: 'blob' })
   },
   updateConversation(conversationId, payload) {
     return http.patch('/api/im/conversations/' + conversationId, payload)

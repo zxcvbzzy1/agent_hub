@@ -72,8 +72,8 @@ class IMService:
     def delete_room(self, room_id: str) -> dict[str, Any]:
         return self.rooms.delete_room(room_id)
 
-    def list_messages(self, room_id: str) -> list[dict[str, Any]]:
-        return self.messages.list_messages(room_id)
+    def list_messages(self, room_id: str, conversation_id: str | None = None) -> list[dict[str, Any]]:
+        return self.messages.list_messages(room_id, conversation_id=conversation_id)
 
     def get_message(self, message_id: str) -> dict[str, Any]:
         return self.messages.get_message(message_id)
@@ -84,8 +84,16 @@ class IMService:
     def list_agent_messages(self, agent_id: str, user_id: str = "") -> list[dict[str, Any]]:
         return self.messages.list_agent_messages(agent_id, user_id=user_id)
 
-    def list_room_tasks(self, room_id: str) -> list[dict[str, Any]]:
-        return self.runs.list_room_tasks(room_id)
+    def list_room_tasks(self, room_id: str, conversation_id: str | None = None) -> list[dict[str, Any]]:
+        return self.runs.list_room_tasks(room_id, conversation_id=conversation_id)
+
+    def list_room_conversations(self, room_id: str, user_id: str = "") -> list[dict[str, Any]]:
+        return self.conversations.list_room_conversations(room_id, user_id=user_id)
+
+    def create_room_conversation(self, *, room_id: str, created_by: str = "", title: str = "") -> dict[str, Any]:
+        return self.conversations.create_room_conversation(
+            room_id=room_id, created_by=created_by, title=title
+        )
 
     def list_room_run_ids(self, room_id: str) -> list[str]:
         return self.runs.list_room_run_ids(room_id)

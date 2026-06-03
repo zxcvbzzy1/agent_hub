@@ -27,13 +27,16 @@ class GroupMessageService:
         self._rooms = rooms
         self._agents = agents
 
-    def list_messages(self, room_id: str) -> list[dict[str, Any]]:
+    def list_messages(self, room_id: str, conversation_id: str | None = None) -> list[dict[str, Any]]:
         self._rooms.ensure_group_room(room_id)
-        return self._store.find_many(
+        messages = self._store.find_many(
             "im_messages",
             {"room_id": room_id},
             sort=[("created_at", 1)],
         )
+        if conversation_id is not None:
+            messages = [m for m in messages if m.get("conversation_id") == conversation_id]
+        return messages
 
     def get_message(self, message_id: str) -> dict[str, Any]:
         return require_im_message(self._store, message_id)
@@ -45,6 +48,7 @@ class GroupMessageService:
         sender_type: str,
         sender_id: str,
         content_parts: list[dict[str, Any]],
+        conversation_id: str = "",
         mentions: list[str] | None = None,
         reply_to: str = "",
         quote_of: str = "",
@@ -62,6 +66,7 @@ class GroupMessageService:
 
         message = Message.create(
             room_id=room_id,
+            conversation_id=conversation_id,
             sender_type=sender_type,
             sender_id=sender_id,
             content_parts=parts,

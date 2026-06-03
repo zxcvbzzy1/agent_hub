@@ -85,7 +85,8 @@ class AgentBuilderService:
             "- workdir：工作目录，留空表示用后端默认。\n"
             f"- permission_profile：仅 coding（claude_code/codex）有意义，取值 {list(_PERMISSION_PROFILES)}。\n"
             "- tool_names / tool_fields：仅 native 且 agent_type=executor 时有意义。tool_fields 是工具大类，"
-            f"可选：{field_labels}；tool_names 是下面目录里的具体工具名。其它情况一律留空。\n\n"
+            f"可选：{field_labels}；tool_names 是下面目录里的具体工具名。其它情况一律留空。\n"
+            "- tags：1~2 个能力标签短词(中文)，用于在侧栏展示，例如 前端、测试、数据分析。\n\n"
             "## 可用工具目录\n"
             f"{tool_catalog}\n\n"
             "## 对话要求\n"
@@ -98,7 +99,7 @@ class AgentBuilderService:
             "## 当前草稿（供你参考，可继续修改）\n"
             f"```json\n{json.dumps(draft, ensure_ascii=False)}\n```\n\n"
             "草稿 JSON 的字段：name, agent_kind, agent_type, description, role_prompt, workdir, "
-            "permission_profile, tool_names(list), tool_fields(list), ready(bool)。"
+            "permission_profile, tool_names(list), tool_fields(list), tags(list), ready(bool)。"
         )
 
     @staticmethod
@@ -139,6 +140,8 @@ class AgentBuilderService:
             value = parsed.get(key)
             if isinstance(value, list):
                 merged[key] = [str(item) for item in value if isinstance(item, (str, int))]
+        if isinstance(parsed.get("tags"), list):
+            merged["tags"] = [str(x) for x in parsed["tags"] if str(x).strip()][:2]
         return self._sanitize_draft(merged)
 
     @staticmethod
@@ -156,6 +159,7 @@ class AgentBuilderService:
         # 工具选择仅 native+executor 有意义。
         if not (kind == "native" and agent_type == "executor"):
             tool_names, tool_fields = [], []
+        tags = draft.get("tags") if isinstance(draft.get("tags"), list) else []
         return {
             "name": str(draft.get("name") or ""),
             "agent_kind": kind,
@@ -166,4 +170,5 @@ class AgentBuilderService:
             "permission_profile": profile,
             "tool_names": [str(item) for item in tool_names],
             "tool_fields": [str(item) for item in tool_fields],
+            "tags": [str(x).strip() for x in tags if str(x).strip()][:2],
         }

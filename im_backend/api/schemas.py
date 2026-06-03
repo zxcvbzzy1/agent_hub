@@ -65,10 +65,15 @@ class AgentConversationCreateRequest(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class RoomConversationCreateRequest(BaseModel):
+    title: str = ""
+
+
 class MessageCreateRequest(BaseModel):
     sender_type: Literal["user", "agent", "system"] = "user"
     sender_id: str = "user"
     content_parts: list[ContentPartRequest]
+    conversation_id: str = ""
     mentions: list[str] = Field(default_factory=list)
     reply_to: str = ""
     quote_of: str = ""
@@ -157,3 +162,8 @@ class AgentBuilderDraft(BaseModel):
 class AgentBuilderChatRequest(BaseModel):
     messages: list[AgentBuilderMessage] = Field(default_factory=list)
     draft: AgentBuilderDraft | None = None
+
+
+class ArtifactBundleRequest(BaseModel):
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    filename: str = "artifacts.zip"

@@ -187,6 +187,68 @@ class ConversationService:
         self._events.publish(record["conversation_id"], "conversation.created", {"conversation": record})
         return record
 
+    def list_room_conversations(self, room_id: str, user_id: str = "") -> list[dict[str, Any]]:
+        """列出某个群聊 room 下的所有会话（按 created_at 升序）。
+
+        若该 room 还没有任何会话，则创建一条默认会话「默认对话」，并把所有 room_id 命中
+        但 conversation_id 为空/缺失的历史消息回填到这条默认会话上，再连同它一起返回。
+        """
+        conversations = self._store.find_many(
+            "im_conversations",
+            {"room_id": room_id},
+            sort=[("created_at", 1)],
+        )
+        if conversations:
+            return conversations
+
+        conversation = Conversation.create(
+            room_id=room_id,
+            title="默认对话",
+            created_by=user_id or "user",
+            metadata={"conversation_kind": "group", "default": True},
+        )
+        record = self._store.insert_one("im_conversations", conversation.to_dict())
+        self._backfill_room_messages(room_id, record["conversation_id"])
+        self._events.publish(record["conversation_id"], "conversation.created", {"conversation": record})
+        return [record]
+
+    def _backfill_room_messages(self, room_id: str, conversation_id: str) -> None:
+        """把 room 下尚未归属会话的历史消息挂到默认会话上。"""
+        update_many = getattr(self._store, "update_many", None)
+        if callable(update_many):
+            for missing in ({"conversation_id": ""}, {"conversation_id": {"$exists": False}}):
+                try:
+                    update_many("im_messages", {"room_id": room_id, **missing}, {"conversation_id": conversation_id})
+                except Exception:
+                    pass
+            return
+        for message in self._store.find_many("im_messages", {"room_id": room_id}):
+            if not message.get("conversation_id"):
+                self._store.update_one(
+                    "im_messages",
+                    {"message_id": message["message_id"]},
+                    {"conversation_id": conversation_id},
+                )
+
+    def create_room_conversation(
+        self,
+        *,
+        room_id: str,
+        created_by: str = "user",
+        title: str = "",
+    ) -> dict[str, Any]:
+        if self._store.find_one("im_rooms", {"room_id": room_id}) is None:
+            raise KeyError(f"房间不存在: {room_id}")
+        conversation = Conversation.create(
+            room_id=room_id,
+            title=title,
+            created_by=created_by,
+            metadata={"conversation_kind": "group"},
+        )
+        record = self._store.insert_one("im_conversations", conversation.to_dict())
+        self._events.publish(record["conversation_id"], "conversation.created", {"conversation": record})
+        return record
+
     def delete_conversation(self, conversation_id: str) -> dict[str, Any]:
         self.get_conversation(conversation_id)
         stats = self._cleanup.delete_conversation(conversation_id)

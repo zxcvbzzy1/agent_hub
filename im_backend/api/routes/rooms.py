@@ -1,10 +1,16 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from im_backend.api.core import get_current_user, get_im_service, get_room_events
-from im_backend.api.schemas import DispatchRequest, MessageCreateRequest, RoomCreateRequest, RoomUpdateRequest
+from im_backend.api.schemas import (
+    DispatchRequest,
+    MessageCreateRequest,
+    RoomConversationCreateRequest,
+    RoomCreateRequest,
+    RoomUpdateRequest,
+)
 from im_backend.application.services.platform.events import RoomEventStreamService
 from im_backend.application.services.facade import IMService
 
@@ -85,9 +91,13 @@ async def delete_room(
 
 
 @router.get("/rooms/{room_id}/messages")
-async def list_messages(room_id: str, service: IMService = Depends(get_im_service)):
+async def list_messages(
+    room_id: str,
+    conversation_id: str | None = Query(default=None),
+    service: IMService = Depends(get_im_service),
+):
     try:
-        return {"items": service.list_messages(room_id)}
+        return {"items": service.list_messages(room_id, conversation_id=conversation_id)}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -108,6 +118,7 @@ async def add_message(
             sender_id = current_user["user_id"]
         item = service.add_message(
             room_id=room_id,
+            conversation_id=request.conversation_id,
             sender_type=sender_type,
             sender_id=sender_id,
             content_parts=[part.model_dump() for part in request.content_parts],
@@ -124,13 +135,51 @@ async def add_message(
 
 
 @router.get("/rooms/{room_id}/tasks")
-async def list_room_tasks(room_id: str, service: IMService = Depends(get_im_service)):
+async def list_room_tasks(
+    room_id: str,
+    conversation_id: str | None = Query(default=None),
+    service: IMService = Depends(get_im_service),
+):
     try:
-        return {"items": service.list_room_tasks(room_id)}
+        return {"items": service.list_room_tasks(room_id, conversation_id=conversation_id)}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/rooms/{room_id}/conversations")
+async def list_room_conversations(
+    room_id: str,
+    current_user: dict = Depends(get_current_user),
+    service: IMService = Depends(get_im_service),
+):
+    try:
+        return {"items": service.list_room_conversations(room_id, user_id=current_user["user_id"])}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post("/rooms/{room_id}/conversations")
+async def create_room_conversation(
+    room_id: str,
+    request: RoomConversationCreateRequest,
+    current_user: dict = Depends(get_current_user),
+    service: IMService = Depends(get_im_service),
+):
+    try:
+        item = service.create_room_conversation(
+            room_id=room_id,
+            created_by=current_user["user_id"],
+            title=request.title,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"item": item}
 
 
 @router.post("/rooms/{room_id}/dispatch")

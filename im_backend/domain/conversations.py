@@ -9,8 +9,9 @@ from im_backend.domain.common import new_id, now_ts
 @dataclass
 class Conversation:
     conversation_id: str
-    agent_id: str
     title: str
+    agent_id: str = ""
+    room_id: str = ""
     created_by: str = "user"
     avatar_url: str = ""
     pinned: bool = False
@@ -25,15 +26,19 @@ class Conversation:
     def create(
         cls,
         *,
-        agent_id: str,
+        agent_id: str = "",
+        room_id: str = "",
         title: str,
         created_by: str = "user",
         avatar_url: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> "Conversation":
+        if not agent_id and not room_id:
+            raise ValueError("conversation 必须归属 agent 或 room")
         return cls(
             conversation_id=new_id(),
             agent_id=agent_id,
+            room_id=room_id,
             title=title or "新对话",
             created_by=created_by,
             avatar_url=avatar_url,
@@ -44,6 +49,7 @@ class Conversation:
         return {
             "conversation_id": self.conversation_id,
             "agent_id": self.agent_id,
+            "room_id": self.room_id,
             "title": self.title,
             "created_by": self.created_by,
             "avatar_url": self.avatar_url,

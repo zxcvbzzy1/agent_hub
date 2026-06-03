@@ -8,6 +8,8 @@ FrontendEventBridge 把 `artifacts.{type}` 事件镜像到运行事件流（"eve
 
 from __future__ import annotations
 
+import base64
+import re
 from typing import Any, Iterable
 
 ARTIFACT_EVENT_PREFIX = "artifacts."
@@ -103,3 +105,129 @@ def collect_inline_artifact_parts(
             )
         )
     return parts
+
+
+# ---------------------------------------------------------------------------
+# Download helpers
+# ---------------------------------------------------------------------------
+
+def _safe_filename(name: str, fallback: str) -> str:
+    """Replace filesystem-unsafe characters with underscore; fall back if empty."""
+    cleaned = re.sub(r'[\\/:*?"<>|\x00-\x1f]', "_", (name or "").strip())
+    return cleaned if cleaned else fallback
+
+
+def _ext_from_mime(mime: str | None) -> str:
+    """Map common MIME types to file extensions (no dot)."""
+    _MAP = {
+        "text/markdown": "md",
+        "text/html": "html",
+        "application/json": "json",
+        "text/plain": "txt",
+    }
+    return _MAP.get((mime or "").strip().lower(), "")
+
+
+def _artifact_id_from_url(url: str) -> str | None:
+    """Extract artifact id from a URL ending in /api/im/artifacts/<id>."""
+    m = re.search(r"/api/im/artifacts/([^/?#]+)", url)
+    return m.group(1) if m else None
+
+
+def _ensure_ext(filename: str, ext: str) -> str:
+    """Append .ext to filename if it has no extension already."""
+    if "." not in filename.rsplit("/", 1)[-1]:
+        return filename + "." + ext
+    return filename
+
+
+def artifact_download_file(
+    artifact: dict[str, Any],
+    *,
+    index: int = 0,
+    storage: Any = None,
+) -> tuple[str, bytes]:
+    """Return (filename, raw_bytes) for a single artifact dict.
+
+    storage, when provided, must be an ArtifactStorage instance whose
+    .get(id) returns a dict with "path" and "filename" keys.
+    """
+    artifact_type = str(artifact.get("type", "")).strip().lower()
+
+    if artifact_type == "document":
+        text = str(artifact.get("content") or "")
+        ext = (
+            artifact.get("format")
+            or _ext_from_mime(artifact.get("mime_type"))
+            or "txt"
+        )
+        raw_title = str(artifact.get("title") or "")
+        base = _safe_filename(raw_title, f"document-{index}")
+        filename = base if "." in base.rsplit("/", 1)[-1] else f"{base}.{ext}"
+        return filename, text.encode("utf-8")
+
+    if artifact_type == "message":
+        text = str(artifact.get("content") or "")
+        raw_title = str(artifact.get("title") or "")
+        base = _safe_filename(raw_title, f"message-{index}")
+        filename = _ensure_ext(base, "txt")
+        return filename, text.encode("utf-8")
+
+    if artifact_type == "diff":
+        text = str(artifact.get("after") or artifact.get("content") or "")
+        raw_title = str(artifact.get("title") or "")
+        base = _safe_filename(raw_title, f"diff-{index}")
+        filename = _ensure_ext(base, "diff")
+        return filename, text.encode("utf-8")
+
+    if artifact_type == "web":
+        html = artifact.get("html")
+        url = artifact.get("url")
+        raw_title = str(artifact.get("title") or "")
+        if html:
+            base = _safe_filename(raw_title, f"web-{index}")
+            filename = _ensure_ext(base, "html")
+            return filename, str(html).encode("utf-8")
+        if url:
+            return f"web-{index}.url.txt", str(url).encode("utf-8")
+        base = _safe_filename(raw_title, f"web-{index}")
+        filename = _ensure_ext(base, "html")
+        return filename, b""
+
+    if artifact_type == "image":
+        url = str(artifact.get("url") or "")
+        raw_title = str(artifact.get("title") or "")
+        if url.startswith("data:"):
+            # data:<mime>;base64,<payload>
+            m = re.match(r"data:[^;]*;base64,(.+)", url, re.DOTALL)
+            if m:
+                raw_bytes = base64.b64decode(m.group(1))
+            else:
+                raw_bytes = b""
+            base = _safe_filename(raw_title, f"image-{index}")
+            # Try to keep extension from mime in data URI
+            mime_m = re.match(r"data:([^;]+);", url)
+            ext = _ext_from_mime(mime_m.group(1) if mime_m else "") or "bin"
+            filename = base if "." in base.rsplit("/", 1)[-1] else f"{base}.{ext}"
+            return filename, raw_bytes
+        artifact_id = _artifact_id_from_url(url)
+        if artifact_id and storage is not None:
+            item = storage.get(artifact_id)
+            if item:
+                file_path = item.get("path", "")
+                filename = _safe_filename(
+                    item.get("filename") or raw_title, f"image-{index}"
+                )
+                try:
+                    with open(file_path, "rb") as fh:
+                        return filename, fh.read()
+                except OSError:
+                    pass
+        return f"image-{index}.url.txt", url.encode("utf-8")
+
+    # default / unknown
+    content = str(artifact.get("content") or artifact.get("url") or "")
+    raw_title = str(artifact.get("title") or "")
+    base = _safe_filename(raw_title, f"artifact-{index}")
+    filename = _ensure_ext(base, "txt")
+    return filename, content.encode("utf-8")

@@ -22,6 +22,8 @@ def history_before(
             break
         if message.get("sender_type") not in {"user", "agent"}:
             continue
+        if message.get("status") == "cancelled":
+            continue
         if require_text is not None and not require_text(message):
             continue
         history.append(message)

@@ -37,6 +37,8 @@ export const useIMStore = defineStore('im', {
     mode: 'empty',
     messages: [],
     conversations: [],
+    groupConversations: [],
+    currentGroupConversation: null,
     tasks: [],
     artifacts: [],
     contexts: [],
@@ -105,13 +107,19 @@ export const useIMStore = defineStore('im', {
         this.tasks = []
         return []
       }
-      const response = await imApi.tasks(roomId)
+      const conversationId = this.currentGroupConversation?.conversation_id
+      const response = await imApi.roomTasks(roomId, conversationId)
       this.tasks = response.items || []
       return this.tasks
     },
+    async fetchGroupConversations(roomId) {
+      const r = await imApi.roomConversations(roomId)
+      this.groupConversations = r.items || []
+      return this.groupConversations
+    },
     async refreshMessages() {
       if (this.currentRoom?.type === 'group') {
-        const response = await imApi.messages(this.currentRoom.room_id)
+        const response = await imApi.roomMessages(this.currentRoom.room_id, this.currentGroupConversation?.conversation_id)
         this.messages = response.items || []
         return this.messages
       }
@@ -155,6 +163,8 @@ export const useIMStore = defineStore('im', {
         this.closeStream()
         this.currentGroupRoom = null
         this.currentRoom = null
+        this.groupConversations = []
+        this.currentGroupConversation = null
         this.messages = []
         this.events = []
         this.tasks = []
@@ -206,6 +216,21 @@ export const useIMStore = defineStore('im', {
     },
     async deleteConversation(conversationId) {
       await imApi.deleteConversation(conversationId)
+      if (this.currentRoom?.type === 'group') {
+        const wasCurrent = this.currentGroupConversation?.conversation_id === conversationId
+        await this.fetchGroupConversations(this.currentRoom.room_id)
+        if (wasCurrent) {
+          const next = this.groupConversations[0]
+          if (next) {
+            await this.selectGroupConversation(next.conversation_id)
+          } else {
+            this.currentGroupConversation = null
+            this.messages = []
+            this.tasks = []
+          }
+        }
+        return
+      }
       const agentId = this.currentAgentId
       if (this.currentConversation?.conversation_id === conversationId) {
         this.closeStream()
@@ -224,6 +249,8 @@ export const useIMStore = defineStore('im', {
       this.currentConversation = null
       this.currentGroupRoom = null
       this.currentRoom = null
+      this.groupConversations = []
+      this.currentGroupConversation = null
       this.messages = []
       this.events = []
       this.tasks = []
@@ -242,6 +269,8 @@ export const useIMStore = defineStore('im', {
       this.currentConversation = conversationResponse.item
       this.currentGroupRoom = null
       this.currentRoom = null
+      this.groupConversations = []
+      this.currentGroupConversation = null
       this.currentAgentId = conversationResponse.item.agent_id || this.currentAgentId
       this.mode = 'dm'
       this.messages = messageResponse.items || []
@@ -252,21 +281,46 @@ export const useIMStore = defineStore('im', {
       this.loadFavorites().catch(() => {})
     },
     async selectGroupRoom(roomId) {
-      const [roomResponse, messageResponse] = await Promise.all([
-        imApi.room(roomId),
-        imApi.messages(roomId),
-      ])
+      const roomResponse = await imApi.room(roomId)
       this.currentGroupRoom = roomResponse.item
       this.currentConversation = null
       this.currentRoom = roomResponse.item
       this.currentAgentId = ''
       this.mode = 'group'
-      this.messages = messageResponse.items || []
+      this.messages = []
       this.events = []
       this.conversations = []
+      this.currentGroupConversation = null
+      // ROOM SSE 只在这里连接一次，切换会话不重连。
       this.connectRoom(roomId)
-      await this.fetchTasks(roomId)
+      await this.fetchGroupConversations(roomId)
+      const first = this.groupConversations[0]
+      if (first) {
+        await this.selectGroupConversation(first.conversation_id)
+      } else {
+        this.currentGroupConversation = null
+        this.messages = []
+        this.tasks = []
+      }
+    },
+    async selectGroupConversation(conversationId) {
+      this.currentGroupConversation = this.groupConversations.find(
+        (item) => item.conversation_id === conversationId,
+      ) || null
+      const roomId = this.currentRoom?.room_id
+      const [messageResponse, taskResponse] = await Promise.all([
+        imApi.roomMessages(roomId, conversationId),
+        imApi.roomTasks(roomId, conversationId),
+      ])
+      this.messages = messageResponse.items || []
+      this.tasks = taskResponse.items || []
       this.loadFavorites().catch(() => {})
+    },
+    async createGroupConversation(title = '') {
+      const r = await imApi.createRoomConversation(this.currentRoom.room_id, { title })
+      await this.fetchGroupConversations(this.currentRoom.room_id)
+      await this.selectGroupConversation(r.item.conversation_id)
+      return r.item
     },
     async sendMessage(payload, options = {}) {
       if (this.mode === 'agent' && this.currentAgentId) {
@@ -275,7 +329,10 @@ export const useIMStore = defineStore('im', {
       if (!this.currentRoom && !this.currentConversation) throw new Error('请先选择或创建会话')
       const isGroup = this.mode === 'group' && this.currentRoom
       const response = isGroup
-        ? await imApi.addMessage(this.currentRoom.room_id, payload)
+        ? await imApi.addMessage(this.currentRoom.room_id, {
+            ...payload,
+            conversation_id: this.currentGroupConversation?.conversation_id,
+          })
         : await imApi.addConversationMessage(this.currentConversation.conversation_id, payload)
       const messageItem = response.item
       if (isGroup) {
@@ -346,8 +403,12 @@ export const useIMStore = defineStore('im', {
     async loadFavorites() {
       let scopeType, scopeId
       if (this.currentRoom?.type === 'group') {
-        scopeType = 'room'
-        scopeId = this.currentRoom.room_id
+        if (!this.currentGroupConversation) {
+          this.favorites = []
+          return
+        }
+        scopeType = 'conversation'
+        scopeId = this.currentGroupConversation.conversation_id
       } else if (this.currentConversation) {
         scopeType = 'conversation'
         scopeId = this.currentConversation.conversation_id
@@ -366,13 +427,28 @@ export const useIMStore = defineStore('im', {
       await imApi.deleteFavorite(favoriteId)
       await this.loadFavorites()
     },
+    async toggleFavoriteEnabled(favoriteId, enabled) {
+      await imApi.updateFavorite(favoriteId, { enabled })
+      await this.loadFavorites()
+    },
+    async bundleArtifacts(artifacts, filename = 'artifacts.zip') {
+      return imApi.bundleArtifacts({ artifacts, filename })
+    },
     async toggleConversationPinned(conversationId, pinned) {
       await imApi.updateConversation(conversationId, { pinned })
-      await this.fetchConversations()
+      if (this.currentRoom?.type === 'group') {
+        await this.fetchGroupConversations(this.currentRoom.room_id)
+      } else {
+        await this.fetchConversations()
+      }
     },
     async toggleConversationArchived(conversationId, archived) {
       await imApi.updateConversation(conversationId, { archived })
-      await this.fetchConversations()
+      if (this.currentRoom?.type === 'group') {
+        await this.fetchGroupConversations(this.currentRoom.room_id)
+      } else {
+        await this.fetchConversations()
+      }
     },
     async regenerateReply(agentMessage) {
       const userId = agentMessage?.metadata?.reply_to
@@ -441,8 +517,17 @@ export const useIMStore = defineStore('im', {
       this.events.push(event)
       if (event.name === 'message.created') {
         const messageItem = event.payload?.message
-        if (messageItem) this.mergeMessage(messageItem)
-        if (this.currentRoom?.type === 'group') this.fetchTasks().catch(() => {})
+        if (this.currentRoom?.type === 'group') {
+          // 同房间内的多会话隔离：只并入当前会话的消息，忽略其它会话。
+          if (messageItem && messageItem.conversation_id === this.currentGroupConversation?.conversation_id) {
+            this.mergeMessage(messageItem)
+          }
+          this.fetchTasks().catch(() => {})
+          // 刷新群会话列表排序（最近活跃靠前等）。
+          this.fetchGroupConversations(this.currentRoom.room_id).catch(() => {})
+        } else {
+          if (messageItem) this.mergeMessage(messageItem)
+        }
         if (this.currentAgentId) this.fetchConversations().catch(() => {})
       }
       if (event.name === 'confirmation.requested' && event.payload?.confirmation) {
@@ -457,8 +542,16 @@ export const useIMStore = defineStore('im', {
       if (event.name === 'favorite.created' || event.name === 'favorite.updated' || event.name === 'favorite.deleted') {
         this.loadFavorites().catch(() => {})
       }
-      if (event.name === 'run.created' && this.currentRoom?.type === 'group') {
-        this.fetchTasks().catch(() => {})
+      if (event.name === 'run.created') {
+        if (this.currentRoom?.type === 'group') this.fetchTasks().catch(() => {})
+        // 把 run_id 回填到对应消息，便于 ChatView 推导会话的 run-id 集合做时间线隔离。
+        const messageId = event.payload?.message_id
+        const runId = event.payload?.run?.run_id
+        if (messageId && runId) {
+          this.messages = this.messages.map((messageItem) => (
+            messageItem.message_id === messageId ? { ...messageItem, run_id: runId } : messageItem
+          ))
+        }
       }
       if (event.name === 'agent.reply.started') {
         const messageId = event.payload?.message_id

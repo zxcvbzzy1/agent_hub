@@ -153,18 +153,80 @@ function copy(text) {
 }
 
 function downloadDocument() {
+  downloadArtifact()
+}
+
+function downloadArtifact() {
   const artifact = props.artifact || {}
-  const blob = new Blob([docContent.value], { type: artifact.mime_type || 'text/plain;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  const ext = artifact.format || 'txt'
-  const base = (artifact.title || 'document').replace(/\s+/g, '_')
-  anchor.download = base.includes('.') ? base : `${base}.${ext}`
-  document.body.appendChild(anchor)
-  anchor.click()
-  anchor.remove()
-  URL.revokeObjectURL(url)
+  const type = (artifact.type || 'message').toLowerCase()
+
+  if (type === 'document') {
+    const blob = new Blob([docContent.value], { type: artifact.mime_type || 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    const ext = artifact.format || 'txt'
+    const base = (artifact.title || 'document').replace(/\s+/g, '_')
+    anchor.download = base.includes('.') ? base : `${base}.${ext}`
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(url)
+  } else if (type === 'message') {
+    const blob = new Blob([artifact.content || ''], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    const base = (artifact.title || 'message').replace(/\s+/g, '_')
+    anchor.download = `${base}.txt`
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(url)
+  } else if (type === 'diff') {
+    const content = artifact.after ?? artifact.content ?? ''
+    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = url
+    const rawBase = artifact.file_path || artifact.title || 'diff'
+    const base = String(rawBase).replace(/\s+/g, '_')
+    anchor.download = base.includes('.') ? base : `${base}.diff`
+    document.body.appendChild(anchor)
+    anchor.click()
+    anchor.remove()
+    URL.revokeObjectURL(url)
+  } else if (type === 'web') {
+    if (artifact.html) {
+      const blob = new Blob([artifact.html], { type: 'text/html;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      const base = (artifact.title || 'web').replace(/\s+/g, '_')
+      anchor.download = base.includes('.') ? base : `${base}.html`
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      URL.revokeObjectURL(url)
+    } else if (artifact.url) {
+      const anchor = document.createElement('a')
+      anchor.href = artifact.url
+      anchor.download = (artifact.title || 'web').replace(/\s+/g, '_')
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+    }
+  } else if (type === 'image') {
+    if (artifact.url) {
+      const anchor = document.createElement('a')
+      anchor.href = artifact.url
+      const urlBasename = artifact.url.split('/').pop()?.split('?')[0] || 'image'
+      anchor.download = (artifact.title || urlBasename || 'image').replace(/\s+/g, '_')
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+    }
+  }
 }
 </script>
 
@@ -195,6 +257,9 @@ function downloadDocument() {
         <a-button type="text" size="small" @click="copy(artifact.after)">
           <template #icon><CopyOutlined /></template>
         </a-button>
+        <a-button type="text" size="small" @click="downloadArtifact">
+          <template #icon><DownloadOutlined /></template>
+        </a-button>
       </template>
 
       <template v-else-if="artifactType === 'web'">
@@ -205,11 +270,23 @@ function downloadDocument() {
         <a v-if="artifact.url" :href="artifact.url" target="_blank" rel="noopener" class="artifact-open-link">
           <LinkOutlined /> 打开
         </a>
+        <a-button type="text" size="small" @click="downloadArtifact">
+          <template #icon><DownloadOutlined /></template>
+        </a-button>
       </template>
 
       <template v-else-if="artifactType === 'message'">
         <a-button type="text" size="small" @click="copy(artifact.content)">
           <template #icon><CopyOutlined /></template>
+        </a-button>
+        <a-button type="text" size="small" @click="downloadArtifact">
+          <template #icon><DownloadOutlined /></template>
+        </a-button>
+      </template>
+
+      <template v-else-if="artifactType === 'image'">
+        <a-button type="text" size="small" @click="downloadArtifact">
+          <template #icon><DownloadOutlined /></template>
         </a-button>
       </template>
     </div>

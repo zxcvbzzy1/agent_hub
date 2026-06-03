@@ -38,12 +38,12 @@ class GroupRunService:
         self._favorites = favorites
         self._default_workdir = str(Path(default_workdir).expanduser().resolve())
 
-    def list_room_tasks(self, room_id: str) -> list[dict[str, Any]]:
+    def list_room_tasks(self, room_id: str, conversation_id: str | None = None) -> list[dict[str, Any]]:
         room = self._rooms.ensure_group_room(room_id)
         if room.get("type") != "group":
             raise ValueError("只有群聊 room 才有编排任务")
         tasks: list[dict[str, Any]] = []
-        for message in self._messages.list_messages(room_id):
+        for message in self._messages.list_messages(room_id, conversation_id=conversation_id):
             run_id = message.get("run_id")
             if not run_id:
                 continue
@@ -90,6 +90,7 @@ class GroupRunService:
         if message.get("sender_type") != "user":
             raise ValueError("只能派发 user 消息")
 
+        conversation_id = message.get("conversation_id") or ""
         prompt = compose_prompt_with_references(
             message,
             lookup=lambda mid: find_im_message(self._store, mid),
@@ -105,6 +106,7 @@ class GroupRunService:
                 message_id=message_id,
                 profiles=external_profiles,
                 prompt=prompt,
+                conversation_id=conversation_id,
             )
 
         native_agent_ids = [
@@ -126,6 +128,7 @@ class GroupRunService:
             max_replan_rounds=max_replan_rounds,
             auto_start=auto_start,
             user_id=user_id,
+            conversation_id=conversation_id,
         )
         return self._mark_dispatched(room_id, message_id, run)
 
@@ -186,6 +189,7 @@ class GroupRunService:
         max_replan_rounds: int = 3,
         auto_start: bool = True,
         user_id: str = "",
+        conversation_id: str = "",
     ) -> dict[str, Any]:
         if user_id:
             self._agents.ensure_agent_access(planner_agent_id, user_id)
@@ -194,7 +198,9 @@ class GroupRunService:
             title=f"IM:{room.get('title', room['room_id'])}",
             metadata={"source": "im_backend", "room_id": room["room_id"]},
         )
-        for history_message in self._room_history_before(room["room_id"], message["message_id"]):
+        for history_message in self._room_history_before(
+            room["room_id"], message["message_id"], conversation_id
+        ):
             self._bridge.add_runtime_message(
                 conversation_id=runtime_conversation["conversation_id"],
                 role="assistant" if history_message.get("sender_type") == "agent" else "user",
@@ -224,12 +230,18 @@ class GroupRunService:
             conversation_id=runtime_conversation["conversation_id"],
             message_id=runtime_message["message_id"],
             auto_start=auto_start,
-            pinned_context=self._favorites.context_items("room", room["room_id"]),
+            pinned_context=(
+                self._favorites.context_items("conversation", conversation_id)
+                if conversation_id
+                else self._favorites.context_items("room", room["room_id"])
+            ),
         )
 
-    def _room_history_before(self, room_id: str, message_id: str) -> list[dict[str, Any]]:
+    def _room_history_before(
+        self, room_id: str, message_id: str, conversation_id: str = ""
+    ) -> list[dict[str, Any]]:
         return history_before(
-            self._messages.list_messages(room_id),
+            self._messages.list_messages(room_id, conversation_id=conversation_id or None),
             message_id,
             require_text=self._messages.message_text,
             tail=15,
@@ -251,6 +263,7 @@ class GroupRunService:
         message_id: str,
         profiles: list[AgentRuntimeProfile],
         prompt: str,
+        conversation_id: str = "",
     ) -> dict[str, Any]:
         payload = {
             "message_id": message_id,
@@ -262,6 +275,7 @@ class GroupRunService:
         }
         confirmation = self._messages.add_message(
             room_id=room_id,
+            conversation_id=conversation_id,
             sender_type="system",
             sender_id="im_backend",
             content_parts=[

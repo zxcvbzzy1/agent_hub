@@ -122,8 +122,10 @@ class FavoriteService:
             raise ValueError("scope_type 必须是 conversation 或 room")
 
     def _resolve_message_scope(self, message: dict[str, Any]) -> tuple[str, str]:
-        if message.get("room_id"):
-            return "room", message["room_id"]
+        # 优先按 conversation 归属（群聊会话消息同时带 room_id 与 conversation_id，
+        # 收藏应落到具体会话上）；DM 消息只有 conversation_id，行为不变。
         if message.get("conversation_id"):
             return "conversation", message["conversation_id"]
+        if message.get("room_id"):
+            return "room", message["room_id"]
         raise ValueError("消息既不属于 room 也不属于 conversation")

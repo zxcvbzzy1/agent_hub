@@ -9,6 +9,7 @@ import {
   CopyOutlined,
   DeleteOutlined,
   DeploymentUnitOutlined,
+  DownloadOutlined,
   EllipsisOutlined,
   ExpandAltOutlined,
   FileTextOutlined,
@@ -25,6 +26,7 @@ import {
   SafetyCertificateOutlined,
   SearchOutlined,
   SendOutlined,
+  StarFilled,
   StarOutlined,
   StopOutlined,
   TeamOutlined,
@@ -38,6 +40,7 @@ import {
   eventActorId,
   eventColor,
   eventContent,
+  eventRunScope,
   eventTitle,
   eventTone,
   isPrimaryOutputEvent,
@@ -98,6 +101,7 @@ const agentForm = reactive({
   avatar_url: '',
   tool_names: [],
   tool_fields: [],
+  tags: [],
 })
 // 对话式创建：本地维护聊天记录与草稿，最终应用到 agentForm 后仍走原有 createAgent。
 const agentCreateTab = ref('form')
@@ -158,6 +162,11 @@ const groupedTools = computed(() => {
     }))
 })
 
+// 群聊与单聊侧栏统一使用对话列表：群聊取 groupConversations，单聊取 conversations。
+const feedConversations = computed(() => {
+  return im.currentRoom?.type === 'group' ? im.groupConversations : im.conversations
+})
+
 const conversationGroups = computed(() => {
   const query = conversationQuery.value.trim().toLowerCase()
   const matches = (item) => {
@@ -166,7 +175,7 @@ const conversationGroups = computed(() => {
     const text = (latestMessageText(item) || '').toLowerCase()
     return title.includes(query) || text.includes(query)
   }
-  const list = (im.conversations || []).filter(matches)
+  const list = (feedConversations.value || []).filter(matches)
   // 归档优先级高于置顶（与后端"归档自动取消置顶"一致），保证三组互斥。
   return {
     pinned: list.filter((item) => item.pinned === true && item.archived !== true),
@@ -181,6 +190,9 @@ const currentMembers = computed(() => {
 })
 
 const activeTitle = computed(() => {
+  if (im.currentRoom?.type === 'group') {
+    return im.currentGroupConversation?.title || im.currentRoom.title
+  }
   if (im.currentRoom) return im.currentRoom.title
   if (im.currentConversation) return im.currentConversation.title
   if (im.currentAgent) return im.currentAgent.name
@@ -214,12 +226,6 @@ const mentionCandidates = computed(() => {
   })
 })
 
-const sideItems = computed(() => {
-  if (im.currentRoom?.type === 'group') return im.tasks
-  if (im.currentAgentId) return im.conversations
-  return []
-})
-
 const displayEvents = computed(() => compactLlmEvents(im.events))
 
 const runningGroupTask = computed(() => {
@@ -242,9 +248,15 @@ const canInterrupt = computed(() => {
 
 const chatItems = computed(() => {
   if (im.currentRoom?.type === 'group') {
+    // SSE 是房间级的，im.events 含本房间全部 run 的 runtime events；
+    // 用当前对话消息上的 run_id 集合过滤，避免把其它对话的编排轨迹串进当前视图。
+    const convRunIds = new Set(im.messages.map((message) => message.run_id).filter(Boolean))
+    const groupEvents = displayEvents.value.filter(
+      (event) => runtimeEventNames.has(event.name) && convRunIds.has(eventRunScope(event)),
+    )
     return buildGroupTimelineItems({
       messages: im.messages,
-      events: displayEvents.value.filter((event) => runtimeEventNames.has(event.name)),
+      events: groupEvents,
     })
   }
   const traces = buildConversationTraces({
@@ -451,7 +463,8 @@ function confirmInterruptTrace(trace) {
 }
 
 function sideItemTitle(item) {
-  if (im.currentRoom?.type === 'group') return item.status || item.mode || '编排任务'
+  // 群聊与单聊侧栏都渲染对话对象，统一以对话标题为主。
+  if (im.currentRoom?.type === 'group') return item.title || '群聊对话'
   return item.title || `${agentName(item.agent_id)} 对话`
 }
 
@@ -460,14 +473,30 @@ function sideItemTime(item) {
 }
 
 async function openSideItem(item) {
-  if (im.currentRoom?.type === 'group') return
-  if (item.conversation_id) await im.selectConversation(item.conversation_id)
+  if (!item.conversation_id) return
+  if (im.currentRoom?.type === 'group') {
+    await im.selectGroupConversation(item.conversation_id)
+  } else {
+    await im.selectConversation(item.conversation_id)
+  }
 }
 
 async function newConversation() {
-  if (!im.currentAgentId) return
-  await im.createConversation(im.currentAgentId)
+  if (im.currentRoom?.type === 'group') {
+    await im.createGroupConversation()
+  } else {
+    if (!im.currentAgentId) return
+    await im.createConversation(im.currentAgentId)
+  }
   await scrollToBottom()
+}
+
+// 群聊/单聊统一的对话激活判断：群聊比对 currentGroupConversation，单聊比对 currentConversation。
+function isActiveConversation(item) {
+  if (im.currentRoom?.type === 'group') {
+    return item.conversation_id === im.currentGroupConversation?.conversation_id
+  }
+  return item.conversation_id === im.currentConversation?.conversation_id
 }
 
 async function createRoom() {
@@ -514,6 +543,7 @@ async function createAgent() {
         agent_kind: agentKindValue,
         description: agentForm.description,
         capabilities: agentForm.description ? [agentForm.description] : [],
+        tags: [...agentForm.tags],
         workdir: agentForm.workdir,
         permission_profile: agentForm.permission_profile || 'human_confirm',
         avatar_url: agentForm.avatar_url || '',
@@ -530,6 +560,7 @@ async function createAgent() {
     agentForm.avatar_url = ''
     agentForm.tool_names = []
     agentForm.tool_fields = []
+    agentForm.tags = []
     message.success('Agent 已创建')
   } finally {
     creatingAgent.value = false
@@ -566,6 +597,7 @@ function applyDraftToForm() {
   agentForm.permission_profile = d.permission_profile || 'human_confirm'
   agentForm.tool_names = [...(d.tool_names || [])]
   agentForm.tool_fields = [...(d.tool_fields || [])]
+  agentForm.tags = [...(d.tags || [])]
   if (!(im.tools || []).length) im.fetchTools()
   agentCreateTab.value = 'form'
   message.success('已填入表单，请复核后点击创建')
@@ -828,12 +860,123 @@ async function regenerateMessage(item) {
   }
 }
 
+function favoriteForMessage(messageId) {
+  return im.favorites.find((fav) => fav.source_message_id === messageId) || null
+}
+
+function isMessageFavorited(messageId) {
+  return Boolean(favoriteForMessage(messageId))
+}
+
 async function favoriteMessageAction(item) {
   try {
-    await im.favoriteMessage(item.message_id)
-    message.success('已加入固定上下文')
+    const existing = favoriteForMessage(item.message_id)
+    if (existing) {
+      await im.removeFavorite(existing.favorite_id)
+      message.success('已取消收藏')
+    } else {
+      await im.favoriteMessage(item.message_id)
+      message.success('已加入固定上下文')
+    }
   } catch (error) {
-    message.error('收藏失败')
+    message.error('操作失败')
+  }
+}
+
+function favoriteSummary(item) {
+  const text = (item.content || '').trim()
+  return text.length > 90 ? text.slice(0, 90) + '…' : (text || '（无文本内容）')
+}
+
+function sanitizeFilename(name) {
+  const cleaned = (name || '').replace(/[\\/:*?"<>|]/g, '_').trim()
+  return cleaned || 'artifact'
+}
+
+function collectMessageArtifacts(entry) {
+  const out = []
+  const parts = entry?.message?.content_parts || []
+  for (const part of parts) {
+    if (part.type === 'artifact') out.push(part.metadata?.artifact || part)
+  }
+  for (const item of entry?.run_artifacts || []) {
+    if (item?.artifact) out.push(item.artifact)
+  }
+  return out
+}
+
+function hasDownloadableArtifacts(entry) {
+  return collectMessageArtifacts(entry).length > 0
+}
+
+function triggerBlobDownload(blob, filename) {
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  URL.revokeObjectURL(url)
+}
+
+function triggerUrlDownload(fileUrl, filename) {
+  const anchor = document.createElement('a')
+  anchor.href = fileUrl
+  anchor.download = filename
+  anchor.target = '_blank'
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+}
+
+function artifactDownloadName(artifact) {
+  const type = (artifact?.type || 'message').toLowerCase()
+  const base = sanitizeFilename(artifact?.title || artifact?.file_path || type) || type
+  const extByType = { document: artifact?.format || 'txt', message: 'txt', diff: 'diff', web: 'html', image: '' }
+  const ext = extByType[type] ?? 'txt'
+  if (!ext) return base
+  return base.includes('.') ? base : base + '.' + ext
+}
+
+function downloadSingleArtifact(artifact) {
+  const type = (artifact?.type || 'message').toLowerCase()
+  if ((type === 'image' || type === 'web') && !artifact?.html && artifact?.url) {
+    triggerUrlDownload(artifact.url, artifactDownloadName(artifact))
+    return
+  }
+  let text = ''
+  if (type === 'document' || type === 'message') text = artifact?.content || ''
+  else if (type === 'diff') text = artifact?.after || artifact?.content || ''
+  else if (type === 'web') text = artifact?.html || artifact?.url || ''
+  else text = artifact?.content || artifact?.url || ''
+  const blob = new Blob([text], { type: artifact?.mime_type || 'text/plain;charset=utf-8' })
+  triggerBlobDownload(blob, artifactDownloadName(artifact))
+}
+
+async function downloadMessageArtifacts(entry) {
+  const artifacts = collectMessageArtifacts(entry)
+  if (!artifacts.length) return
+  try {
+    if (artifacts.length === 1) {
+      downloadSingleArtifact(artifacts[0])
+    } else {
+      const blob = await im.bundleArtifacts(artifacts, '消息产物.zip')
+      triggerBlobDownload(blob, '消息产物.zip')
+    }
+  } catch (error) {
+    message.error('下载失败')
+  }
+}
+
+async function downloadRunArtifacts(entry) {
+  const artifacts = (entry?.run_artifacts || []).map((item) => item.artifact).filter(Boolean)
+  if (!artifacts.length) return
+  try {
+    const blob = await im.bundleArtifacts(artifacts, '群聊产物.zip')
+    triggerBlobDownload(blob, '群聊产物.zip')
+  } catch (error) {
+    message.error('打包下载失败')
   }
 }
 
@@ -923,7 +1066,7 @@ watch(
 )
 
 watch(
-  () => [im.currentConversation?.conversation_id, im.currentRoom?.room_id],
+  () => [im.currentConversation?.conversation_id, im.currentRoom?.room_id, im.currentGroupConversation?.conversation_id],
   () => {
     previewMessage.value = null
     replyTarget.value = null
@@ -989,6 +1132,9 @@ onUnmounted(() => {
           <div>
             <strong>{{ agent.name }}</strong>
             <small>{{ agentKind(agent.agent_id) }}</small>
+            <div v-if="agent.metadata?.tags?.length" class="agent-tags">
+              <span v-for="tag in agent.metadata.tags.slice(0, 2)" :key="tag" class="agent-tag">{{ tag }}</span>
+            </div>
           </div>
           <a-button
             v-if="!['default_executor', 'default_planner'].includes(agent.agent_id)"
@@ -1032,11 +1178,11 @@ onUnmounted(() => {
       <section class="side-feed">
         <div class="side-feed-head">
           <button class="section-title section-title-toggle" @click="feedSectionOpen = !feedSectionOpen">
-            <span>{{ im.currentRoom?.type === 'group' ? '编排任务' : '对话列表' }}</span>
+            <span>对话列表</span>
             <RightOutlined class="feed-group-chevron" :class="{ open: feedSectionOpen }" />
           </button>
           <a-button
-            v-if="im.currentAgentId && im.currentRoom?.type !== 'group'"
+            v-if="im.currentRoom?.type === 'group' || im.currentAgentId"
             type="text"
             size="small"
             @click.stop="newConversation"
@@ -1046,22 +1192,6 @@ onUnmounted(() => {
           </a-button>
         </div>
         <template v-if="feedSectionOpen">
-
-        <template v-if="im.currentRoom?.type === 'group'">
-          <a-empty v-if="!sideItems.length" description="暂无记录" />
-          <button
-            v-for="item in sideItems"
-            :key="item.task_id || item.message_id"
-            class="feed-item"
-            @click="openSideItem(item)"
-          >
-            <strong>{{ sideItemTitle(item) }}</strong>
-            <span>{{ latestMessageText(item) }}</span>
-            <small>{{ formatTime(sideItemTime(item)) }}</small>
-          </button>
-        </template>
-
-        <template v-else>
           <a-input
             v-model:value="conversationQuery"
             class="side-search"
@@ -1086,7 +1216,7 @@ onUnmounted(() => {
               v-for="item in conversationGroups.pinned"
               :key="item.conversation_id"
               class="feed-item"
-              :class="{ active: item.conversation_id === im.currentConversation?.conversation_id }"
+              :class="{ active: isActiveConversation(item) }"
               @click="openSideItem(item)"
             >
               <strong>{{ sideItemTitle(item) }}</strong>
@@ -1118,7 +1248,7 @@ onUnmounted(() => {
               v-for="item in conversationGroups.normal"
               :key="item.conversation_id"
               class="feed-item"
-              :class="{ active: item.conversation_id === im.currentConversation?.conversation_id }"
+              :class="{ active: isActiveConversation(item) }"
               @click="openSideItem(item)"
             >
               <strong>{{ sideItemTitle(item) }}</strong>
@@ -1152,7 +1282,7 @@ onUnmounted(() => {
                 v-for="item in conversationGroups.archived"
                 :key="item.conversation_id"
                 class="feed-item feed-item-archived"
-                :class="{ active: item.conversation_id === im.currentConversation?.conversation_id }"
+                :class="{ active: isActiveConversation(item) }"
                 @click="openSideItem(item)"
               >
                 <strong>{{ sideItemTitle(item) }}</strong>
@@ -1174,7 +1304,6 @@ onUnmounted(() => {
               </button>
             </template>
           </template>
-        </template>
         </template>
       </section>
     </aside>
@@ -1270,9 +1399,17 @@ onUnmounted(() => {
                       <template #icon><ExpandAltOutlined /></template>
                     </a-button>
                   </a-tooltip>
-                  <a-tooltip title="收藏到固定上下文">
-                    <a-button type="text" size="small" @click.stop="favoriteMessageAction(entry.message)">
-                      <template #icon><StarOutlined /></template>
+                  <a-tooltip v-if="hasDownloadableArtifacts(entry)" title="下载产物">
+                    <a-button type="text" size="small" @click.stop="downloadMessageArtifacts(entry)">
+                      <template #icon><DownloadOutlined /></template>
+                    </a-button>
+                  </a-tooltip>
+                  <a-tooltip :title="isMessageFavorited(entry.message.message_id) ? '取消收藏' : '收藏到固定上下文'">
+                    <a-button type="text" size="small" :class="{ 'is-favorited': isMessageFavorited(entry.message.message_id) }" @click.stop="favoriteMessageAction(entry.message)">
+                      <template #icon>
+                        <StarFilled v-if="isMessageFavorited(entry.message.message_id)" />
+                        <StarOutlined v-else />
+                      </template>
                     </a-button>
                   </a-tooltip>
                 </div>
@@ -1329,6 +1466,10 @@ onUnmounted(() => {
                   <FileTextOutlined />
                   <strong>本次 run 内联产物</strong>
                   <a-tag size="small" color="purple">{{ entry.run_artifacts.length }}</a-tag>
+                  <a-button type="text" size="small" class="run-artifacts-download" @click.stop="downloadRunArtifacts(entry)">
+                    <template #icon><DownloadOutlined /></template>
+                    打包下载
+                  </a-button>
                 </div>
                 <div class="run-artifact-strip">
                   <button
@@ -1436,6 +1577,10 @@ onUnmounted(() => {
                   <FileTextOutlined />
                   <strong>本次 run 内联产物</strong>
                   <a-tag size="small" color="purple">{{ entry.run_artifacts.length }}</a-tag>
+                  <a-button type="text" size="small" class="run-artifacts-download" @click.stop="downloadRunArtifacts(entry)">
+                    <template #icon><DownloadOutlined /></template>
+                    打包下载
+                  </a-button>
                 </div>
                 <div class="run-artifact-strip">
                   <button
@@ -1648,6 +1793,9 @@ onUnmounted(() => {
         <a-form-item label="能力描述">
           <a-input v-model:value="agentForm.description" placeholder="擅长方向、可承担任务或工具范围" />
         </a-form-item>
+        <a-form-item label="能力标签">
+          <a-select v-model:value="agentForm.tags" mode="tags" :token-separators="[',', '，']" placeholder="1~2 个能力标签，如 前端、测试" />
+        </a-form-item>
         <a-form-item v-if="isNativeAgentForm" label="Role Prompt">
           <a-textarea v-model:value="agentForm.role_prompt" :auto-size="{ minRows: 4, maxRows: 8 }" />
         </a-form-item>
@@ -1710,6 +1858,7 @@ onUnmounted(() => {
                 <li>名称：{{ builderDraft.name || '（待定）' }}</li>
                 <li>运行类型：{{ builderDraft.agent_kind }} · {{ builderDraft.agent_type }}</li>
                 <li v-if="builderDraft.description">能力：{{ builderDraft.description }}</li>
+                <li v-if="builderDraft.tags?.length">标签：{{ builderDraft.tags.join('、') }}</li>
                 <li v-if="builderDraft.tool_names?.length">工具：{{ builderDraft.tool_names.join('、') }}</li>
               </ul>
               <a-button type="primary" block @click="applyDraftToForm">应用到表单</a-button>
@@ -1765,19 +1914,25 @@ onUnmounted(() => {
         </a-list>
       </section>
 
-      <section v-if="im.currentRoom?.type !== 'group'" class="drawer-section">
-        <h3>该 Agent 的对话</h3>
-        <a-empty v-if="!im.conversations.length" description="暂无对话" />
-        <a-list :data-source="im.conversations">
+      <section class="drawer-section">
+        <h3>本对话收藏的消息</h3>
+        <p class="drawer-hint">收藏的内容会作为固定上下文注入给 Agent。</p>
+        <a-empty v-if="!im.favorites.length" description="暂无收藏" />
+        <a-list v-else :data-source="im.favorites">
           <template #renderItem="{ item }">
             <a-list-item>
               <a-list-item-meta>
-                <template #avatar><RobotOutlined /></template>
-                <template #title>{{ item.title || '未命名对话' }}</template>
-                <template #description>
-                  {{ latestMessageText(item) }} · {{ item.message_count || 0 }} 条消息
-                </template>
+                <template #title>{{ item.title || '收藏消息' }}</template>
+                <template #description>{{ favoriteSummary(item) }}</template>
               </a-list-item-meta>
+              <template #actions>
+                <a-tooltip :title="item.enabled === false ? '已停用，点击启用' : '生效中，点击停用'">
+                  <a-switch size="small" :checked="item.enabled !== false" @change="(checked) => im.toggleFavoriteEnabled(item.favorite_id, checked)" />
+                </a-tooltip>
+                <a-button type="text" size="small" danger @click="im.removeFavorite(item.favorite_id)">
+                  <template #icon><DeleteOutlined /></template>
+                </a-button>
+              </template>
             </a-list-item>
           </template>
         </a-list>
@@ -1816,3 +1971,42 @@ onUnmounted(() => {
     </a-drawer>
   </main>
 </template>
+
+<style scoped>
+.message-actions .is-favorited {
+  color: #faad14;
+}
+
+.agent-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+}
+
+.agent-tag {
+  font-size: 11px;
+  line-height: 1.4;
+  padding: 0 6px;
+  border-radius: 6px;
+  background: rgba(99, 102, 241, 0.12);
+  color: #4f46e5;
+  white-space: nowrap;
+}
+
+.drawer-hint {
+  color: #8c8c8c;
+  font-size: 12px;
+  margin: -4px 0 8px;
+}
+
+.run-artifacts-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.run-artifacts-download {
+  margin-left: auto;
+}
+</style>
