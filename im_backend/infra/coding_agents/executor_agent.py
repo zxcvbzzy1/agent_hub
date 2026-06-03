@@ -14,6 +14,10 @@ ensure_agent_flow_path()
 from application.services.events import EventStreamService  # type: ignore  # noqa: E402
 from domain.agent_base import AgentBase  # type: ignore  # noqa: E402
 from domain.context.context import ContextEngine  # type: ignore  # noqa: E402
+from infra.deploy.manager import (  # type: ignore  # noqa: E402
+    build_deploy_event_payload,
+    deployment_manager,
+)
 from infra.tool.builtin.artifacts import InlineArtifactTool  # type: ignore  # noqa: E402
 
 
@@ -67,6 +71,9 @@ class CodingExecutorAgent(AgentBase):
         delta_parser = ArtifactStreamParser()
         final_parser = ArtifactStreamParser()
         seen_artifacts: set[str] = set()
+        # deploy 标记不走 InlineArtifactTool（它只认 message/image/diff/document/web），
+        # 而是收集起来，在流结束后调用真实 deployment_manager 起端口——避免就绪等待阻塞子进程输出管道。
+        self._pending_deploys: list[dict[str, Any]] = []
         try:
             async for event in runner.run(
                 prompt=final_prompt,
@@ -124,6 +131,9 @@ class CodingExecutorAgent(AgentBase):
         if failed:
             self._mark_failed(failed, run_id)
             return
+
+        # 流结束后，把收集到的 deploy 标记真实起端口并发出 artifacts.deploy 卡片事件。
+        await self._run_pending_deploys(run_id)
 
         final = final_text or "".join(final_chunks).strip() or "Coding agent 执行完成"
         self.states["is_finished"] = True
@@ -202,6 +212,11 @@ class CodingExecutorAgent(AgentBase):
             if key in seen:
                 continue
             seen.add(key)
+            # deploy 标记延后到流结束统一处理（真实起端口，见 _run_pending_deploys）
+            if str(marker.get("artifact_type", "")).strip().lower() == "deploy":
+                params = marker.get("deploy")
+                self._pending_deploys.append(params if isinstance(params, dict) else {})
+                continue
             try:
                 artifact_payload = InlineArtifactTool().build_event_payload(
                     {**marker, "agent_id": self.id, "run_id": run_id}
@@ -220,6 +235,44 @@ class CodingExecutorAgent(AgentBase):
                 )
                 continue
             self._publish(run_id, artifact_payload["event_name"], artifact_payload)
+
+    async def _run_pending_deploys(self, run_id: str) -> None:
+        """对收集到的 deploy 标记调用真实 deployment_manager 起端口，发出 artifacts.deploy 事件。
+
+        source_dir 相对 coding agent 的 workdir 解析（越界防护在 manager 内）；
+        无论成功(running)还是失败(failed)都发一张卡片，失败时附错误信息。
+        """
+        pending = self._pending_deploys
+        self._pending_deploys = []
+        for params in pending:
+            try:
+                deployment = await deployment_manager.create(
+                    kind=str(params.get("kind", "")).strip().lower(),
+                    title=str(params.get("title", "")).strip() or "部署",
+                    files=params.get("files"),
+                    command=params.get("command"),
+                    entry=params.get("entry"),
+                    env=params.get("env"),
+                    source_dir=params.get("source_dir"),
+                    base_dir=self.profile.workdir or self.work_path,
+                    agent_id=self.id,
+                    run_id=run_id,
+                )
+            except Exception as exc:
+                self._publish(
+                    run_id,
+                    "artifact.failed",
+                    {
+                        "run_id": run_id,
+                        "agent_id": self.id,
+                        "agent_kind": self.profile.agent_kind,
+                        "error": f"部署失败: {exc}",
+                        "marker": {"artifact_type": "deploy", "deploy": params},
+                    },
+                )
+                continue
+            payload = build_deploy_event_payload(deployment, self.id, run_id)
+            self._publish(run_id, "artifacts.deploy", payload)
 
     def _publish(self, run_id: str, name: str, payload: dict[str, Any]) -> None:
         if not run_id:

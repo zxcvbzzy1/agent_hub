@@ -1,8 +1,9 @@
 <script setup>
-import { computed, reactive, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import {
   BranchesOutlined,
+  CloudServerOutlined,
   CodeOutlined,
   CopyOutlined,
   DownloadOutlined,
@@ -14,6 +15,7 @@ import {
   MessageOutlined,
   PictureOutlined,
 } from '@ant-design/icons-vue'
+import { imApi } from '@/api/im'
 
 const props = defineProps({
   artifact: { type: Object, default: () => ({}) },
@@ -29,6 +31,7 @@ const typeMeta = {
   diff: { icon: BranchesOutlined, label: 'Diff' },
   document: { icon: FileTextOutlined, label: '文档' },
   web: { icon: GlobalOutlined, label: '网页' },
+  deploy: { icon: CloudServerOutlined, label: '部署' },
 }
 
 const headerIcon = computed(() => (typeMeta[artifactType.value] || typeMeta.message).icon)
@@ -48,6 +51,66 @@ watch(
 
 // web 预览是否展开 iframe
 const webExpanded = ref(true)
+
+// deploy 卡片本地状态
+const deployStatus = ref(props.artifact?.status || 'stopped')
+let heartbeatTimer = null
+
+function startHeartbeat() {
+  stopHeartbeat()
+  const id = props.artifact?.deployment_id
+  if (!id) return
+  heartbeatTimer = setInterval(async () => {
+    try {
+      await imApi.touchDeployment(id)
+    } catch {
+      // 忽略心跳失败，不影响 UI
+    }
+  }, 60000)
+}
+
+function stopHeartbeat() {
+  if (heartbeatTimer !== null) {
+    clearInterval(heartbeatTimer)
+    heartbeatTimer = null
+  }
+}
+
+async function handleStopDeployment() {
+  const id = props.artifact?.deployment_id
+  if (!id) return
+  try {
+    await imApi.stopDeployment(id)
+    deployStatus.value = 'stopped'
+    stopHeartbeat()
+    message.success('端口已关闭')
+  } catch {
+    message.error('关闭失败，请重试')
+  }
+}
+
+onMounted(() => {
+  if (artifactType.value === 'deploy' && deployStatus.value === 'running') {
+    startHeartbeat()
+  }
+})
+
+onUnmounted(() => {
+  stopHeartbeat()
+})
+
+watch(
+  () => props.artifact?.status,
+  (val) => {
+    if (artifactType.value !== 'deploy') return
+    deployStatus.value = val || 'stopped'
+    if (val === 'running') {
+      startHeartbeat()
+    } else {
+      stopHeartbeat()
+    }
+  },
+)
 
 const diffRows = computed(() => {
   if (artifactType.value !== 'diff') return []
@@ -289,6 +352,37 @@ function downloadArtifact() {
           <template #icon><DownloadOutlined /></template>
         </a-button>
       </template>
+
+      <template v-else-if="artifactType === 'deploy'">
+        <a-tag
+          v-if="deployStatus === 'running'"
+          size="small"
+          color="success"
+        >运行中</a-tag>
+        <a-tag
+          v-else-if="deployStatus === 'failed'"
+          size="small"
+          color="error"
+        >失败</a-tag>
+        <a-tag
+          v-else
+          size="small"
+          color="default"
+        >已关闭</a-tag>
+        <a-tag v-if="artifact.port" size="small">:{{ artifact.port }}</a-tag>
+        <a v-if="artifact.url && deployStatus === 'running'" :href="artifact.url" target="_blank" rel="noopener" class="artifact-open-link">
+          <LinkOutlined /> 打开
+        </a>
+        <a-popconfirm
+          v-if="deployStatus === 'running'"
+          title="确认关闭该端口？关闭后服务将停止。"
+          ok-text="关闭"
+          cancel-text="取消"
+          @confirm="handleStopDeployment"
+        >
+          <a-button type="text" size="small" danger>关闭端口</a-button>
+        </a-popconfirm>
+      </template>
     </div>
 
     <!-- message -->
@@ -373,6 +467,29 @@ function downloadArtifact() {
         {{ artifact.url }}
       </a>
       <a-empty v-else-if="!artifact.html && !artifact.url" description="缺少网页内容" :image-style="{ height: '40px' }" />
+    </div>
+
+    <!-- deploy -->
+    <div v-else-if="artifactType === 'deploy'" class="artifact-body artifact-deploy-body">
+      <template v-if="deployStatus === 'running' && artifact.url">
+        <div class="artifact-deploy-bar">
+          <CloudServerOutlined />
+          <span class="artifact-deploy-meta">{{ artifact.kind === 'command' ? artifact.command : artifact.url }}</span>
+        </div>
+        <iframe
+          class="artifact-web-frame"
+          :src="artifact.url"
+          sandbox="allow-scripts allow-popups allow-forms allow-same-origin"
+          referrerpolicy="no-referrer"
+        ></iframe>
+      </template>
+      <template v-else-if="deployStatus === 'stopped'">
+        <p class="artifact-deploy-info">服务已关闭。</p>
+      </template>
+      <template v-else-if="deployStatus === 'failed'">
+        <p class="artifact-deploy-error">{{ artifact.error || '部署失败，请检查日志。' }}</p>
+      </template>
+      <a-empty v-else description="暂无预览" :image-style="{ height: '40px' }" />
     </div>
 
     <!-- fallback -->
@@ -543,5 +660,36 @@ function downloadArtifact() {
   display: block;
   padding: 12px;
   word-break: break-all;
+}
+.artifact-deploy-body {
+  padding: 0;
+}
+.artifact-deploy-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: #6b7280;
+  border-bottom: 1px solid var(--ant-color-border, #eef0f3);
+}
+.artifact-deploy-meta {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.artifact-deploy-info {
+  padding: 12px;
+  margin: 0;
+  color: #6b7280;
+  font-size: 13px;
+}
+.artifact-deploy-error {
+  padding: 12px;
+  margin: 0;
+  color: #ef4444;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 </style>

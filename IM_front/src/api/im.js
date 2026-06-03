@@ -121,4 +121,13 @@ export const imApi = {
   regenerateConversationMessage(conversationId, messageId) {
     return http.post('/api/im/conversations/' + conversationId + '/messages/' + messageId + '/regenerate', {})
   },
+  listDeployments() {
+    return http.get('/api/im/deployments')
+  },
+  stopDeployment(deploymentId) {
+    return http.delete(`/api/im/deployments/${deploymentId}`)
+  },
+  touchDeployment(deploymentId) {
+    return http.post(`/api/im/deployments/${deploymentId}/touch`)
+  },
 }

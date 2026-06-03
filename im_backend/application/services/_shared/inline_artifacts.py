@@ -14,7 +14,7 @@ from typing import Any, Iterable
 
 ARTIFACT_EVENT_PREFIX = "artifacts."
 ARTIFACT_PART_TYPE = "artifact"
-VALID_ARTIFACT_TYPES = {"message", "image", "diff", "document", "web"}
+VALID_ARTIFACT_TYPES = {"message", "image", "diff", "document", "web", "deploy"}
 
 
 def is_artifact_event(event: dict[str, Any]) -> bool:
@@ -53,7 +53,7 @@ def artifact_to_content_part(
     }
     if artifact_type in {"message", "document"}:
         part["text"] = artifact.get("content", "")
-    elif artifact_type in {"image", "web"}:
+    elif artifact_type in {"image", "web", "deploy"}:
         part["url"] = artifact.get("url", "")
     elif artifact_type == "diff":
         # diff 的前后内容保留在 metadata.artifact 里，after 拍平到 diff 字段做兜底。

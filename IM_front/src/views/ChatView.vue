@@ -134,6 +134,7 @@ const artifactTypeLabels = {
   diff: 'Diff',
   document: '文档',
   web: '网页',
+  deploy: '部署',
 }
 const dispatchOptions = reactive({
   auto_start: true,
@@ -1117,98 +1118,99 @@ onUnmounted(() => {
         </div>
       </div>
 
-      <section class="nav-section">
-        <button class="section-title section-title-toggle" @click="agentsSectionOpen = !agentsSectionOpen">
-          <span>Agents</span>
-          <RightOutlined class="feed-group-chevron" :class="{ open: agentsSectionOpen }" />
-        </button>
-        <template v-if="agentsSectionOpen">
-        <button
-          v-for="agent in im.executorAgents"
-          :key="agent.agent_id"
-          class="nav-card"
-          :class="{ active: im.currentAgentId === agent.agent_id && im.currentRoom?.type !== 'group' }"
-          @click="im.selectAgent(agent.agent_id)"
-        >
-          <a-avatar :src="agent.metadata?.avatar_url">{{ itemAvatar(agent) }}</a-avatar>
-          <span class="presence"></span>
-          <div>
-            <strong>{{ agent.name }}</strong>
-            <small>{{ agentKind(agent.agent_id) }}</small>
-            <div v-if="agent.metadata?.tags?.length" class="agent-tags">
-              <span v-for="tag in agent.metadata.tags.slice(0, 2)" :key="tag" class="agent-tag">{{ tag }}</span>
-            </div>
-          </div>
-          <a-button
-            v-if="!['default_executor', 'default_planner'].includes(agent.agent_id)"
-            class="nav-delete"
-            type="text"
-            danger
-            size="small"
-            @click.stop="confirmDeleteAgent(agent)"
-          >
-            <template #icon><DeleteOutlined /></template>
-          </a-button>
-        </button>
-        </template>
-      </section>
-
-      <section class="nav-section">
-        <button class="section-title section-title-toggle" @click="groupsSectionOpen = !groupsSectionOpen">
-          <span>Agent 群</span>
-          <RightOutlined class="feed-group-chevron" :class="{ open: groupsSectionOpen }" />
-        </button>
-        <template v-if="groupsSectionOpen">
-        <button
-          v-for="room in im.groupRooms"
-          :key="room.room_id"
-          class="nav-card"
-          :class="{ active: im.currentRoom?.room_id === room.room_id }"
-          @click="im.selectGroupRoom(room.room_id)"
-        >
-          <a-avatar :src="room.avatar_url"><TeamOutlined /></a-avatar>
-          <div>
-            <strong>{{ room.title }}</strong>
-            <small>{{ room.member_agent_ids.length }} members</small>
-          </div>
-          <a-button class="nav-delete" type="text" danger size="small" @click.stop="confirmDeleteRoom(room)">
-            <template #icon><DeleteOutlined /></template>
-          </a-button>
-        </button>
-        </template>
-      </section>
-
-      <section class="side-feed">
-        <div class="side-feed-head">
-          <button class="section-title section-title-toggle" @click="feedSectionOpen = !feedSectionOpen">
-            <span>对话列表</span>
-            <RightOutlined class="feed-group-chevron" :class="{ open: feedSectionOpen }" />
+      <div class="sidebar-scroll">
+        <section class="nav-section">
+          <button class="section-title section-title-toggle" @click="agentsSectionOpen = !agentsSectionOpen">
+            <span>Agents</span>
+            <RightOutlined class="feed-group-chevron" :class="{ open: agentsSectionOpen }" />
           </button>
-          <a-button
-            v-if="im.currentRoom?.type === 'group' || im.currentAgentId"
-            type="text"
-            size="small"
-            @click.stop="newConversation"
+          <template v-if="agentsSectionOpen">
+          <button
+            v-for="agent in im.executorAgents"
+            :key="agent.agent_id"
+            class="nav-card"
+            :class="{ active: im.currentAgentId === agent.agent_id && im.currentRoom?.type !== 'group' }"
+            @click="im.selectAgent(agent.agent_id)"
           >
-            <template #icon><PlusOutlined /></template>
-            新对话
-          </a-button>
-        </div>
-        <template v-if="feedSectionOpen">
-          <a-input
-            v-model:value="conversationQuery"
-            class="side-search"
-            allow-clear
-            size="small"
-            placeholder="搜索对话标题或内容"
-          >
-            <template #prefix><SearchOutlined /></template>
-          </a-input>
+            <a-avatar :src="agent.metadata?.avatar_url">{{ itemAvatar(agent) }}</a-avatar>
+            <span class="presence"></span>
+            <div>
+              <strong>{{ agent.name }}</strong>
+              <small>{{ agentKind(agent.agent_id) }}</small>
+              <div v-if="agent.metadata?.tags?.length" class="agent-tags">
+                <span v-for="tag in agent.metadata.tags.slice(0, 2)" :key="tag" class="agent-tag">{{ tag }}</span>
+              </div>
+            </div>
+            <a-button
+              v-if="!['default_executor', 'default_planner'].includes(agent.agent_id)"
+              class="nav-delete"
+              type="text"
+              danger
+              size="small"
+              @click.stop="confirmDeleteAgent(agent)"
+            >
+              <template #icon><DeleteOutlined /></template>
+            </a-button>
+          </button>
+          </template>
+        </section>
 
-          <a-empty
-            v-if="!conversationGroups.pinned.length && !conversationGroups.normal.length && !conversationGroups.archived.length"
-            description="暂无记录"
-          />
+        <section class="nav-section">
+          <button class="section-title section-title-toggle" @click="groupsSectionOpen = !groupsSectionOpen">
+            <span>Agent 群</span>
+            <RightOutlined class="feed-group-chevron" :class="{ open: groupsSectionOpen }" />
+          </button>
+          <template v-if="groupsSectionOpen">
+          <button
+            v-for="room in im.groupRooms"
+            :key="room.room_id"
+            class="nav-card"
+            :class="{ active: im.currentRoom?.room_id === room.room_id }"
+            @click="im.selectGroupRoom(room.room_id)"
+          >
+            <a-avatar :src="room.avatar_url"><TeamOutlined /></a-avatar>
+            <div>
+              <strong>{{ room.title }}</strong>
+              <small>{{ room.member_agent_ids.length }} members</small>
+            </div>
+            <a-button class="nav-delete" type="text" danger size="small" @click.stop="confirmDeleteRoom(room)">
+              <template #icon><DeleteOutlined /></template>
+            </a-button>
+          </button>
+          </template>
+        </section>
+
+        <section class="side-feed">
+          <div class="side-feed-head">
+            <button class="section-title section-title-toggle" @click="feedSectionOpen = !feedSectionOpen">
+              <span>对话列表</span>
+              <RightOutlined class="feed-group-chevron" :class="{ open: feedSectionOpen }" />
+            </button>
+            <a-button
+              v-if="im.currentRoom?.type === 'group' || im.currentAgentId"
+              type="text"
+              size="small"
+              @click.stop="newConversation"
+            >
+              <template #icon><PlusOutlined /></template>
+              新对话
+            </a-button>
+          </div>
+          <template v-if="feedSectionOpen">
+            <a-input
+              v-model:value="conversationQuery"
+              class="side-search"
+              allow-clear
+              size="small"
+              placeholder="搜索对话标题或内容"
+            >
+              <template #prefix><SearchOutlined /></template>
+            </a-input>
+
+            <a-empty
+              v-if="!conversationGroups.pinned.length && !conversationGroups.normal.length && !conversationGroups.archived.length"
+              description="暂无记录"
+            />
 
           <template v-if="conversationGroups.pinned.length">
             <div class="feed-group-title">
@@ -1307,16 +1309,19 @@ onUnmounted(() => {
               </button>
             </template>
           </template>
-        </template>
-      </section>
+          </template>
+        </section>
+      </div>
     </aside>
 
     <section class="chat-main">
-      <a-tooltip v-if="sidebarCollapsed" title="展开侧栏" placement="right">
-        <a-button class="sidebar-expand" shape="circle" @click="sidebarCollapsed = false">
-          <template #icon><MenuUnfoldOutlined /></template>
-        </a-button>
-      </a-tooltip>
+      <div v-if="sidebarCollapsed" class="chat-sticky-tools">
+        <a-tooltip title="展开侧栏" placement="right">
+          <a-button class="sidebar-expand" shape="circle" @click="sidebarCollapsed = false">
+            <template #icon><MenuUnfoldOutlined /></template>
+          </a-button>
+        </a-tooltip>
+      </div>
       <header class="chat-hero" @click="drawerOpen = true">
         <div class="hero-title">
           <a-avatar :size="44" :src="heroAvatar">
