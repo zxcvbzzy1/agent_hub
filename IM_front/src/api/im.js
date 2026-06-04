@@ -130,6 +130,9 @@ export const imApi = {
   stopDeployment(deploymentId) {
     return http.delete(`/api/im/deployments/${deploymentId}`)
   },
+  restartDeployment(deploymentId) {
+    return http.post(`/api/im/deployments/${deploymentId}/restart`)
+  },
   touchDeployment(deploymentId) {
     return http.post(`/api/im/deployments/${deploymentId}/touch`)
   },

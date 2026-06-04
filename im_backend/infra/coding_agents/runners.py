@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import AsyncIterator, Iterable
 
 from im_backend.domain.models import CodingAgentEvent
+from im_backend.infra.coding_agents import skill_mcp
 
 
 class CodingAgentRunner(ABC):
@@ -143,6 +144,8 @@ class ClaudeCodeRunner(CodingAgentRunner):
             "--add-dir",
             str(Path(workdir).expanduser().resolve()),
         ]
+        # 按次注入 recall_skill MCP（--mcp-config + --strict-mcp-config + 放行该工具），不落全局配置。
+        command.extend(skill_mcp.claude_args())
         for attachment in attachments or []:
             command.extend(["--file", attachment])
         return command
@@ -191,6 +194,8 @@ class CodexRunner(CodingAgentRunner):
         else:
             command.extend(["--sandbox", sandbox])
             command.extend(["-c", f"approval_policy={json.dumps(approval_policy)}"])
+        # 按次注入 recall_skill MCP（-c mcp_servers.skill.* + --ignore-user-config），不落全局配置。
+        command.extend(skill_mcp.codex_args())
         for attachment in attachments or []:
             command.extend(["--image", attachment])
         command.append(prompt)

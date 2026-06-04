@@ -54,6 +54,8 @@ const webExpanded = ref(true)
 
 // deploy 卡片本地状态
 const deployStatus = ref(props.artifact?.status || 'stopped')
+const deployUrl = ref(props.artifact?.url || '')
+const deployPort = ref(props.artifact?.port || '')
 let heartbeatTimer = null
 
 function startHeartbeat() {
@@ -89,6 +91,25 @@ async function handleStopDeployment() {
   }
 }
 
+async function handleRestartDeployment() {
+  const id = props.artifact?.deployment_id
+  if (!id) return
+  try {
+    const res = await imApi.restartDeployment(id)
+    deployStatus.value = res?.status || 'running'
+    if (res?.url) deployUrl.value = res.url
+    if (res?.port) deployPort.value = res.port
+    if (deployStatus.value === 'running') {
+      startHeartbeat()
+      message.success('部署已重新启动')
+    } else {
+      message.error(res?.error || '部署启动失败')
+    }
+  } catch {
+    message.error('部署失败，请重试')
+  }
+}
+
 async function downloadDeploy() {
   const id = props.artifact?.deployment_id
   const dir = props.artifact?.download_dir
@@ -118,6 +139,8 @@ onMounted(async () => {
     const live = items.find((it) => it.deployment_id === props.artifact?.deployment_id)
     if (live && live.status === 'running') {
       deployStatus.value = 'running'
+      if (live.url) deployUrl.value = live.url
+      if (live.port) deployPort.value = live.port
       startHeartbeat()
     } else {
       deployStatus.value = 'stopped'
@@ -137,6 +160,8 @@ watch(
   (val) => {
     if (artifactType.value !== 'deploy') return
     deployStatus.value = val || 'stopped'
+    if (props.artifact?.url) deployUrl.value = props.artifact.url
+    if (props.artifact?.port) deployPort.value = props.artifact.port
     if (val === 'running') {
       startHeartbeat()
     } else {
@@ -402,8 +427,14 @@ function downloadArtifact() {
           size="small"
           color="default"
         >已关闭</a-tag>
-        <a-tag v-if="artifact.port" size="small">:{{ artifact.port }}</a-tag>
-        <a v-if="artifact.url && deployStatus === 'running'" :href="artifact.url" target="_blank" rel="noopener" class="artifact-open-link">
+        <a-button
+          v-if="deployStatus === 'stopped' || deployStatus === 'failed'"
+          type="primary"
+          size="small"
+          @click="handleRestartDeployment"
+        >部署</a-button>
+        <a-tag v-if="deployPort" size="small">:{{ deployPort }}</a-tag>
+        <a v-if="deployUrl && deployStatus === 'running'" :href="deployUrl" target="_blank" rel="noopener" class="artifact-open-link">
           <LinkOutlined /> 打开
         </a>
         <a-button
@@ -512,14 +543,14 @@ function downloadArtifact() {
 
     <!-- deploy -->
     <div v-else-if="artifactType === 'deploy'" class="artifact-body artifact-deploy-body">
-      <template v-if="deployStatus === 'running' && artifact.url">
+      <template v-if="deployStatus === 'running' && deployUrl">
         <div class="artifact-deploy-bar">
           <CloudServerOutlined />
-          <span class="artifact-deploy-meta">{{ artifact.kind === 'command' ? artifact.command : artifact.url }}</span>
+          <span class="artifact-deploy-meta">{{ artifact.kind === 'command' ? artifact.command : deployUrl }}</span>
         </div>
         <iframe
           class="artifact-web-frame"
-          :src="artifact.url"
+          :src="deployUrl"
           sandbox="allow-scripts allow-popups allow-forms allow-same-origin"
           referrerpolicy="no-referrer"
         ></iframe>

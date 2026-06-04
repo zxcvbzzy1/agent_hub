@@ -52,6 +52,14 @@ async def download_deployment(deployment_id: str, dir: str | None = None):
     )
 
 
+@router.post("/deployments/{deployment_id}/restart")
+async def restart_deployment(deployment_id: str):
+    dep = await deployment_manager.restart(deployment_id)
+    if dep is None:
+        raise HTTPException(status_code=404, detail="部署信息不存在或已丢失（后端可能已重启），请让 Agent 重新部署")
+    return dep.to_public_dict()
+
+
 @router.delete("/deployments/{deployment_id}")
 async def stop_deployment(deployment_id: str):
     stopped = await deployment_manager.stop(deployment_id)
