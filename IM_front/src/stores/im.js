@@ -47,6 +47,14 @@ export const useIMStore = defineStore('im', {
     source: null,
     tools: [],
     favorites: [],
+    activity: [],
+    lastSeenCount: (() => {
+      try {
+        return JSON.parse(localStorage.getItem('im-unread-lastseen-v1')) || {}
+      } catch {
+        return {}
+      }
+    })(),
   }),
   getters: {
     executorAgents(state) {
@@ -60,6 +68,30 @@ export const useIMStore = defineStore('im', {
     },
     currentAgent(state) {
       return state.agents.find((agent) => agent.agent_id === state.currentAgentId) || null
+    },
+    unreadForConversation() {
+      return (cid) => {
+        const activeCid =
+          this.currentGroupConversation?.conversation_id || this.currentConversation?.conversation_id || ''
+        if (cid && cid === activeCid) return 0
+        const item = this.activity.find((a) => a.conversation_id === cid)
+        const total = item ? item.message_count : 0
+        const seen = this.lastSeenCount[cid]
+        if (seen === undefined) return 0
+        return Math.max(0, total - seen)
+      }
+    },
+    unreadForAgent() {
+      return (agentId) =>
+        this.activity
+          .filter((a) => a.agent_id === agentId)
+          .reduce((s, a) => s + this.unreadForConversation(a.conversation_id), 0)
+    },
+    unreadForRoom() {
+      return (roomId) =>
+        this.activity
+          .filter((a) => a.room_id === roomId)
+          .reduce((s, a) => s + this.unreadForConversation(a.conversation_id), 0)
     },
   },
   actions: {
@@ -75,6 +107,62 @@ export const useIMStore = defineStore('im', {
         this.fetchTools().catch(() => {})
       } finally {
         this.loading = false
+      }
+    },
+    persistLastSeen() {
+      try {
+        localStorage.setItem('im-unread-lastseen-v1', JSON.stringify(this.lastSeenCount))
+      } catch {}
+    },
+    async fetchActivity() {
+      try {
+        const res = await imApi.activity()
+        const items = res?.items || []
+        this.activity = items
+        const seen = { ...this.lastSeenCount }
+        for (const item of items) {
+          // 首次见到的会话以当前 message_count 作为基线，避免历史消息被算作未读。
+          if (seen[item.conversation_id] === undefined) {
+            seen[item.conversation_id] = item.message_count
+          }
+        }
+        const activeCid =
+          this.currentGroupConversation?.conversation_id || this.currentConversation?.conversation_id || ''
+        if (activeCid) {
+          // 打开中的会话保持已读，离开后即归零。
+          const activeItem = items.find((a) => a.conversation_id === activeCid)
+          if (activeItem) seen[activeCid] = activeItem.message_count
+        }
+        this.lastSeenCount = seen
+        this.persistLastSeen()
+      } catch {}
+    },
+    markConversationRead(conversationId, count) {
+      // 以 activity 上报的 message_count 为准（与 unreadForConversation 的 total 同源），
+      // 保证打开即读后 total - seen = 0；群聊里 this.messages.length 走的是 room 维度过滤，
+      // 与 activity 的 conversation 维度计数口径可能不同，直接用它会让红点清不掉。
+      const activityCount = this.activity.find((a) => a.conversation_id === conversationId)?.message_count
+      const total = activityCount != null ? activityCount : count != null ? count : this.messages.length
+      this.lastSeenCount = { ...this.lastSeenCount, [conversationId]: total }
+      this.persistLastSeen()
+    },
+    startActivityPolling() {
+      this.stopActivityPolling()
+      this.fetchActivity()
+      this._activityTimer = setInterval(() => this.fetchActivity(), 10000)
+      this._activityVisHandler = () => {
+        if (document.visibilityState === 'visible') this.fetchActivity()
+      }
+      document.addEventListener('visibilitychange', this._activityVisHandler)
+    },
+    stopActivityPolling() {
+      if (this._activityTimer) {
+        clearInterval(this._activityTimer)
+        this._activityTimer = null
+      }
+      if (this._activityVisHandler) {
+        document.removeEventListener('visibilitychange', this._activityVisHandler)
+        this._activityVisHandler = null
       }
     },
     async fetchAgents() {
@@ -276,6 +364,7 @@ export const useIMStore = defineStore('im', {
       this.messages = messageResponse.items || []
       this.events = []
       this.tasks = []
+      this.markConversationRead(conversationId, this.messages.length)
       this.connectConversation(conversationId)
       await this.fetchConversations(this.currentAgentId)
       this.loadFavorites().catch(() => {})
@@ -314,6 +403,7 @@ export const useIMStore = defineStore('im', {
       ])
       this.messages = messageResponse.items || []
       this.tasks = taskResponse.items || []
+      this.markConversationRead(conversationId, this.messages.length)
       this.loadFavorites().catch(() => {})
     },
     async createGroupConversation(title = '') {
@@ -529,6 +619,8 @@ export const useIMStore = defineStore('im', {
           if (messageItem) this.mergeMessage(messageItem)
         }
         if (this.currentAgentId) this.fetchConversations().catch(() => {})
+        // 控制频次事件：每条持久化消息刷新一次未读，活跃会话同步保持已读。
+        this.fetchActivity().catch(() => {})
       }
       if (event.name === 'confirmation.requested' && event.payload?.confirmation) {
         this.mergeMessage(event.payload.confirmation)

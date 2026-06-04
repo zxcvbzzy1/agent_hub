@@ -91,6 +91,9 @@ export const imApi = {
   artifacts() {
     return http.get('/api/im/artifacts')
   },
+  activity() {
+    return http.get('/api/im/activity')
+  },
   toolsCatalog() {
     return http.get('/api/im/tools')
   },

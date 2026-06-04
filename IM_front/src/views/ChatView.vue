@@ -1083,10 +1083,12 @@ onMounted(async () => {
   await im.bootstrap()
   const defaultPlanner = im.plannerAgents.find((agent) => agent.agent_id === 'default_planner') || im.plannerAgents[0]
   if (defaultPlanner && !drawerPlannerId.value) drawerPlannerId.value = defaultPlanner.agent_id
+  im.startActivityPolling()
   await scrollToBottom()
 })
 
 onUnmounted(() => {
+  im.stopActivityPolling()
   emitSidebarCollapseState(false)
 })
 </script>
@@ -1132,7 +1134,9 @@ onUnmounted(() => {
             :class="{ active: im.currentAgentId === agent.agent_id && im.currentRoom?.type !== 'group' }"
             @click="im.selectAgent(agent.agent_id)"
           >
-            <a-avatar :src="agent.metadata?.avatar_url">{{ itemAvatar(agent) }}</a-avatar>
+            <a-badge :count="im.unreadForAgent(agent.agent_id)" :overflow-count="99">
+              <a-avatar :src="agent.metadata?.avatar_url">{{ itemAvatar(agent) }}</a-avatar>
+            </a-badge>
             <span class="presence"></span>
             <div>
               <strong>{{ agent.name }}</strong>
@@ -1168,7 +1172,9 @@ onUnmounted(() => {
             :class="{ active: im.currentRoom?.room_id === room.room_id }"
             @click="im.selectGroupRoom(room.room_id)"
           >
-            <a-avatar :src="room.avatar_url"><TeamOutlined /></a-avatar>
+            <a-badge :count="im.unreadForRoom(room.room_id)" :overflow-count="99">
+              <a-avatar :src="room.avatar_url"><TeamOutlined /></a-avatar>
+            </a-badge>
             <div>
               <strong>{{ room.title }}</strong>
               <small>{{ room.member_agent_ids.length }} members</small>
@@ -1227,6 +1233,7 @@ onUnmounted(() => {
               <strong>{{ sideItemTitle(item) }}</strong>
               <span>{{ latestMessageText(item) }}</span>
               <small>{{ formatTime(sideItemTime(item)) }}</small>
+              <a-badge class="feed-unread" :count="im.unreadForConversation(item.conversation_id)" :overflow-count="99" />
               <div class="feed-actions" @click.stop>
                 <a-dropdown :trigger="['click']" placement="bottomRight">
                   <a-button class="feed-menu" type="text" size="small">
@@ -1259,6 +1266,7 @@ onUnmounted(() => {
               <strong>{{ sideItemTitle(item) }}</strong>
               <span>{{ latestMessageText(item) }}</span>
               <small>{{ formatTime(sideItemTime(item)) }}</small>
+              <a-badge class="feed-unread" :count="im.unreadForConversation(item.conversation_id)" :overflow-count="99" />
               <div class="feed-actions" @click.stop>
                 <a-dropdown :trigger="['click']" placement="bottomRight">
                   <a-button class="feed-menu" type="text" size="small">
@@ -1293,6 +1301,7 @@ onUnmounted(() => {
                 <strong>{{ sideItemTitle(item) }}</strong>
                 <span>{{ latestMessageText(item) }}</span>
                 <small>{{ formatTime(sideItemTime(item)) }}</small>
+                <a-badge class="feed-unread" :count="im.unreadForConversation(item.conversation_id)" :overflow-count="99" />
                 <div class="feed-actions" @click.stop>
                   <a-dropdown :trigger="['click']" placement="bottomRight">
                     <a-button class="feed-menu" type="text" size="small">
@@ -2016,5 +2025,14 @@ onUnmounted(() => {
 
 .run-artifacts-download {
   margin-left: auto;
+}
+
+/* 会话列表未读红点：绝对定位到右上角，不占用 grid 行、不影响既有布局；
+   悬停菜单也在右上角，留出间距避免遮挡。 */
+.feed-unread {
+  position: absolute;
+  top: 8px;
+  right: 30px;
+  pointer-events: none;
 }
 </style>

@@ -187,6 +187,45 @@ class ConversationService:
         self._events.publish(record["conversation_id"], "conversation.created", {"conversation": record})
         return record
 
+    def list_activity(self, user_id: str = "") -> list[dict[str, Any]]:
+        """Return a lightweight activity summary for every conversation (for unread badges)."""
+        all_conversations = self._store.find_many("im_conversations", {})
+        result: list[dict[str, Any]] = []
+        for conversation in all_conversations:
+            try:
+                cid = conversation["conversation_id"]
+                messages = self._store.find_many(
+                    "im_messages",
+                    {"conversation_id": cid},
+                    sort=[("created_at", -1)],
+                    limit=1,
+                )
+                last_message_at = messages[0]["created_at"] if messages else 0
+                message_count = len(self.list_conversation_messages(cid))
+                result.append({
+                    "conversation_id": cid,
+                    "room_id": conversation.get("room_id", "") or "",
+                    "agent_id": conversation.get("agent_id", "") or "",
+                    "message_count": message_count,
+                    "last_message_at": last_message_at,
+                    "updated_at": conversation.get("updated_at", 0),
+                })
+            except Exception:
+                continue
+        return result
+
+    def _attach_last_message(self, conversation: dict) -> dict:
+        """Return a new dict with last_message and message_count attached."""
+        messages = self._store.find_many(
+            "im_messages",
+            {"conversation_id": conversation["conversation_id"]},
+            sort=[("created_at", -1)],
+            limit=1,
+        )
+        last_message = messages[0] if messages else None
+        message_count = len(self.list_conversation_messages(conversation["conversation_id"]))
+        return {**conversation, "last_message": last_message, "message_count": message_count}
+
     def list_room_conversations(self, room_id: str, user_id: str = "") -> list[dict[str, Any]]:
         """列出某个群聊 room 下的所有会话（按 created_at 升序）。
 
@@ -199,7 +238,7 @@ class ConversationService:
             sort=[("created_at", 1)],
         )
         if conversations:
-            return conversations
+            return [self._attach_last_message(c) for c in conversations]
 
         conversation = Conversation.create(
             room_id=room_id,
@@ -210,7 +249,7 @@ class ConversationService:
         record = self._store.insert_one("im_conversations", conversation.to_dict())
         self._backfill_room_messages(room_id, record["conversation_id"])
         self._events.publish(record["conversation_id"], "conversation.created", {"conversation": record})
-        return [record]
+        return [self._attach_last_message(record)]
 
     def _backfill_room_messages(self, room_id: str, conversation_id: str) -> None:
         """把 room 下尚未归属会话的历史消息挂到默认会话上。"""

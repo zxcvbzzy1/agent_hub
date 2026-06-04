@@ -113,6 +113,9 @@ class IMService:
     def list_agent_conversations(self, agent_id: str, user_id: str = "") -> list[dict[str, Any]]:
         return self.conversations.list_agent_conversations(agent_id, user_id=user_id)
 
+    def list_activity(self, user_id: str = "") -> list[dict[str, Any]]:
+        return self.conversations.list_activity(user_id=user_id)
+
     def create_agent_conversation(self, **kwargs) -> dict[str, Any]:
         return self.conversations.create_agent_conversation(**kwargs)
 

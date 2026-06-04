@@ -17,6 +17,14 @@ from im_backend.application.services.facade import IMService
 router = APIRouter()
 
 
+@router.get("/activity")
+async def list_activity(
+    current_user: dict = Depends(get_current_user),
+    service: IMService = Depends(get_im_service),
+):
+    return {"items": service.list_activity(user_id=current_user["user_id"])}
+
+
 @router.get("/conversations/{conversation_id}")
 async def get_conversation(conversation_id: str, service: IMService = Depends(get_im_service)):
     try:
