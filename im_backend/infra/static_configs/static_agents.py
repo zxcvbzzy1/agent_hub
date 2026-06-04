@@ -46,13 +46,14 @@ class OperatorExecutor(AgentBase):
     
 operators =[]
 for i in range(nums): 
-  operator_memory = DefaultShortTermMemory(["tool_respond", "agent_history"])
+  operator_memory = DefaultShortTermMemory(["tool_respond", "agent_history", "error", "skill"])
   operator_context = ContextEngine(
       providers=[
           StateProvider(),
           AvailableToolsProvider(["system"]),
           PinnedContextProvider(),
           UserPromptProvider(),
+          SkillProvider(operator_memory),
           ErrorProvider(operator_memory),
           HistoryProvider(operator_memory, "agent_history", FullHistoryStrategy()),
           ToolOutputProvider(operator_memory, "tool_respond", FullHistoryStrategy() | RecencyStrategy(15)),
@@ -74,7 +75,7 @@ plans =[]
 
 for i in range(plan_nums):
    # 共享记忆：让 planner 与 executors 能看到工具反馈和历史结果。
-  workflow_memory = DefaultShortTermMemory(["tool_respond", "agent_history"])
+  workflow_memory = DefaultShortTermMemory(["tool_respond", "agent_history", "error", "skill"])
   # plan agent 上下文，提供给 planner 用于决策和编排
   planner_context = ContextEngine(
       providers=[
@@ -83,6 +84,7 @@ for i in range(plan_nums):
           AvailableToolsProvider(["system"]),
           PinnedContextProvider(),
           UserPromptProvider(),
+          SkillProvider(workflow_memory),
           ErrorProvider(workflow_memory),
           PlanObservationProvider(),
           ExecutorStatusProvider(),
