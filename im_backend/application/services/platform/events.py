@@ -9,6 +9,22 @@ from typing import Any
 
 
 class RoomEventStreamService:
+    # 折叠态 trace-card 只显示数量、不渲染这些“仅展开可见”的高频重负载事件正文。
+    # SSE 历史回放时剥离它们的大字段（前端进入会话即全量加载会卡顿），前端展开某条
+    # trace 时再按 run_id 拉取全量（GET /api/im/runs/{run_id}/events）。实时事件不剥离。
+    _TRUNCATE_EVENT_NAMES = frozenset(
+        {
+            "tool.called",
+            "tool.succeeded",
+            "tool.failed",
+            "tool.retrying",
+            "llm.completed",
+            "agent.think",
+            "agent.tool.reasoning",
+        }
+    )
+    _TRUNCATE_PAYLOAD_KEYS = ("respond", "content", "arguments", "think", "reasoning", "delta")
+
     def __init__(self, store) -> None:
         self._store = store
         self._queues: dict[str, list[asyncio.Queue[dict[str, Any]]]] = {}
@@ -108,7 +124,7 @@ class RoomEventStreamService:
                 ensure_runtime_pump(run_id)
             for event in sorted(history, key=lambda item: item.get("created_at") or 0):
                 if remember(event):
-                    yield self.format_sse(event)
+                    yield self.format_sse(self._truncate_for_history(event))
 
             while True:
                 im_task = asyncio.create_task(im_queue.get())
@@ -140,6 +156,23 @@ class RoomEventStreamService:
             for task in runtime_tasks.values():
                 with suppress(asyncio.CancelledError):
                     await task
+
+    def _truncate_for_history(self, event: dict[str, Any]) -> dict[str, Any]:
+        """历史回放时剥离“仅展开可见”重负载事件的大字段，标记 truncated=True。
+
+        只命中 _TRUNCATE_EVENT_NAMES 里的 runtime trace 事件；房间消息类事件
+        （message.created / run.created 等）名称不在集合内，原样返回不受影响。
+        仅当确有大字段被剥离时才标记 truncated，避免前端对空负载事件做无谓的全量拉取。
+        """
+        if event.get("name") not in self._TRUNCATE_EVENT_NAMES:
+            return event
+        payload = event.get("payload")
+        if not isinstance(payload, dict) or not any(
+            key in payload for key in self._TRUNCATE_PAYLOAD_KEYS
+        ):
+            return event
+        trimmed = {k: v for k, v in payload.items() if k not in self._TRUNCATE_PAYLOAD_KEYS}
+        return {**event, "payload": trimmed, "truncated": True}
 
     def format_sse(self, event: dict[str, Any]) -> str:
         payload = json.dumps(event, ensure_ascii=False, default=str)

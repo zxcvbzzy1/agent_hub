@@ -963,6 +963,16 @@
   font-size: 12px;
 }
 
+.trace-loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 8px 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .trace-timeline {
   position: relative;
   display: grid;

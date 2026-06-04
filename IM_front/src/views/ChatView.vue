@@ -15,6 +15,7 @@ import {
   FileTextOutlined,
   InboxOutlined,
   InfoCircleOutlined,
+  LoadingOutlined,
   MenuFoldOutlined,
   MenuUnfoldOutlined,
   MessageOutlined,
@@ -67,6 +68,9 @@ const composer = ref('')
 const mentions = ref([])
 const drawerPlannerId = ref('default_planner')
 const traceOpenOverrides = ref({})
+// trace-card 懒加载缓存：{ [runId]: { status: 'loading'|'loaded'|'error', byId: Map<event_id, fullEvent> } }
+// 折叠态只显示事件数量；展开某条 trace 时才按 run_id 拉全量正文，按 event_id 换入渲染。
+const runEventsCache = ref({})
 const sidebarCollapsed = ref(false)
 // 侧栏分栏（Agents / Agent 群 / 对话列表）折叠状态，持久化到 localStorage。
 function loadSidebarBool(key, defaultVal = true) {
@@ -397,11 +401,67 @@ function isTraceOpen(trace) {
 }
 
 function toggleTrace(trace) {
+  const willOpen = !isTraceOpen(trace)
   traceOpenOverrides.value = {
     ...traceOpenOverrides.value,
-    [trace.key]: !isTraceOpen(trace),
+    [trace.key]: willOpen,
+  }
+  if (willOpen) ensureTraceEvents(trace)
+}
+
+// 该 trace 是否含被历史回放剥离正文的事件（后端标记 truncated=true）。
+function traceHasTruncated(trace) {
+  return (trace?.events || []).some((event) => event?.truncated)
+}
+
+// 展开时按 run_id 拉取全量事件并缓存（幂等：loading/loaded 不重复拉）。scope 即 run_id。
+async function ensureTraceEvents(trace) {
+  const runId = trace?.scope
+  if (!runId || runId === 'scope') return
+  if (!traceHasTruncated(trace)) return
+  const cached = runEventsCache.value[runId]
+  if (cached && (cached.status === 'loading' || cached.status === 'loaded')) return
+  runEventsCache.value = { ...runEventsCache.value, [runId]: { status: 'loading', byId: cached?.byId || null } }
+  try {
+    const items = await im.fetchRunEvents(runId)
+    const byId = new Map()
+    for (const event of items) {
+      if (event?.event_id) byId.set(event.event_id, event)
+    }
+    runEventsCache.value = { ...runEventsCache.value, [runId]: { status: 'loaded', byId } }
+  } catch {
+    runEventsCache.value = { ...runEventsCache.value, [runId]: { status: 'error', byId: null } }
   }
 }
+
+// 渲染用事件：已拉到全量则按 event_id 把被剥离的事件换成完整正文，否则用轻量事件。
+function traceEvents(trace) {
+  const cached = runEventsCache.value[trace?.scope]
+  if (!cached || cached.status !== 'loaded' || !cached.byId) return trace?.events || []
+  return (trace?.events || []).map((event) => (event?.event_id && cached.byId.get(event.event_id)) || event)
+}
+
+function traceEventsLoading(trace) {
+  return runEventsCache.value[trace?.scope]?.status === 'loading'
+}
+
+// 默认展开（运行中）或用户展开后仍含 truncated 事件的 trace，自动补拉一次全量。
+// 用稳定字符串做依赖键，避免每来一个事件就触发（缓存保证拉取幂等）。
+watch(
+  () =>
+    chatItems.value
+      .filter((entry) => entry.kind === 'trace' && isTraceOpen(entry.trace) && traceHasTruncated(entry.trace))
+      .map((entry) => entry.trace.scope)
+      .join(','),
+  () => {
+    for (const entry of chatItems.value) {
+      if (entry.kind === 'trace' && isTraceOpen(entry.trace) && traceHasTruncated(entry.trace)) {
+        ensureTraceEvents(entry.trace)
+      }
+    }
+  },
+  { immediate: true },
+)
 
 function traceActorName(trace) {
   if (trace.actor_id === 'workflow') return '系统流程'
@@ -1535,9 +1595,12 @@ onUnmounted(() => {
               <div v-if="entry.trace.step?.result_observation" class="trace-observation">
                 {{ entry.trace.step.result_observation }}
               </div>
+              <div v-if="traceEventsLoading(entry.trace)" class="trace-loading">
+                <LoadingOutlined spin /> 正在加载事件详情…
+              </div>
               <div class="trace-timeline">
                 <div
-                  v-for="event in entry.trace.events"
+                  v-for="event in traceEvents(entry.trace)"
                   :key="event.event_id || `${event.name}-${event.created_at}`"
                   class="trace-node"
                   :class="eventTone(event.name)"

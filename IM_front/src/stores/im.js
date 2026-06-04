@@ -190,6 +190,13 @@ export const useIMStore = defineStore('im', {
       this.conversations = response.items || []
       return this.conversations
     },
+    async fetchRunEvents(runId) {
+      // trace-card 懒加载：按 run_id 拉取该 run 的全量 runtime 事件（含 SSE 历史回放被剥离的重负载正文）。
+      // 不写入 this.events，避免污染响应式事件数组、重复触发 compactLlmEvents/时间线重算。
+      if (!runId) return []
+      const response = await imApi.runEvents(runId)
+      return response.items || []
+    },
     async fetchTasks(roomId = this.currentGroupRoom?.room_id) {
       if (!roomId) {
         this.tasks = []

@@ -88,6 +88,9 @@ export const imApi = {
   action(messageId, payload) {
     return http.post(`/api/im/messages/${messageId}/actions`, payload)
   },
+  runEvents(runId) {
+    return http.get(`/api/im/runs/${runId}/events`)
+  },
   artifacts() {
     return http.get('/api/im/artifacts')
   },
