@@ -142,4 +142,20 @@ export const imApi = {
   downloadDeployment(deploymentId, dir) {
     return http.get('/api/im/deployments/' + deploymentId + '/download', { params: { dir }, responseType: 'blob' })
   },
+  // 协同文件编辑：一键应用 Diff（仅传 edit_id，落盘内容由服务端 pending 决定）
+  applyEdit(editId) {
+    return http.post(`/api/im/artifacts/edits/${editId}/apply`)
+  },
+  // 文档卡片编辑回写原文件
+  saveArtifactFile(payload) {
+    return http.post('/api/im/artifacts/files/save', payload)
+  },
+  // 文件版本历史（工作区快照）
+  editHistory(agentId, filePath) {
+    return http.get('/api/im/artifacts/edits/history', { params: { agent_id: agentId, file_path: filePath } })
+  },
+  // 回退到指定版本
+  revertEdit(payload) {
+    return http.post('/api/im/artifacts/edits/revert', payload)
+  },
 }

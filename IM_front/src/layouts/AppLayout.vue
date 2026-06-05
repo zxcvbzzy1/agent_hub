@@ -45,7 +45,7 @@ onUnmounted(() => {
         <div class="topbar-mark"><MessageOutlined /></div>
         <div>
           <strong>Agent IM</strong>
-          <span>协作式多 Agent 工作台</span>
+          <span>Multi-Agent Workspace</span>
         </div>
       </div>
 
@@ -58,7 +58,7 @@ onUnmounted(() => {
             :class="{ 'topbar-pill-seg--active': activeNav === 'chat' }"
           >
             <MessageOutlined class="pill-icon" />
-            聊天
+            <span>聊天</span>
           </RouterLink>
           <RouterLink
             :to="{ name: 'skills' }"
@@ -66,17 +66,18 @@ onUnmounted(() => {
             :class="{ 'topbar-pill-seg--active': activeNav === 'skills' }"
           >
             <BookOutlined class="pill-icon" />
-            技能库
+            <span>技能库</span>
           </RouterLink>
         </div>
       </nav>
 
       <!-- right: user area -->
       <div class="topbar-user-area">
-        <a-space>
-          <a-avatar>{{ displayName.slice(0, 1).toUpperCase() }}</a-avatar>
+        <a-space :size="10" class="topbar-user-shell">
+          <a-avatar class="topbar-avatar">{{ displayName.slice(0, 1).toUpperCase() }}</a-avatar>
           <span class="topbar-user">{{ displayName }}</span>
-          <a-button type="text" @click="logout">
+          <span class="topbar-divider"></span>
+          <a-button type="text" class="topbar-logout" @click="logout">
             <template #icon><LogoutOutlined /></template>
             退出
           </a-button>
@@ -90,14 +91,76 @@ onUnmounted(() => {
 <style scoped>
 /* Three-section topbar: brand | nav (centered) | user-area */
 .app-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 40;
   display: grid;
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
+  column-gap: 18px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.78), rgba(245, 250, 255, 0.58)),
+    rgba(255, 255, 255, 0.48);
+  border-bottom-color: rgba(255, 255, 255, 0.86);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.92),
+    0 14px 38px rgba(27, 39, 66, 0.10);
+  backdrop-filter: blur(22px) saturate(1.22);
+  -webkit-backdrop-filter: blur(22px) saturate(1.22);
+}
+
+.topbar-brand {
+  min-width: 0;
+}
+
+.topbar-brand strong {
+  letter-spacing: 0;
+}
+
+.topbar-brand span {
+  margin-top: 1px;
+  font-weight: 650;
 }
 
 .topbar-user-area {
   display: flex;
   justify-content: flex-end;
+  min-width: 0;
+}
+
+.topbar-user-shell {
+  padding: 5px 7px 5px 5px;
+  background: rgba(255, 255, 255, 0.54);
+  border: 1px solid rgba(255, 255, 255, 0.76);
+  border-radius: 999px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.82),
+    0 8px 22px rgba(27, 39, 66, 0.06);
+}
+
+.topbar-avatar {
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent-5), var(--accent));
+  box-shadow: 0 8px 18px rgba(53, 120, 255, 0.18);
+}
+
+.topbar-divider {
+  width: 1px;
+  height: 18px;
+  background: rgba(95, 111, 139, 0.16);
+}
+
+.topbar-logout {
+  height: 30px;
+  padding: 0 9px;
+  border-radius: 999px;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.topbar-logout:hover {
+  color: #b42318;
+  background: rgba(255, 255, 255, 0.68);
 }
 
 /* ── capsule pill ── */
@@ -108,24 +171,32 @@ onUnmounted(() => {
 }
 
 .topbar-pill {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 2px;
-  padding: 4px;
-  background: rgba(255, 255, 255, 0.52);
-  border: 1px solid rgba(255, 255, 255, 0.72);
+  gap: 4px;
+  padding: 5px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.72), rgba(246, 250, 255, 0.54)),
+    rgba(255, 255, 255, 0.50);
+  border: 1px solid rgba(255, 255, 255, 0.82);
   border-radius: 999px;
   box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.86),
-    0 8px 22px rgba(27, 39, 66, 0.08);
-  backdrop-filter: blur(12px);
+    inset 0 1px 0 rgba(255, 255, 255, 0.90),
+    0 10px 26px rgba(27, 39, 66, 0.09);
+  backdrop-filter: blur(16px) saturate(1.18);
+  -webkit-backdrop-filter: blur(16px) saturate(1.18);
 }
 
 .topbar-pill-seg {
+  position: relative;
+  z-index: 1;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 16px;
+  gap: 7px;
+  min-width: 92px;
+  justify-content: center;
+  padding: 7px 16px;
   border-radius: 999px;
   font-size: 13.5px;
   font-weight: 700;
@@ -142,25 +213,29 @@ onUnmounted(() => {
 
 .topbar-pill-seg:hover {
   color: var(--text);
-  background: rgba(255, 255, 255, 0.62);
+  background: rgba(255, 255, 255, 0.66);
 }
 
 .topbar-pill-seg--active {
   color: #fff;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2) 60%, var(--accent-5));
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.18), transparent 38%),
+    linear-gradient(135deg, var(--accent), var(--accent-2) 58%, var(--accent-5));
   box-shadow:
-    0 4px 14px rgba(53, 120, 255, 0.30),
-    inset 0 1px 0 rgba(255, 255, 255, 0.22);
+    0 8px 20px rgba(53, 120, 255, 0.30),
+    inset 0 1px 0 rgba(255, 255, 255, 0.28);
   transform: translateY(-0.5px);
 }
 
 .topbar-pill-seg--active:hover {
   color: #fff;
-  background: linear-gradient(135deg, var(--accent), var(--accent-2) 60%, var(--accent-5));
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.18), transparent 38%),
+    linear-gradient(135deg, var(--accent), var(--accent-2) 58%, var(--accent-5));
 }
 
 .pill-icon {
-  font-size: 13px;
+  font-size: 14px;
 }
 
 /* ── responsive: stack vertically on narrow screens ── */
@@ -174,8 +249,23 @@ onUnmounted(() => {
     padding: 12px 14px;
   }
 
+  .topbar-brand span {
+    display: none;
+  }
+
   .topbar-nav {
-    align-self: center;
+    align-self: stretch;
+    width: 100%;
+    justify-content: stretch;
+  }
+
+  .topbar-pill {
+    width: 100%;
+  }
+
+  .topbar-pill-seg {
+    flex: 1 1 0;
+    min-width: 0;
   }
 
   .topbar-user-area {

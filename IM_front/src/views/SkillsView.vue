@@ -142,6 +142,13 @@ async function confirmDelete() {
 
 // ── computed: has selection ───────────────────────────────────────────────────
 const hasSelection = computed(() => isNew.value || activeId.value !== null)
+const skillCountLabel = computed(() => `${skills.value.length} 个技能`)
+const editorModeLabel = computed(() => (isNew.value ? '新建草稿' : '正在编辑'))
+const editorDescription = computed(() => (
+  isNew.value
+    ? '创建一个可复用的 Agent 能力单元'
+    : form.description || '维护技能的名称、标签与提示词正文'
+))
 
 const tagColor = (tag) => {
   const palette = ['blue', 'cyan', 'green', 'purple', 'orange', 'geekblue', 'magenta']
@@ -156,10 +163,14 @@ const tagColor = (tag) => {
     <!-- ── left panel: skill list ── -->
     <aside class="skills-sidebar">
       <div class="skills-sidebar-head">
-        <h2>技能库</h2>
-        <a-button type="primary" size="small" @click="startNew">
+        <div>
+          <span class="skills-sidebar-kicker">SKILLS</span>
+          <h2>技能库</h2>
+        </div>
+        <span class="skills-count">{{ skillCountLabel }}</span>
+        <a-button type="primary" class="skills-new-button" @click="startNew">
           <template #icon><PlusOutlined /></template>
-          新建技能
+          新建
         </a-button>
       </div>
 
@@ -181,10 +192,13 @@ const tagColor = (tag) => {
         <!-- new skill placeholder in list -->
         <div
           v-if="isNew"
-          class="skill-card skill-card--active"
+          class="skill-card skill-card--active skill-card--new"
         >
-          <strong class="skill-card-name">新技能</strong>
-          <span class="skill-card-desc muted">未保存</span>
+          <div class="skill-card-new-icon"><PlusOutlined /></div>
+          <div>
+            <strong class="skill-card-name">新建技能</strong>
+            <span class="skill-card-desc muted">未保存草稿</span>
+          </div>
         </div>
 
         <!-- skill items -->
@@ -219,14 +233,23 @@ const tagColor = (tag) => {
       <template v-else>
         <div class="skills-editor-head">
           <div class="skills-editor-title">
-            <h2>{{ isNew ? '新建技能' : form.name || '编辑技能' }}</h2>
-            <span v-if="!isNew && form.id" class="skill-id-badge">
-              <code>{{ form.id }}</code>
-            </span>
+            <div class="skills-title-icon">
+              <PlusOutlined v-if="isNew" />
+              <BookOutlined v-else />
+            </div>
+            <div class="skills-title-copy">
+              <div class="skills-editor-kicker">
+                <span class="status-dot"></span>
+                {{ editorModeLabel }}
+              </div>
+              <h2>{{ isNew ? '新建技能' : form.name || '编辑技能' }}</h2>
+              <p>{{ editorDescription }}</p>
+            </div>
           </div>
           <a-space>
             <a-button
               type="primary"
+              class="skills-save-button"
               :loading="saving"
               @click="save"
             >
@@ -250,6 +273,20 @@ const tagColor = (tag) => {
         </div>
 
         <div class="skills-form">
+          <div class="skills-form-panel">
+            <div class="form-panel-head">
+              <div class="form-panel-title">
+                <FileTextOutlined />
+                <div>
+                  <strong>{{ isNew ? '基础信息' : '技能配置' }}</strong>
+                  <span v-if="!isNew && form.id" class="skill-id-badge">
+                    <code>{{ form.id }}</code>
+                  </span>
+                </div>
+              </div>
+              <span class="form-panel-chip">{{ isNew ? 'Draft' : 'Saved Skill' }}</span>
+            </div>
+
           <a-spin :spinning="loading">
             <div class="form-grid">
               <!-- name -->
@@ -310,6 +347,7 @@ const tagColor = (tag) => {
               </div>
             </div>
           </a-spin>
+          </div>
         </div>
       </template>
     </main>
@@ -320,7 +358,7 @@ const tagColor = (tag) => {
 /* ── layout ── */
 .skills-workspace {
   display: grid;
-  grid-template-columns: 300px minmax(0, 1fr);
+  grid-template-columns: 320px minmax(0, 1fr);
   height: calc(100vh - 66px);
   overflow: hidden;
 }
@@ -338,23 +376,54 @@ const tagColor = (tag) => {
 }
 
 .skills-sidebar-head {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
-  justify-content: space-between;
   flex: 0 0 auto;
   gap: 12px;
-  padding: 16px 16px 12px;
+  padding: 18px 16px 14px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.76), rgba(245, 250, 255, 0.48)),
+    rgba(255, 255, 255, 0.35);
   border-bottom: 1px solid rgba(255, 255, 255, 0.62);
+}
+
+.skills-sidebar-kicker {
+  display: block;
+  margin-bottom: 2px;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.08em;
 }
 
 .skills-sidebar-head h2 {
   margin: 0;
-  font-size: 16px;
+  font-size: 18px;
   font-weight: 800;
   color: var(--text);
 }
 
-.skills-sidebar-head .ant-btn-primary {
+.skills-count {
+  justify-self: end;
+  padding: 4px 9px;
+  color: #175199;
+  background: rgba(255, 255, 255, 0.66);
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 999px;
+  box-shadow: 0 8px 20px rgba(27, 39, 66, 0.05);
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.skills-new-button {
+  grid-column: 1 / -1;
+  height: 36px;
+  border-radius: 10px;
+}
+
+.skills-sidebar-head .ant-btn-primary,
+.skills-save-button {
   background: linear-gradient(135deg, var(--accent), var(--accent-2));
   border: 0;
   box-shadow: 0 8px 18px rgba(53, 120, 255, 0.20);
@@ -377,10 +446,11 @@ const tagColor = (tag) => {
 
 /* ── skill card ── */
 .skill-card {
-  padding: 12px;
+  position: relative;
+  padding: 13px;
   background: rgba(255, 255, 255, 0.58);
   border: 1px solid rgba(255, 255, 255, 0.56);
-  border-radius: var(--radius-md);
+  border-radius: 12px;
   box-shadow: 0 6px 16px rgba(27, 39, 66, 0.04);
   cursor: pointer;
   transition:
@@ -399,10 +469,38 @@ const tagColor = (tag) => {
 
 .skill-card--active {
   background:
-    linear-gradient(135deg, rgba(139, 92, 246, 0.14), rgba(53, 120, 255, 0.10)),
+    linear-gradient(135deg, rgba(53, 120, 255, 0.16), rgba(24, 198, 212, 0.12)),
     rgba(255, 255, 255, 0.88);
-  border-color: rgba(139, 92, 246, 0.26);
-  box-shadow: 0 12px 28px rgba(91, 77, 190, 0.10);
+  border-color: rgba(53, 120, 255, 0.24);
+  box-shadow: 0 12px 28px rgba(53, 120, 255, 0.10);
+}
+
+.skill-card--active::before {
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 0;
+  width: 3px;
+  content: "";
+  background: linear-gradient(180deg, var(--accent), var(--accent-2));
+  border-radius: 999px;
+}
+
+.skill-card--new {
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+}
+
+.skill-card-new-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border-radius: 10px;
+  box-shadow: 0 10px 22px rgba(53, 120, 255, 0.20);
 }
 
 .skill-card-name {
@@ -473,7 +571,7 @@ const tagColor = (tag) => {
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
-  padding: 24px;
+  padding: 22px 24px 24px;
   background:
     radial-gradient(circle at 80% 10%, rgba(139, 92, 246, 0.07), transparent 30%),
     radial-gradient(circle at 10% 90%, rgba(53, 120, 255, 0.06), transparent 28%);
@@ -508,21 +606,77 @@ const tagColor = (tag) => {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 20px;
+  margin-bottom: 16px;
+  padding: 16px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.80), rgba(246, 250, 255, 0.58)),
+    rgba(255, 255, 255, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 16px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.88),
+    0 14px 34px rgba(27, 39, 66, 0.08);
+  backdrop-filter: blur(18px) saturate(1.16);
+  -webkit-backdrop-filter: blur(18px) saturate(1.16);
 }
 
 .skills-editor-title {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 13px;
   min-width: 0;
+}
+
+.skills-title-icon {
+  display: grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent), var(--accent-2) 58%, var(--accent-5));
+  border-radius: 13px;
+  box-shadow: 0 14px 30px rgba(53, 120, 255, 0.22);
+  font-size: 18px;
+}
+
+.skills-title-copy {
+  min-width: 0;
+}
+
+.skills-editor-kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 850;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  background: linear-gradient(135deg, var(--accent-3), var(--accent-2));
+  border-radius: 999px;
+  box-shadow: 0 0 0 3px rgba(88, 214, 141, 0.16);
 }
 
 .skills-editor-title h2 {
   margin: 0;
-  font-size: 20px;
+  font-size: 22px;
   font-weight: 800;
   color: var(--text);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.skills-editor-title p {
+  max-width: 620px;
+  margin: 3px 0 0;
+  color: var(--muted);
+  font-size: 13px;
   overflow: hidden;
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -531,12 +685,12 @@ const tagColor = (tag) => {
 .skill-id-badge {
   display: inline-flex;
   align-items: center;
-  padding: 3px 10px;
-  background: rgba(139, 92, 246, 0.08);
-  border: 1px solid rgba(139, 92, 246, 0.16);
+  padding: 4px 9px;
+  background: rgba(53, 120, 255, 0.08);
+  border: 1px solid rgba(53, 120, 255, 0.14);
   border-radius: 999px;
   font-size: 11.5px;
-  color: #5b21b6;
+  color: #175199;
   white-space: nowrap;
   max-width: 220px;
   overflow: hidden;
@@ -553,6 +707,7 @@ const tagColor = (tag) => {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  padding-bottom: 4px;
   scrollbar-width: none;
 }
 
@@ -560,9 +715,69 @@ const tagColor = (tag) => {
   display: none;
 }
 
+.skills-form-panel {
+  min-height: 100%;
+  padding: 18px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.82), rgba(250, 252, 255, 0.66)),
+    rgba(255, 255, 255, 0.48);
+  border: 1px solid rgba(255, 255, 255, 0.82);
+  border-radius: 18px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.88),
+    0 18px 46px rgba(27, 39, 66, 0.09);
+  backdrop-filter: blur(20px) saturate(1.12);
+  -webkit-backdrop-filter: blur(20px) saturate(1.12);
+}
+
+.form-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 18px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid rgba(95, 111, 139, 0.12);
+}
+
+.form-panel-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  color: var(--accent);
+}
+
+.form-panel-title strong {
+  display: block;
+  color: var(--text);
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.form-panel-title div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.form-panel-chip {
+  flex: 0 0 auto;
+  padding: 5px 10px;
+  color: #087681;
+  background: rgba(234, 255, 244, 0.78);
+  border: 1px solid rgba(88, 214, 141, 0.20);
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 780;
+}
+
 .form-grid {
   display: grid;
-  gap: 18px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px 16px;
 }
 
 .form-field {
@@ -571,15 +786,14 @@ const tagColor = (tag) => {
 }
 
 .form-field--full {
-  /* content editor takes the rest of available height */
+  grid-column: 1 / -1;
 }
 
 .form-label {
   font-size: 12px;
   font-weight: 800;
-  text-transform: uppercase;
   color: var(--muted);
-  letter-spacing: 0.03em;
+  letter-spacing: 0;
 }
 
 .form-required {
@@ -602,19 +816,22 @@ const tagColor = (tag) => {
   font-family: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'SF Mono', Menlo, monospace !important;
   font-size: 13px !important;
   line-height: 1.7 !important;
-  min-height: 340px;
+  min-height: 360px;
   resize: vertical;
-  background: rgba(14, 20, 38, 0.03);
-  border-color: rgba(139, 92, 246, 0.16);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.84), rgba(246, 250, 255, 0.66)),
+    rgba(14, 20, 38, 0.025);
+  border-color: rgba(53, 120, 255, 0.16);
+  border-radius: 12px;
 }
 
 .skills-content-editor:hover {
-  border-color: rgba(139, 92, 246, 0.38);
+  border-color: rgba(53, 120, 255, 0.38);
 }
 
 .skills-content-editor:focus {
-  border-color: rgba(139, 92, 246, 0.56);
-  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.10);
+  border-color: rgba(53, 120, 255, 0.56);
+  box-shadow: 0 0 0 3px rgba(53, 120, 255, 0.10);
 }
 
 .muted {
@@ -638,6 +855,20 @@ const tagColor = (tag) => {
 
   .skills-editor {
     min-height: 500px;
+    padding: 18px;
+  }
+
+  .skills-editor-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .skills-editor-title p {
+    white-space: normal;
+  }
+
+  .form-grid {
+    grid-template-columns: 1fr;
   }
 }
 </style>

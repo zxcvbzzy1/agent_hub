@@ -10,6 +10,7 @@ import {
   DeleteOutlined,
   DeploymentUnitOutlined,
   DownloadOutlined,
+  EditOutlined,
   EllipsisOutlined,
   ExpandAltOutlined,
   FileTextOutlined,
@@ -51,6 +52,7 @@ import {
 import { useAuthStore } from '@/stores/auth'
 import { useIMStore } from '@/stores/im'
 import ArtifactCard from '@/components/ArtifactCard.vue'
+import { renderMarkdown } from '@/utils/markdown'
 
 const im = useIMStore()
 const auth = useAuthStore()
@@ -86,6 +88,8 @@ watch(feedSectionOpen, (v) => localStorage.setItem('im:sidebar:feed-open', v))
 const previewMessage = ref(null)
 const replyTarget = ref(null)
 const quoteTarget = ref(null)
+// 选区编辑目标：来自 ArtifactCard 的 selection-edit 事件（选中代码 -> 在聊天中描述修改）
+const selectionEditTarget = ref(null)
 const conversationQuery = ref('')
 const archivedOpen = ref(false)
 const uploadingAvatar = ref(false)
@@ -749,11 +753,29 @@ async function send() {
   if (!composer.value.trim()) return
   sending.value = true
   try {
+    const userText = composer.value.trim()
+    let text = userText
+    const metadata = { client: 'IM_front' }
+    if (selectionEditTarget.value) {
+      const t = selectionEditTarget.value
+      const snippet = String(t.selection?.text || '').slice(0, 2000)
+      text =
+        `请针对文件 ${t.file_path || '(当前文档)'} 中的下面这段选区进行修改：\n\n` +
+        '```\n' + snippet + '\n```\n\n' +
+        `修改要求：${userText}\n\n` +
+        '请使用 diff_editor 工具的 propose_edit（基于完整文件内容）生成 Diff 供我确认。'
+      metadata.file_edit = {
+        file_path: t.file_path,
+        edit_id: t.edit_id,
+        artifact_type: t.artifact_type,
+        selection: t.selection,
+      }
+    }
     const payload = {
       sender_type: 'user',
-      content_parts: [{ type: 'text', text: composer.value.trim() }],
+      content_parts: [{ type: 'text', text }],
       mentions: [...mentions.value],
-      metadata: { client: 'IM_front' },
+      metadata,
     }
     if (replyTarget.value?.message_id) payload.reply_to = replyTarget.value.message_id
     if (quoteTarget.value?.message_id) payload.quote_of = quoteTarget.value.message_id
@@ -771,6 +793,7 @@ async function send() {
     mentionOpen.value = false
     replyTarget.value = null
     quoteTarget.value = null
+    selectionEditTarget.value = null
     await scrollToBottom()
   } finally {
     sending.value = false
@@ -891,6 +914,15 @@ function setReplyTarget(item) {
 function setQuoteTarget(item) {
   quoteTarget.value = item
   nextTick(() => composerRef.value?.focus?.())
+}
+
+function onArtifactSelectionEdit(payload) {
+  selectionEditTarget.value = payload
+  nextTick(() => composerRef.value?.focus?.())
+}
+
+function clearSelectionEditTarget() {
+  selectionEditTarget.value = null
 }
 
 function clearReplyTarget() {
@@ -1135,6 +1167,7 @@ watch(
     previewMessage.value = null
     replyTarget.value = null
     quoteTarget.value = null
+    selectionEditTarget.value = null
     conversationQuery.value = ''
   },
 )
@@ -1493,7 +1526,8 @@ onUnmounted(() => {
               </div>
 
               <div v-for="(part, index) in entry.message.content_parts" :key="`${entry.message.message_id}-${index}`" class="part">
-                <p v-if="part.type === 'text'" class="text-part">{{ part.text }}</p>
+                <!-- eslint-disable-next-line vue/no-v-html -->
+                <div v-if="part.type === 'text'" class="text-part md-body" v-html="renderMarkdown(part.text)"></div>
                 <pre v-else-if="part.type === 'code'" class="code-part"><code>{{ part.text }}</code></pre>
                 <img v-else-if="part.type === 'image'" class="image-part" :src="part.url" :alt="part.name || 'image'" />
                 <a-button v-else-if="part.type === 'file'" :href="part.url" target="_blank">
@@ -1517,6 +1551,7 @@ onUnmounted(() => {
                 <ArtifactCard
                   v-else-if="part.type === 'artifact'"
                   :artifact="part.metadata?.artifact || part"
+                  @selection-edit="onArtifactSelectionEdit"
                 />
                 <div v-else-if="part.type === 'deploy'" class="deploy-card">
                   <div class="card-title">
@@ -1627,7 +1662,7 @@ onUnmounted(() => {
                 <a-tag color="purple" size="small">内联产物</a-tag>
                 <span>{{ formatTime(entry.event.created_at) }}</span>
               </div>
-              <ArtifactCard :artifact="entry.artifact" />
+              <ArtifactCard :artifact="entry.artifact" @selection-edit="onArtifactSelectionEdit" />
             </div>
           </article>
 
@@ -1683,6 +1718,16 @@ onUnmounted(() => {
       </div>
 
       <footer class="composer">
+        <div v-if="selectionEditTarget" class="composer-refs">
+          <div class="composer-ref">
+            <EditOutlined />
+            <span class="composer-ref-label">针对选区修改 {{ selectionEditTarget.file_path || selectionEditTarget.title || '当前文档' }}：</span>
+            <span class="composer-ref-text">{{ (selectionEditTarget.selection?.text || '').slice(0, 80) }}</span>
+            <a-button type="text" size="small" @click="clearSelectionEditTarget">
+              <template #icon><CloseOutlined /></template>
+            </a-button>
+          </div>
+        </div>
         <div v-if="replyTarget || quoteTarget" class="composer-refs">
           <div v-if="replyTarget" class="composer-ref">
             <MessageOutlined />
@@ -1760,7 +1805,8 @@ onUnmounted(() => {
             :key="`preview-${previewMessage.message_id}-${index}`"
             class="part"
           >
-            <p v-if="part.type === 'text'" class="text-part">{{ part.text }}</p>
+            <!-- eslint-disable-next-line vue/no-v-html -->
+            <div v-if="part.type === 'text'" class="text-part md-body" v-html="renderMarkdown(part.text)"></div>
             <pre v-else-if="part.type === 'code'" class="code-part"><code>{{ part.text }}</code></pre>
             <img v-else-if="part.type === 'image'" class="image-part" :src="part.url" :alt="part.name || 'image'" />
             <a-button v-else-if="part.type === 'file'" :href="part.url" target="_blank">
@@ -1784,6 +1830,7 @@ onUnmounted(() => {
             <ArtifactCard
               v-else-if="part.type === 'artifact'"
               :artifact="part.metadata?.artifact || part"
+              @selection-edit="onArtifactSelectionEdit"
             />
             <div v-else-if="part.type === 'deploy'" class="deploy-card">
               <div class="card-title">
@@ -2053,6 +2100,12 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* 文本气泡现在渲染 markdown（块级结构），去掉 .text-part 的 white-space: pre-wrap，
+   否则 markdown-it 在块之间/结尾输出的换行符会被当作真实空行渲染，导致一句话下方多出空行。
+   复合选择器 .text-part.md-body 用于确定性地压过全局 .text-part 规则。 */
+.text-part.md-body {
+  white-space: normal;
+}
 .message-actions .is-favorited {
   color: #faad14;
 }

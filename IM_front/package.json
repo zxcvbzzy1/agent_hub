@@ -12,6 +12,9 @@
     "@ant-design/icons-vue": "^7.0.1",
     "ant-design-vue": "^4.2.6",
     "axios": "^1.16.1",
+    "dompurify": "^3.4.8",
+    "highlight.js": "^11.11.1",
+    "markdown-it": "^14.2.0",
     "pinia": "^3.0.4",
     "vue": "^3.5.32",
     "vue-router": "^5.0.4"

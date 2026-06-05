@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { message } from 'ant-design-vue'
 import {
   BranchesOutlined,
+  CheckOutlined,
   CloudServerOutlined,
   CodeOutlined,
   CopyOutlined,
@@ -11,19 +12,133 @@ import {
   EyeOutlined,
   FileTextOutlined,
   GlobalOutlined,
+  HistoryOutlined,
   LinkOutlined,
   MessageOutlined,
   PictureOutlined,
+  RollbackOutlined,
+  SaveOutlined,
 } from '@ant-design/icons-vue'
 import { imApi } from '@/api/im'
+import { looksLikeMarkdownDoc, renderMarkdown } from '@/utils/markdown'
 
 const props = defineProps({
   artifact: { type: Object, default: () => ({}) },
 })
+const emit = defineEmits(['selection-edit'])
 
 const artifactType = computed(() => (props.artifact?.type || 'message').toLowerCase())
 const title = computed(() => props.artifact?.title || defaultTitle(artifactType.value))
 const editable = computed(() => Boolean(props.artifact?.editable))
+
+// —— 协同编辑：身份与元信息（来自 diff_editor 工具写入 artifact.metadata）——
+const meta = computed(() => props.artifact?.metadata || {})
+const editId = computed(() => meta.value.edit_id || '')
+const editAgentId = computed(() => meta.value.agent_id || '')
+const baseSha = computed(() => meta.value.base_sha || '')
+const docFilePath = computed(() => props.artifact?.file_path || meta.value.file_path || '')
+const isMarkdownDoc = computed(() => looksLikeMarkdownDoc(props.artifact))
+const canApplyDiff = computed(() => artifactType.value === 'diff' && Boolean(editId.value))
+const canSaveDoc = computed(() => Boolean(editable.value && docFilePath.value && editAgentId.value))
+const canShowHistory = computed(() => Boolean(docFilePath.value && editAgentId.value))
+
+// 一键应用 Diff：仅回传 edit_id，落盘内容/路径由服务端 pending 记录决定
+const applyState = ref('idle') // idle | applying | applied
+const appliedVersion = ref(0)
+async function handleApplyDiff() {
+  if (!editId.value || applyState.value === 'applying') return
+  applyState.value = 'applying'
+  try {
+    const res = await imApi.applyEdit(editId.value)
+    applyState.value = 'applied'
+    appliedVersion.value = res?.version || 0
+    message.success(res?.version ? `已应用并落盘（v${res.version}）` : '已应用并落盘')
+  } catch {
+    // 冲突/过期由全局拦截器 toast，允许用户让 Agent 重新生成后再试
+    applyState.value = 'idle'
+  }
+}
+
+// 文档卡片编辑回写原文件
+const saving = ref(false)
+async function handleSaveDocument() {
+  if (!canSaveDoc.value || saving.value) return
+  saving.value = true
+  try {
+    const res = await imApi.saveArtifactFile({
+      agent_id: editAgentId.value,
+      file_path: docFilePath.value,
+      content: docContent.value,
+      base_sha: baseSha.value || undefined,
+    })
+    message.success(res?.version ? `已回写原文件（v${res.version}）` : '已回写原文件')
+    docMode.value = 'preview'
+  } catch {
+    // 全局拦截器已提示
+  } finally {
+    saving.value = false
+  }
+}
+
+// 版本历史
+const historyOpen = ref(false)
+const historyLoading = ref(false)
+const historyItems = ref([])
+async function openHistory() {
+  if (!canShowHistory.value) return
+  historyOpen.value = true
+  historyLoading.value = true
+  try {
+    const res = await imApi.editHistory(editAgentId.value, docFilePath.value)
+    historyItems.value = (res?.versions || []).slice().reverse()
+  } catch {
+    historyItems.value = []
+  } finally {
+    historyLoading.value = false
+  }
+}
+async function handleRevert(version) {
+  try {
+    const res = await imApi.revertEdit({
+      agent_id: editAgentId.value,
+      file_path: docFilePath.value,
+      version,
+    })
+    message.success(`已回退到 v${version}（记为 v${res?.version || '?'}）`)
+    await openHistory()
+  } catch {
+    // 全局拦截器已提示
+  }
+}
+function formatTs(seconds) {
+  if (!seconds) return ''
+  try {
+    return new Date(seconds * 1000).toLocaleString()
+  } catch {
+    return ''
+  }
+}
+
+// —— 选区编辑：在卡片正文里选中文本 -> 浮动按钮 -> 抛给 ChatView 组合一条消息 ——
+const selectionText = ref('')
+function captureSelection() {
+  const sel = typeof window !== 'undefined' && window.getSelection ? window.getSelection() : null
+  const text = sel ? String(sel.toString()) : ''
+  selectionText.value = text.trim().length >= 2 ? text : ''
+}
+function startSelectionEdit() {
+  if (!selectionText.value) return
+  emit('selection-edit', {
+    file_path: docFilePath.value || props.artifact?.file_path || '',
+    edit_id: editId.value || '',
+    artifact_type: artifactType.value,
+    title: title.value,
+    selection: { text: selectionText.value },
+  })
+  selectionText.value = ''
+  const sel = typeof window !== 'undefined' && window.getSelection ? window.getSelection() : null
+  sel?.removeAllRanges?.()
+}
 
 const typeMeta = {
   message: { icon: MessageOutlined, label: '消息' },
@@ -352,7 +467,7 @@ function downloadArtifact() {
 </script>
 
 <template>
-  <div class="artifact-card" :class="`artifact-${artifactType}`">
+  <div class="artifact-card" :class="`artifact-${artifactType}`" @mouseup="captureSelection">
     <div class="artifact-head">
       <component :is="headerIcon" class="artifact-head-icon" />
       <span class="artifact-title">{{ title }}</span>
@@ -365,6 +480,13 @@ function downloadArtifact() {
           <template #icon><EditOutlined v-if="docMode === 'preview'" /><EyeOutlined v-else /></template>
           {{ docMode === 'preview' ? '编辑' : '预览' }}
         </a-button>
+        <a-button v-if="canSaveDoc" type="primary" size="small" :loading="saving" @click="handleSaveDocument">
+          <template #icon><SaveOutlined /></template>
+          保存到原文件
+        </a-button>
+        <a-button v-if="canShowHistory" type="text" size="small" title="版本历史" @click="openHistory">
+          <template #icon><HistoryOutlined /></template>
+        </a-button>
         <a-button type="text" size="small" @click="copy(docContent)">
           <template #icon><CopyOutlined /></template>
         </a-button>
@@ -375,6 +497,22 @@ function downloadArtifact() {
 
       <template v-else-if="artifactType === 'diff'">
         <a-tag v-if="artifact.file_path" size="small">{{ artifact.file_path }}</a-tag>
+        <a-button
+          v-if="canApplyDiff && applyState !== 'applied'"
+          type="primary"
+          size="small"
+          :loading="applyState === 'applying'"
+          @click="handleApplyDiff"
+        >
+          <template #icon><CheckOutlined /></template>
+          应用
+        </a-button>
+        <a-tag v-else-if="applyState === 'applied'" size="small" color="success">
+          已应用{{ appliedVersion ? ' v' + appliedVersion : '' }}
+        </a-tag>
+        <a-button v-if="canShowHistory" type="text" size="small" title="版本历史" @click="openHistory">
+          <template #icon><HistoryOutlined /></template>
+        </a-button>
         <a-button type="text" size="small" @click="copy(artifact.after)">
           <template #icon><CopyOutlined /></template>
         </a-button>
@@ -459,7 +597,8 @@ function downloadArtifact() {
 
     <!-- message -->
     <div v-if="artifactType === 'message'" class="artifact-body artifact-message-body">
-      <p v-if="artifact.content" class="artifact-text">{{ artifact.content }}</p>
+      <!-- eslint-disable-next-line vue/no-v-html -->
+      <div v-if="artifact.content" class="md-body" v-html="renderMarkdown(artifact.content)"></div>
       <a-empty v-else description="空消息" :image-style="{ height: '40px' }" />
     </div>
 
@@ -512,6 +651,8 @@ function downloadArtifact() {
         :auto-size="{ minRows: 4, maxRows: 18 }"
         class="artifact-doc-editor"
       />
+      <!-- eslint-disable-next-line vue/no-v-html -->
+      <div v-else-if="isMarkdownDoc" class="md-body artifact-doc-preview-md" v-html="renderMarkdown(docContent)"></div>
       <pre v-else class="artifact-doc-preview"><code>{{ docContent }}</code></pre>
     </div>
 
@@ -571,6 +712,46 @@ function downloadArtifact() {
         {{ artifactType }}
       </a-tag>
     </div>
+
+    <!-- 选区编辑浮动条：在卡片正文里选中文本后出现 -->
+    <div v-if="selectionText" class="artifact-selection-bar">
+      <span class="artifact-selection-hint">已选中 {{ selectionText.length }} 字符</span>
+      <!-- mousedown.prevent：避免点击按钮时折叠/清空文本选区，保证 startSelectionEdit 能拿到选区 -->
+      <a-button type="primary" size="small" @mousedown.prevent="startSelectionEdit">
+        <template #icon><EditOutlined /></template>
+        针对选区在聊天中修改
+      </a-button>
+    </div>
+
+    <!-- 版本历史 -->
+    <a-modal v-model:open="historyOpen" :title="`版本历史 · ${docFilePath}`" :footer="null" :width="540">
+      <a-spin :spinning="historyLoading">
+        <a-empty v-if="!historyItems.length" description="暂无版本历史" />
+        <div v-else class="artifact-history-list">
+          <div v-for="v in historyItems" :key="v.version" class="artifact-history-item">
+            <div class="artifact-history-main">
+              <b>v{{ v.version }}</b>
+              <span class="artifact-history-note">{{ v.note || '—' }}</span>
+            </div>
+            <div class="artifact-history-meta">
+              <span>{{ formatTs(v.created_at) }}</span>
+              <span>{{ v.bytes }}B</span>
+              <a-popconfirm
+                title="回退到该版本？将覆盖当前文件内容。"
+                ok-text="回退"
+                cancel-text="取消"
+                @confirm="handleRevert(v.version)"
+              >
+                <a-button type="link" size="small">
+                  <template #icon><RollbackOutlined /></template>
+                  回退
+                </a-button>
+              </a-popconfirm>
+            </div>
+          </div>
+        </div>
+      </a-spin>
+    </a-modal>
   </div>
 </template>
 
@@ -703,6 +884,61 @@ function downloadArtifact() {
   word-break: break-word;
   max-height: 420px;
   overflow: auto;
+}
+.artifact-doc-preview-md {
+  max-height: 460px;
+  overflow: auto;
+}
+.artifact-selection-bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 8px 12px;
+  border-top: 1px dashed var(--ant-color-border, #e5e7eb);
+  background: rgba(37, 99, 235, 0.04);
+}
+.artifact-selection-hint {
+  font-size: 12px;
+  color: #6b7280;
+}
+.artifact-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 60vh;
+  overflow: auto;
+}
+.artifact-history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 10px;
+  border: 1px solid var(--ant-color-border, #eef0f3);
+  border-radius: 8px;
+}
+.artifact-history-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.artifact-history-note {
+  color: #6b7280;
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
+}
+.artifact-history-meta {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+  color: #9ca3af;
+  white-space: nowrap;
 }
 .artifact-web-body {
   padding: 0;

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
+from pydantic import BaseModel
 
 from im_backend.api.core import get_artifact_storage, get_current_user
 from im_backend.api.schemas import ArtifactBundleRequest, ArtifactUploadRequest
@@ -16,10 +17,76 @@ from im_backend.application.services._shared.inline_artifacts import (
     _safe_filename,
     artifact_download_file,
 )
+from im_backend.infra.agent_flow_bridge.pathing import ensure_agent_flow_path
 from im_backend.infra.storage.artifacts import ArtifactStorage
+
+ensure_agent_flow_path()
+from infra.tool.builtin import diff_editor  # type: ignore  # noqa: E402
 
 
 router = APIRouter()
+
+
+class SaveDocumentRequest(BaseModel):
+    agent_id: str
+    file_path: str
+    content: str
+    base_sha: str | None = None
+
+
+class RevertRequest(BaseModel):
+    agent_id: str
+    file_path: str
+    version: int
+
+
+_STATUS_TO_HTTP = {"conflict": 409, "expired": 410, "error": 400}
+
+
+def _raise_for_status(result: dict) -> dict:
+    status = result.get("status")
+    if status and status != "applied":
+        code = _STATUS_TO_HTTP.get(status, 400)
+        # detail 用干净的文案（前端全局拦截器会直接 toast），状态码用于前端区分冲突/过期
+        raise HTTPException(status_code=code, detail=result.get("message") or status)
+    return result
+
+
+@router.post("/artifacts/edits/{edit_id}/apply")
+async def apply_edit(edit_id: str, current_user: dict = Depends(get_current_user)):
+    """一键应用某条 diff_editor 生成的 Diff（内容/路径取自服务端 pending，前端只传 edit_id）。"""
+    _ = current_user
+    result = diff_editor.apply_pending_edit(edit_id)
+    return _raise_for_status(result)
+
+
+@router.post("/artifacts/files/save")
+async def save_artifact_file(
+    request: SaveDocumentRequest, current_user: dict = Depends(get_current_user)
+):
+    """文档卡片编辑回写原文件（限定 agent 工作目录内）。"""
+    _ = current_user
+    result = diff_editor.save_document(
+        request.agent_id, request.file_path, request.content, request.base_sha
+    )
+    return _raise_for_status(result)
+
+
+@router.get("/artifacts/edits/history")
+async def edit_history(
+    agent_id: str, file_path: str, current_user: dict = Depends(get_current_user)
+):
+    """某文件的版本历史（工作区快照）。"""
+    _ = current_user
+    return diff_editor.list_history(agent_id, file_path)
+
+
+@router.post("/artifacts/edits/revert")
+async def revert_edit(request: RevertRequest, current_user: dict = Depends(get_current_user)):
+    """把某文件回退到指定版本。"""
+    _ = current_user
+    result = diff_editor.revert_version(request.agent_id, request.file_path, request.version)
+    return _raise_for_status(result)
 
 
 def _bundle_deploy_dir(zf: zipfile.ZipFile, art: dict, index: int, used_names: set[str]) -> bool:
