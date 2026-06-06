@@ -158,4 +158,18 @@ export const imApi = {
   revertEdit(payload) {
     return http.post('/api/im/artifacts/edits/revert', payload)
   },
+  // 人工确认：解析一条危险命令确认（允许/拒绝）
+  resolveConfirmation(runId, confirmationId, payload) {
+    return http.post(`/api/im/runs/${runId}/confirmations/${confirmationId}`, payload)
+  },
+  listRunConfirmations(runId) {
+    return http.get(`/api/im/runs/${runId}/confirmations`)
+  },
+  // 工具详情 + 运行时参数配置
+  toolDetail(toolName) {
+    return http.get(`/api/im/tools/${toolName}`)
+  },
+  patchToolConfig(toolName, payload) {
+    return http.patch(`/api/im/tools/${toolName}/config`, payload)
+  },
 }

@@ -51,8 +51,9 @@ import {
 } from '@/utils/runtimeEvents'
 import { useAuthStore } from '@/stores/auth'
 import { useIMStore } from '@/stores/im'
+import { imApi } from '@/api/im'
 import ArtifactCard from '@/components/ArtifactCard.vue'
-import { renderMarkdown } from '@/utils/markdown'
+import { renderMarkdown, looksLikeMarkdownDoc } from '@/utils/markdown'
 
 const im = useIMStore()
 const auth = useAuthStore()
@@ -155,7 +156,7 @@ const isNativeAgentForm = computed(() => agentForm.agent_kind === 'native')
 const showToolPicker = computed(() => isNativeAgentForm.value && agentForm.agent_type === 'executor')
 
 const groupedTools = computed(() => {
-  const order = ['system', 'search', 'memory', 'human', 'write_agent', 'other']
+  const order = ['system', 'search', 'memory', 'human', 'robot', 'other']
   const buckets = {}
   for (const tool of im.tools || []) {
     const field = tool.field || 'other'
@@ -925,6 +926,89 @@ function clearSelectionEditTarget() {
   selectionEditTarget.value = null
 }
 
+// —— 危险命令人工确认（弹窗）——
+const pendingConfirmation = computed(() => im.humanConfirmations[0] || null)
+const resolvingConfirmation = ref(false)
+async function resolveDangerCommand(approved) {
+  const c = pendingConfirmation.value
+  if (!c || resolvingConfirmation.value) return
+  resolvingConfirmation.value = true
+  try {
+    await im.resolveHumanConfirmation(
+      c.run_id,
+      c.confirmation_id,
+      approved,
+      approved ? '用户允许执行' : '用户拒绝执行',
+    )
+  } catch {
+    // 全局拦截器已提示
+  } finally {
+    resolvingConfirmation.value = false
+  }
+}
+
+// —— 消息操作：编辑文件产物并回写原文件 ——
+const editArtifactOpen = ref(false)
+const editArtifactSaving = ref(false)
+const editArtifactContent = ref('')
+const editArtifactTarget = ref(null) // {agent_id, file_path, base_sha, title, format}
+const editArtifactIsMarkdown = computed(() =>
+  editArtifactTarget.value ? looksLikeMarkdownDoc(editArtifactTarget.value) : false,
+)
+
+function collectEditableArtifacts(entry) {
+  const parts = entry?.message?.content_parts || []
+  const out = []
+  for (const p of parts) {
+    if (p.type !== 'artifact') continue
+    const a = p.metadata?.artifact || p
+    const type = (a.type || '').toLowerCase()
+    if (type !== 'document' && type !== 'diff') continue
+    const filePath = a.file_path || a.metadata?.file_path || ''
+    const agentId = a.metadata?.agent_id || ''
+    if (!filePath || !agentId) continue
+    out.push({
+      agent_id: agentId,
+      file_path: filePath,
+      base_sha: a.metadata?.base_sha || '',
+      title: a.title || filePath,
+      format: a.format || '',
+      content: type === 'diff' ? (a.after ?? '') : (a.content ?? ''),
+    })
+  }
+  return out
+}
+function hasEditableArtifact(entry) {
+  return collectEditableArtifacts(entry).length > 0
+}
+function openEditArtifact(entry) {
+  const items = collectEditableArtifacts(entry)
+  if (!items.length) return
+  const target = items[0] // v1：一条消息含多个可编辑文件时取第一个
+  editArtifactTarget.value = target
+  editArtifactContent.value = target.content
+  editArtifactOpen.value = true
+}
+async function saveEditArtifact() {
+  const t = editArtifactTarget.value
+  if (!t || editArtifactSaving.value) return
+  editArtifactSaving.value = true
+  try {
+    const res = await imApi.saveArtifactFile({
+      agent_id: t.agent_id,
+      file_path: t.file_path,
+      content: editArtifactContent.value,
+      base_sha: t.base_sha || undefined,
+    })
+    message.success(res?.version ? `已回写原文件（v${res.version}）` : '已回写原文件')
+    editArtifactOpen.value = false
+  } catch {
+    // 全局拦截器已提示
+  } finally {
+    editArtifactSaving.value = false
+  }
+}
+
 function clearReplyTarget() {
   replyTarget.value = null
 }
@@ -1507,6 +1591,11 @@ onUnmounted(() => {
                   <a-tooltip title="展开预览">
                     <a-button type="text" size="small" @click.stop="openPreview(entry.message)">
                       <template #icon><ExpandAltOutlined /></template>
+                    </a-button>
+                  </a-tooltip>
+                  <a-tooltip v-if="hasEditableArtifact(entry)" title="编辑文件并回写">
+                    <a-button type="text" size="small" @click.stop="openEditArtifact(entry)">
+                      <template #icon><EditOutlined /></template>
                     </a-button>
                   </a-tooltip>
                   <a-tooltip v-if="hasDownloadableArtifacts(entry)" title="下载产物">
@@ -2096,10 +2185,84 @@ onUnmounted(() => {
         </a-list>
       </section>
     </a-drawer>
+
+    <!-- 危险命令人工确认 -->
+    <a-modal
+      :open="Boolean(pendingConfirmation)"
+      title="危险命令需要确认"
+      :closable="false"
+      :mask-closable="false"
+      :footer="null"
+      :width="560"
+    >
+      <template v-if="pendingConfirmation">
+        <p class="danger-confirm-tip">
+          Agent 请求执行一条高危命令，确认后才会执行：
+        </p>
+        <pre class="danger-confirm-cmd">{{ pendingConfirmation.arguments?.command }}</pre>
+        <div class="danger-confirm-actions">
+          <a-button :loading="resolvingConfirmation" @click="resolveDangerCommand(false)">拒绝</a-button>
+          <a-button type="primary" danger :loading="resolvingConfirmation" @click="resolveDangerCommand(true)">
+            允许执行
+          </a-button>
+        </div>
+      </template>
+    </a-modal>
+
+    <!-- 消息操作：编辑文件并回写原文件 -->
+    <a-modal
+      v-model:open="editArtifactOpen"
+      :title="`编辑文件 · ${editArtifactTarget?.file_path || ''}`"
+      :width="760"
+      :confirm-loading="editArtifactSaving"
+      ok-text="保存到原文件"
+      cancel-text="取消"
+      @ok="saveEditArtifact"
+    >
+      <a-textarea
+        v-model:value="editArtifactContent"
+        :auto-size="{ minRows: 12, maxRows: 24 }"
+        class="edit-artifact-editor"
+      />
+      <p v-if="editArtifactIsMarkdown" class="edit-artifact-hint">提示：该文件为 Markdown，保存后在文档卡片中会按 Markdown 渲染。</p>
+    </a-modal>
   </main>
 </template>
 
 <style scoped>
+.danger-confirm-tip {
+  margin: 0 0 8px;
+  color: #6b7280;
+  font-size: 13px;
+}
+.danger-confirm-cmd {
+  margin: 0 0 16px;
+  padding: 12px 14px;
+  background: rgba(239, 68, 68, 0.06);
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  border-radius: 8px;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 240px;
+  overflow: auto;
+}
+.danger-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+.edit-artifact-editor :deep(textarea) {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+.edit-artifact-hint {
+  margin: 8px 0 0;
+  color: #6b7280;
+  font-size: 12px;
+}
 /* 文本气泡现在渲染 markdown（块级结构），去掉 .text-part 的 white-space: pre-wrap，
    否则 markdown-it 在块之间/结尾输出的换行符会被当作真实空行渲染，导致一句话下方多出空行。
    复合选择器 .text-part.md-body 用于确定性地压过全局 .text-part 规则。 */

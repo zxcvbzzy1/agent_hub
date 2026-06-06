@@ -104,6 +104,11 @@ async function handleRevert(version) {
       file_path: docFilePath.value,
       version,
     })
+    // 刷新卡片正文：props.artifact 是静态 SSE 快照，回退后必须用返回内容更新本地展示，
+    // 否则文件已回退但卡片仍显示旧版本内容。
+    if (typeof res?.content === 'string') {
+      docContent.value = res.content
+    }
     message.success(`已回退到 v${version}（记为 v${res?.version || '?'}）`)
     await openHistory()
   } catch {

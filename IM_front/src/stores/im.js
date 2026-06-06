@@ -46,6 +46,8 @@ export const useIMStore = defineStore('im', {
     loading: false,
     source: null,
     tools: [],
+    // 待处理的人工确认（危险命令）：{confirmation_id, run_id, tool_name, arguments, ...}
+    humanConfirmations: [],
     favorites: [],
     activity: [],
     lastSeenCount: (() => {
@@ -476,6 +478,11 @@ export const useIMStore = defineStore('im', {
     async recordAction(messageId, payload) {
       return imApi.action(messageId, payload)
     },
+    async resolveHumanConfirmation(runId, confirmationId, approved, reason = '') {
+      // 乐观移除：无论后端结果如何先从待办里去掉，避免重复点击
+      this.humanConfirmations = this.humanConfirmations.filter((c) => c.confirmation_id !== confirmationId)
+      return imApi.resolveConfirmation(runId, confirmationId, { approved, reason })
+    },
     async fetchTools() {
       if (this.tools.length) return this.tools
       const r = await imApi.toolsCatalog()
@@ -631,6 +638,18 @@ export const useIMStore = defineStore('im', {
       }
       if (event.name === 'confirmation.requested' && event.payload?.confirmation) {
         this.mergeMessage(event.payload.confirmation)
+      }
+      // agent_flow 层的工具人工确认（如危险 bash 命令）：弹窗审批用
+      if (event.name === 'human.confirmation.requested' && event.payload?.confirmation_id) {
+        const item = event.payload
+        if (!this.humanConfirmations.some((c) => c.confirmation_id === item.confirmation_id)) {
+          this.humanConfirmations = [...this.humanConfirmations, item]
+        }
+      }
+      if (event.name === 'human.confirmation.resolved' && event.payload?.confirmation_id) {
+        this.humanConfirmations = this.humanConfirmations.filter(
+          (c) => c.confirmation_id !== event.payload.confirmation_id,
+        )
       }
       if (event.name === 'message.regenerated') {
         this.refreshMessages().catch(() => {})

@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { LogoutOutlined, MessageOutlined, BookOutlined } from '@ant-design/icons-vue'
+import { LogoutOutlined, MessageOutlined, BookOutlined, ToolOutlined } from '@ant-design/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 import { useIMStore } from '@/stores/im'
 
@@ -67,6 +67,14 @@ onUnmounted(() => {
           >
             <BookOutlined class="pill-icon" />
             <span>技能库</span>
+          </RouterLink>
+          <RouterLink
+            :to="{ name: 'tools' }"
+            class="topbar-pill-seg"
+            :class="{ 'topbar-pill-seg--active': activeNav === 'tools' }"
+          >
+            <ToolOutlined class="pill-icon" />
+            <span>工具</span>
           </RouterLink>
         </div>
       </nav>

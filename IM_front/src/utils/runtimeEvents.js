@@ -91,7 +91,7 @@ export const sseEventNames = [
   'plan.wave.completed',
   'wave.completed',
   'human.confirmation.requested',
-  // 'human.confirmation.resolved',
+  'human.confirmation.resolved',
   'workflow.finished',
   'artifacts.message',
   'artifacts.image',
