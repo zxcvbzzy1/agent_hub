@@ -12,6 +12,7 @@ from im_backend.application.services.messaging.favorites import FavoriteService
 from im_backend.application.services._shared.history import history_before
 from im_backend.application.services._shared.lookup import find_im_message, require_im_message
 from im_backend.application.services._shared.message_text import message_text
+from im_backend.application.services._shared.pagination import fetch_message_window
 from im_backend.application.services._shared.runtime_profile import build_runtime_profile
 from im_backend.application.services._shared.inline_artifacts import collect_inline_artifact_parts
 from im_backend.application.services._shared.prompting import compose_prompt_with_references
@@ -55,6 +56,22 @@ class ConversationService:
             "im_messages",
             {"conversation_id": conversation_id},
             sort=[("created_at", 1)],
+        )
+
+    def list_conversation_messages_window(
+        self,
+        conversation_id: str,
+        *,
+        limit: int | None = None,
+        before_id: str | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """懒加载窗口：返回 (items, has_more)，只从数据库取窗口数据（不全量加载）。"""
+        self.get_conversation(conversation_id)
+        return fetch_message_window(
+            self._store,
+            {"conversation_id": conversation_id},
+            limit=limit,
+            before_id=before_id,
         )
 
     def list_agent_conversations(self, agent_id: str, user_id: str = "") -> list[dict[str, Any]]:

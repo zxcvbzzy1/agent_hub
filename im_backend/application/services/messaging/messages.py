@@ -4,6 +4,7 @@ from typing import Any
 
 from im_backend.application.services._shared.lookup import require_im_message
 from im_backend.application.services._shared.message_text import message_text as extract_message_text
+from im_backend.application.services._shared.pagination import fetch_message_window
 from im_backend.application.services.messaging.agents import IMAgentService
 from im_backend.application.services.platform.events import RoomEventStreamService
 from im_backend.application.services.messaging.rooms import RoomService
@@ -37,6 +38,26 @@ class GroupMessageService:
         if conversation_id is not None:
             messages = [m for m in messages if m.get("conversation_id") == conversation_id]
         return messages
+
+    def list_messages_window(
+        self,
+        room_id: str,
+        *,
+        conversation_id: str | None = None,
+        limit: int | None = None,
+        before_id: str | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """懒加载窗口：返回 (items, has_more)，只从数据库取窗口数据（不全量加载）。"""
+        self._rooms.ensure_group_room(room_id)
+        base_query: dict[str, Any] = {"room_id": room_id}
+        if conversation_id is not None:
+            base_query["conversation_id"] = conversation_id
+        return fetch_message_window(
+            self._store,
+            base_query,
+            limit=limit,
+            before_id=before_id,
+        )
 
     def get_message(self, message_id: str) -> dict[str, Any]:
         return require_im_message(self._store, message_id)

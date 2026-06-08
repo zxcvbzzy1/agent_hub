@@ -75,6 +75,18 @@ class IMService:
     def list_messages(self, room_id: str, conversation_id: str | None = None) -> list[dict[str, Any]]:
         return self.messages.list_messages(room_id, conversation_id=conversation_id)
 
+    def list_messages_window(
+        self,
+        room_id: str,
+        *,
+        conversation_id: str | None = None,
+        limit: int | None = None,
+        before_id: str | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        return self.messages.list_messages_window(
+            room_id, conversation_id=conversation_id, limit=limit, before_id=before_id
+        )
+
     def get_message(self, message_id: str) -> dict[str, Any]:
         return self.messages.get_message(message_id)
 
@@ -109,6 +121,17 @@ class IMService:
 
     def list_conversation_messages(self, conversation_id: str) -> list[dict[str, Any]]:
         return self.conversations.list_conversation_messages(conversation_id)
+
+    def list_conversation_messages_window(
+        self,
+        conversation_id: str,
+        *,
+        limit: int | None = None,
+        before_id: str | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        return self.conversations.list_conversation_messages_window(
+            conversation_id, limit=limit, before_id=before_id
+        )
 
     def list_agent_conversations(self, agent_id: str, user_id: str = "") -> list[dict[str, Any]]:
         return self.conversations.list_agent_conversations(agent_id, user_id=user_id)

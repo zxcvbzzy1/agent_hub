@@ -7,6 +7,9 @@ import { sseEventNames } from '@/utils/runtimeEvents'
 // 若每条都同步并入 reactive events 数组，会触发整条 computed 链（compactLlmEvents /
 // chatItems）全量重算 + 整列表重渲染，主线程被打满导致页面卡死。这里把它们合批。
 const HIGH_FREQUENCY_EVENTS = new Set(['llm.delta', 'agent.delta'])
+// 聊天记录懒加载窗口：打开对话只取最新这么多条，向上滚动再按页补拉更早记录，
+// 避免历史消息很多时一次性渲染整列造成主线程卡顿。
+const MESSAGE_PAGE_SIZE = 30
 // 非 reactive 的流式状态：去重索引 + 待落库缓冲 + 刷新句柄，放在模块级避免 Pinia 代理开销。
 let seenEventIds = new Set()
 let pendingEvents = []
@@ -36,6 +39,10 @@ export const useIMStore = defineStore('im', {
     currentRoom: null,
     mode: 'empty',
     messages: [],
+    // 懒加载：是否还有更早的历史可拉、是否正在拉更早、以及"切换对话"自增信号（用于回到底部）。
+    hasMoreMessages: false,
+    loadingOlderMessages: false,
+    messagesEpoch: 0,
     conversations: [],
     groupConversations: [],
     currentGroupConversation: null,
@@ -215,17 +222,70 @@ export const useIMStore = defineStore('im', {
       return this.groupConversations
     },
     async refreshMessages() {
+      // 只重拉最新窗口并与已加载的更早分页合并，避免发送/取消/重生成后把上滑加载的历史一次性丢弃。
       if (this.currentRoom?.type === 'group') {
-        const response = await imApi.roomMessages(this.currentRoom.room_id, this.currentGroupConversation?.conversation_id)
-        this.messages = response.items || []
+        if (!this.currentRoom.room_id) return this.messages
+        const response = await imApi.roomMessages(
+          this.currentRoom.room_id,
+          this.currentGroupConversation?.conversation_id,
+          { limit: MESSAGE_PAGE_SIZE },
+        )
+        this.applyLatestWindow(response.items || [])
         return this.messages
       }
       if (this.currentConversation?.conversation_id) {
-        const response = await imApi.conversationMessages(this.currentConversation.conversation_id)
-        this.messages = response.items || []
+        const response = await imApi.conversationMessages(
+          this.currentConversation.conversation_id,
+          { limit: MESSAGE_PAGE_SIZE },
+        )
+        this.applyLatestWindow(response.items || [])
         return this.messages
       }
       return []
+    },
+    applyLatestWindow(items) {
+      // 合并最新窗口：保留比窗口更早、且不在窗口内的已加载历史；窗口区间内消失的消息
+      // （如重新生成删除的旧回复）随之移除。窗口为空时不动既有列表，避免瞬态清空。
+      const list = items || []
+      const oldestRecent = list.length ? (list[0].created_at || 0) : Infinity
+      const recentIds = new Set(list.map((item) => item.message_id))
+      const olderKept = this.messages.filter(
+        (item) => (item.created_at || 0) < oldestRecent && !recentIds.has(item.message_id),
+      )
+      this.messages = [...olderKept, ...list]
+    },
+    async loadOlderMessages() {
+      // 向上滚动触发：以当前最早一条为游标，往上补拉一页更早记录并前插。返回新增条数。
+      if (this.loadingOlderMessages || !this.hasMoreMessages) return 0
+      const oldest = this.messages[0]
+      if (!oldest?.message_id) return 0
+      this.loadingOlderMessages = true
+      try {
+        let response
+        if (this.currentRoom?.type === 'group') {
+          if (!this.currentRoom.room_id) return 0
+          response = await imApi.roomMessages(
+            this.currentRoom.room_id,
+            this.currentGroupConversation?.conversation_id,
+            { limit: MESSAGE_PAGE_SIZE, before_id: oldest.message_id },
+          )
+        } else if (this.currentConversation?.conversation_id) {
+          response = await imApi.conversationMessages(
+            this.currentConversation.conversation_id,
+            { limit: MESSAGE_PAGE_SIZE, before_id: oldest.message_id },
+          )
+        } else {
+          return 0
+        }
+        const older = response.items || []
+        const existing = new Set(this.messages.map((item) => item.message_id))
+        const fresh = older.filter((item) => !existing.has(item.message_id))
+        if (fresh.length) this.messages = [...fresh, ...this.messages]
+        this.hasMoreMessages = Boolean(response.has_more)
+        return fresh.length
+      } finally {
+        this.loadingOlderMessages = false
+      }
     },
     mergeMessage(messageItem) {
       if (!messageItem?.message_id) return
@@ -349,6 +409,7 @@ export const useIMStore = defineStore('im', {
       this.groupConversations = []
       this.currentGroupConversation = null
       this.messages = []
+      this.hasMoreMessages = false
       this.events = []
       this.tasks = []
       this.mode = 'agent'
@@ -361,7 +422,7 @@ export const useIMStore = defineStore('im', {
     async selectConversation(conversationId) {
       const [conversationResponse, messageResponse] = await Promise.all([
         imApi.conversation(conversationId),
-        imApi.conversationMessages(conversationId),
+        imApi.conversationMessages(conversationId, { limit: MESSAGE_PAGE_SIZE }),
       ])
       this.currentConversation = conversationResponse.item
       this.currentGroupRoom = null
@@ -371,6 +432,8 @@ export const useIMStore = defineStore('im', {
       this.currentAgentId = conversationResponse.item.agent_id || this.currentAgentId
       this.mode = 'dm'
       this.messages = messageResponse.items || []
+      this.hasMoreMessages = Boolean(messageResponse.has_more)
+      this.messagesEpoch += 1
       this.events = []
       this.tasks = []
       this.markConversationRead(conversationId, this.messages.length)
@@ -386,6 +449,7 @@ export const useIMStore = defineStore('im', {
       this.currentAgentId = ''
       this.mode = 'group'
       this.messages = []
+      this.hasMoreMessages = false
       this.events = []
       this.conversations = []
       this.currentGroupConversation = null
@@ -407,10 +471,12 @@ export const useIMStore = defineStore('im', {
       ) || null
       const roomId = this.currentRoom?.room_id
       const [messageResponse, taskResponse] = await Promise.all([
-        imApi.roomMessages(roomId, conversationId),
+        imApi.roomMessages(roomId, conversationId, { limit: MESSAGE_PAGE_SIZE }),
         imApi.roomTasks(roomId, conversationId),
       ])
       this.messages = messageResponse.items || []
+      this.hasMoreMessages = Boolean(messageResponse.has_more)
+      this.messagesEpoch += 1
       this.tasks = taskResponse.items || []
       this.markConversationRead(conversationId, this.messages.length)
       this.loadFavorites().catch(() => {})

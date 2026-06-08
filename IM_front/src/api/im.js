@@ -28,8 +28,9 @@ export const imApi = {
   conversation(conversationId) {
     return http.get(`/api/im/conversations/${conversationId}`)
   },
-  conversationMessages(conversationId) {
-    return http.get(`/api/im/conversations/${conversationId}/messages`)
+  conversationMessages(conversationId, params = {}) {
+    // params 支持懒加载：{ limit, before_id }；不传则返回全量（兼容旧行为）。
+    return http.get(`/api/im/conversations/${conversationId}/messages`, { params })
   },
   addConversationMessage(conversationId, payload) {
     return http.post(`/api/im/conversations/${conversationId}/messages`, payload)
@@ -70,8 +71,11 @@ export const imApi = {
   createRoomConversation(roomId, payload) {
     return http.post('/api/im/rooms/' + roomId + '/conversations', payload)
   },
-  roomMessages(roomId, conversationId) {
-    return http.get('/api/im/rooms/' + roomId + '/messages', { params: conversationId ? { conversation_id: conversationId } : {} })
+  roomMessages(roomId, conversationId, params = {}) {
+    // params 支持懒加载：{ limit, before_id }；conversationId 仍以独立参数传入。
+    const query = { ...params }
+    if (conversationId) query.conversation_id = conversationId
+    return http.get('/api/im/rooms/' + roomId + '/messages', { params: query })
   },
   roomTasks(roomId, conversationId) {
     return http.get('/api/im/rooms/' + roomId + '/tasks', { params: conversationId ? { conversation_id: conversationId } : {} })

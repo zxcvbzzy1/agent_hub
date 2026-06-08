@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from im_backend.api.core import get_current_user, get_im_service, get_room_events
@@ -34,9 +34,20 @@ async def get_conversation(conversation_id: str, service: IMService = Depends(ge
 
 
 @router.get("/conversations/{conversation_id}/messages")
-async def list_conversation_messages(conversation_id: str, service: IMService = Depends(get_im_service)):
+async def list_conversation_messages(
+    conversation_id: str,
+    limit: int | None = Query(default=None, ge=1, le=200),
+    before_id: str | None = Query(default=None),
+    service: IMService = Depends(get_im_service),
+):
     try:
-        return {"items": service.list_conversation_messages(conversation_id)}
+        # 不带 limit 时返回全量（内部/兼容旧行为）；带 limit 时返回懒加载窗口 + has_more。
+        if limit is None:
+            return {"items": service.list_conversation_messages(conversation_id), "has_more": False}
+        items, has_more = service.list_conversation_messages_window(
+            conversation_id, limit=limit, before_id=before_id
+        )
+        return {"items": items, "has_more": has_more}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

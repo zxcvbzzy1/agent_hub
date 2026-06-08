@@ -241,6 +241,9 @@ const mentionCandidates = computed(() => {
 
 const displayEvents = computed(() => compactLlmEvents(im.events))
 
+// 仅在已分页的长对话里提示"到顶了"，短对话（首屏即全量）不显示，避免噪声。
+const showHistoryStart = computed(() => !im.hasMoreMessages && chatItems.value.length > 20)
+
 const runningGroupTask = computed(() => {
   if (im.currentRoom?.type !== 'group') return null
   return [...im.tasks]
@@ -1202,6 +1205,20 @@ async function scrollToBottom() {
   if (el) el.scrollTop = el.scrollHeight
 }
 
+// 懒加载：滚动接近顶部时按页补拉更早聊天记录；前插后按内容高度差回补 scrollTop，保持视口不跳。
+const OLDER_LOAD_THRESHOLD = 120
+async function handleListScroll() {
+  const el = listRef.value
+  if (!el || el.scrollTop > OLDER_LOAD_THRESHOLD) return
+  if (!im.hasMoreMessages || im.loadingOlderMessages) return
+  const prevHeight = el.scrollHeight
+  const prevTop = el.scrollTop
+  const added = await im.loadOlderMessages()
+  if (!added) return
+  await nextTick()
+  el.scrollTop = el.scrollHeight - prevHeight + prevTop
+}
+
 // watch(
 //   () => chatScrollSignature.value,
 //   () => scrollToBottom(),
@@ -1254,6 +1271,13 @@ watch(
     selectionEditTarget.value = null
     conversationQuery.value = ''
   },
+)
+
+// 切换对话（store 加载完最新窗口后自增 messagesEpoch）→ 回到底部展示最新几条聊天记录。
+// 上滑加载更早记录走 loadOlderMessages，不动 epoch，因此不会被强制拉回底部。
+watch(
+  () => im.messagesEpoch,
+  () => scrollToBottom(),
 )
 
 onMounted(async () => {
@@ -1542,7 +1566,12 @@ onUnmounted(() => {
       </header>
 
       <div class="chat-body">
-      <div ref="listRef" class="message-list">
+      <div ref="listRef" class="message-list" @scroll.passive="handleListScroll">
+        <div v-if="im.loadingOlderMessages" class="history-loading">
+          <LoadingOutlined spin />
+          <span>正在加载更早的聊天记录…</span>
+        </div>
+        <div v-else-if="showHistoryStart" class="history-start">没有更早的聊天记录了</div>
         <a-empty v-if="!chatItems.length" description="暂无消息" />
         <template v-for="entry in chatItems" :key="entry.key">
           <article
@@ -2313,5 +2342,17 @@ onUnmounted(() => {
   top: 8px;
   right: 30px;
   pointer-events: none;
+}
+
+/* 懒加载历史记录的顶部提示：加载中 / 已到最早。 */
+.history-loading,
+.history-start {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 0;
+  color: #9ca3af;
+  font-size: 12px;
 }
 </style>

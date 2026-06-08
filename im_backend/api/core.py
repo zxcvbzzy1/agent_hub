@@ -26,6 +26,8 @@ class IMContainer:
     def __init__(self) -> None:
         self.repo_root = Path(__file__).resolve().parents[2]
         self.store = create_document_store()
+        self._ensure_message_indexes()
+        self._ensure_event_indexes()
         self.bridge = AgentFlowBridge(store=self.store, repo_root=self.repo_root)
         self.static_imports = StaticConfigImportService(bridge=self.bridge)
         self.static_import_result = self.static_imports.import_defaults()
@@ -42,6 +44,27 @@ class IMContainer:
             self.store,
             os.getenv("IM_ARTIFACT_ROOT", str(self.repo_root / "im_backend" / "storage" / "artifacts")),
         )
+
+    def _ensure_message_indexes(self) -> None:
+        """支撑聊天记录懒加载窗口查询的索引（幂等；内存兜底为 no-op）。"""
+        # 单聊：按 conversation_id 等值 + created_at 排序/范围取窗口。
+        self.store.ensure_index("im_messages", [("conversation_id", 1), ("created_at", 1)])
+        # 群聊：按 room_id(+conversation_id) 等值 + created_at 取窗口。
+        self.store.ensure_index("im_messages", [("room_id", 1), ("conversation_id", 1), ("created_at", 1)])
+        # 游标 / 各处 message_id 精确查改用。
+        self.store.ensure_index("im_messages", [("message_id", 1)])
+
+    def _ensure_event_indexes(self) -> None:
+        """事件流读取/回放的核心索引（幂等；内存兜底为 no-op）。
+
+        事件是高写入集合，只建命中热读的核心索引以控制写放大：
+        - im_events：按 scope_id 等值 + created_at 排序回放房间/会话事件流；同时覆盖按 scope_id 的批量清理。
+        - events（runtime）：按 run_id 等值 + created_at 排序——每次进会话 SSE 回放、每次展开 trace
+          详情(GET /runs/{run_id}/events)都走这条；同时覆盖按 run_id 的批量清理。
+        created_at 升序索引即可同时服务升/降序排序，Mongo 可反向遍历。
+        """
+        self.store.ensure_index("im_events", [("scope_id", 1), ("created_at", 1)])
+        self.store.ensure_index("events", [("run_id", 1), ("created_at", 1)])
 
 
 @lru_cache(maxsize=1)
