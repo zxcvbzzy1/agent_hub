@@ -8,7 +8,7 @@
 
 provider_config 结构：``[{"provider_id": str, "enabled": bool, "params": dict}, ...]``
 ``ContextService._build_provider`` 会据此构造对应 provider，并配套一份
-``DefaultShortTermMemory(["tool_respond", "agent_history", "error"])`` 记忆。
+``DefaultShortTermMemory(["tool_respond", "agent_history", "error", "skill"])`` 记忆。
 """
 
 from __future__ import annotations
@@ -33,13 +33,19 @@ def _executor_template() -> list[dict[str, Any]]:
             "enabled": True,
             "params": {"available_fields": list(DEFAULT_TOOL_FIELDS), "available_tools": []},
         },
+        {"provider_id": "user_prompt", "enabled": True, "params": {}},
         {"provider_id": "pinned_context", "enabled": True, "params": {}},
+        # 技能召回：从 memory 的 "skill" 字段注入召回到的技能（与 static 执行者配置一致）。
+        {
+            "provider_id": "skill",
+            "enabled": True,
+            "params": {"memory_field": "skill", "strategy_config": {"pipeline": [{"type": "full_history"}]}},
+        },
         {
             "provider_id": "history",
             "enabled": True,
             "params": {"memory_field": "agent_history", "strategy_config": _HISTORY_STRATEGY},
         },
-        {"provider_id": "user_prompt", "enabled": True, "params": {}},
         {"provider_id": "error", "enabled": True, "params": {}},
         {
             "provider_id": "tool_output",
