@@ -1,0 +1,27 @@
+{
+  "type": "excalidraw",
+  "version": 2,
+  "source": "AgentHub PRD via excalidraw-mcp",
+  "elements": [
+    {"type":"cameraUpdate","width":1000,"height":750,"x":0,"y":0},
+    {"type":"text","id":"title","x":330,"y":20,"width":300,"height":36,"text":"运行状态流转","fontSize":28,"fontFamily":5},
+    {"type":"rectangle","id":"s_pending","x":90,"y":130,"width":150,"height":70,"backgroundColor":"#fff3bf","fillStyle":"solid","roundness":{"type":3}},
+    {"type":"text","id":"s_pending_t","x":124,"y":150,"width":85,"height":40,"text":"pending","fontSize":18,"fontFamily":5,"containerId":"s_pending"},
+    {"type":"arrow","id":"a1","x":240,"y":165,"width":120,"height":0,"points":[[0,0],[120,0]],"endArrowhead":"arrow","label":{"text":"auto_start","fontSize":16}},
+    {"type":"rectangle","id":"s_running","x":360,"y":130,"width":150,"height":70,"backgroundColor":"#d0bfff","fillStyle":"solid","roundness":{"type":3}},
+    {"type":"text","id":"s_running_t","x":394,"y":150,"width":85,"height":40,"text":"running","fontSize":18,"fontFamily":5,"containerId":"s_running"},
+    {"type":"arrow","id":"a2","x":510,"y":165,"width":120,"height":-80,"points":[[0,0],[120,-80]],"endArrowhead":"arrow","label":{"text":"完成","fontSize":16}},
+    {"type":"rectangle","id":"s_finished","x":630,"y":55,"width":150,"height":70,"backgroundColor":"#b2f2bb","fillStyle":"solid","roundness":{"type":3}},
+    {"type":"text","id":"s_finished_t","x":664,"y":75,"width":85,"height":40,"text":"finished","fontSize":18,"fontFamily":5,"containerId":"s_finished"},
+    {"type":"arrow","id":"a3","x":510,"y":165,"width":120,"height":0,"points":[[0,0],[120,0]],"endArrowhead":"arrow","label":{"text":"异常","fontSize":16}},
+    {"type":"rectangle","id":"s_failed","x":630,"y":130,"width":150,"height":70,"backgroundColor":"#ffc9c9","fillStyle":"solid","roundness":{"type":3}},
+    {"type":"text","id":"s_failed_t","x":670,"y":150,"width":75,"height":40,"text":"failed","fontSize":18,"fontFamily":5,"containerId":"s_failed"},
+    {"type":"arrow","id":"a4","x":510,"y":165,"width":120,"height":85,"points":[[0,0],[120,85]],"endArrowhead":"arrow","label":{"text":"中断","fontSize":16}},
+    {"type":"rectangle","id":"s_cancelled","x":630,"y":245,"width":150,"height":70,"backgroundColor":"#ffd8a8","fillStyle":"solid","roundness":{"type":3}},
+    {"type":"text","id":"s_cancelled_t","x":657,"y":265,"width":95,"height":40,"text":"cancelled","fontSize":18,"fontFamily":5,"containerId":"s_cancelled"},
+    {"type":"text","id":"note","x":110,"y":380,"width":740,"height":110,"text":"Message 状态与 Run 状态联动：用户消息 running 表示回复/编排进行中；Agent 最终回复落库后用户消息置为 finished；失败或中断分别置为 failed/cancelled。PlanStep 额外有 pending/in_progress/done/failed/skipped。","fontSize":20,"fontFamily":5,"strokeColor":"#495057"}
+  ],
+  "appState": {"viewBackgroundColor":"#ffffff"},
+  "files": {}
+}
+

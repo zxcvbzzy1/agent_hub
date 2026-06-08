@@ -1,0 +1,1520 @@
+{
+  "type": "excalidraw",
+  "version": 2,
+  "source": "AgentHub TDD via Codex",
+  "elements": [
+    {
+      "type": "cameraUpdate",
+      "width": 1600,
+      "height": 1200,
+      "x": 0,
+      "y": 0
+    },
+    {
+      "type": "text",
+      "id": "title",
+      "x": 465,
+      "y": 24,
+      "width": 650,
+      "height": 42,
+      "text": "AgentHub 模块依赖图（含上下文工程）",
+      "fontSize": 32,
+      "fontFamily": 5,
+      "strokeColor": "#1e1e1e"
+    },
+    {
+      "type": "text",
+      "id": "sub",
+      "x": 250,
+      "y": 72,
+      "width": 1080,
+      "height": 30,
+      "text": "只保留跨边界依赖和 Agent Flow 核心依赖：Context Engineering 是 Run/Agent/Planner 的 prompt 构造中枢。",
+      "fontSize": 18,
+      "fontFamily": 5,
+      "strokeColor": "#424242"
+    },
+    {
+      "type": "rectangle",
+      "id": "z_front",
+      "x": 55,
+      "y": 135,
+      "width": 300,
+      "height": 690,
+      "backgroundColor": "#dbe4ff",
+      "fillStyle": "solid",
+      "strokeColor": "#4a9eed",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 24
+    },
+    {
+      "type": "text",
+      "id": "z_front_t",
+      "x": 80,
+      "y": 150,
+      "width": 240,
+      "height": 28,
+      "text": "IM_front 前端交互层",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#2563eb"
+    },
+    {
+      "type": "rectangle",
+      "id": "z_im",
+      "x": 410,
+      "y": 135,
+      "width": 380,
+      "height": 690,
+      "backgroundColor": "#d3f9d8",
+      "fillStyle": "solid",
+      "strokeColor": "#22c55e",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 22
+    },
+    {
+      "type": "text",
+      "id": "z_im_t",
+      "x": 435,
+      "y": 150,
+      "width": 250,
+      "height": 28,
+      "text": "im_backend 产品后端层",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#15803d"
+    },
+    {
+      "type": "rectangle",
+      "id": "z_af",
+      "x": 850,
+      "y": 135,
+      "width": 420,
+      "height": 690,
+      "backgroundColor": "#e5dbff",
+      "fillStyle": "solid",
+      "strokeColor": "#8b5cf6",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 22
+    },
+    {
+      "type": "text",
+      "id": "z_af_t",
+      "x": 875,
+      "y": 150,
+      "width": 330,
+      "height": 28,
+      "text": "agent_flow Runtime / Domain",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#6d28d9"
+    },
+    {
+      "type": "rectangle",
+      "id": "z_ext",
+      "x": 1300,
+      "y": 135,
+      "width": 250,
+      "height": 690,
+      "backgroundColor": "#fff3bf",
+      "fillStyle": "solid",
+      "strokeColor": "#f59e0b",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 18
+    },
+    {
+      "type": "text",
+      "id": "z_ext_t",
+      "x": 1325,
+      "y": 150,
+      "width": 210,
+      "height": 28,
+      "text": "外部资源与基础设施",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#9a5030"
+    },
+    {
+      "type": "rectangle",
+      "id": "fe_api",
+      "x": 80,
+      "y": 220,
+      "width": 250,
+      "height": 70,
+      "backgroundColor": "#a5d8ff",
+      "fillStyle": "solid",
+      "strokeColor": "#4a9eed",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 100,
+      "roundness": {
+        "type": 3
+      }
+    },
+    {
+      "type": "text",
+      "id": "fe_api_t",
+      "x": 96,
+      "y": 232,
+      "width": 218,
+      "height": 24,
+      "text": "API Client",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#1e1e1e",
+      "containerId": "fe_api"
+    },
+    {
+      "type": "text",
+      "id": "fe_api_s",
+      "x": 96,
+      "y": 259,
+      "width": 218,
+      "height": 22,
+      "text": "REST 请求封装",
+      "fontSize": 14,
+      "fontFamily": 5,
+      "strokeColor": "#424242",
+      "containerId": "fe_api"
+    },
+    {
+      "type": "rectangle",
+      "id": "fe_store",
+      "x": 80,
+      "y": 340,
+      "width": 250,
+      "height": 70,
+      "backgroundColor": "#a5d8ff",
+      "fillStyle": "solid",
+      "strokeColor": "#4a9eed",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 100,
+      "roundness": {
+        "type": 3
+      }
+    },
+    {
+      "type": "text",
+      "id": "fe_store_t",
+      "x": 96,
+      "y": 352,
+      "width": 218,
+      "height": 24,
+      "text": "Pinia IM Store",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#1e1e1e",
+      "containerId": "fe_store"
+    },
+    {
+      "type": "text",
+      "id": "fe_store_s",
+      "x": 96,
+      "y": 379,
+      "width": 218,
+      "height": 22,
+      "text": "状态机、SSE 消费",
+      "fontSize": 14,
+      "fontFamily": 5,
+      "strokeColor": "#424242",
+      "containerId": "fe_store"
+    },
+    {
+      "type": "rectangle",
+      "id": "fe_view",
+      "x": 80,
+      "y": 460,
+      "width": 250,
+      "height": 70,
+      "backgroundColor": "#a5d8ff",
+      "fillStyle": "solid",
+      "strokeColor": "#4a9eed",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 100,
+      "roundness": {
+        "type": 3
+      }
+    },
+    {
+      "type": "text",
+      "id": "fe_view_t",
+      "x": 96,
+      "y": 472,
+      "width": 218,
+      "height": 24,
+      "text": "ChatView / Pages",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#1e1e1e",
+      "containerId": "fe_view"
+    },
+    {
+      "type": "text",
+      "id": "fe_view_s",
+      "x": 96,
+      "y": 499,
+      "width": 218,
+      "height": 22,
+      "text": "工作台、技能页、工具页",
+      "fontSize": 14,
+      "fontFamily": 5,
+      "strokeColor": "#424242",
+      "containerId": "fe_view"
+    },
+    {
+      "type": "rectangle",
+      "id": "fe_render",
+      "x": 80,
+      "y": 580,
+      "width": 250,
+      "height": 82,
+      "backgroundColor": "#a5d8ff",
+      "fillStyle": "solid",
+      "strokeColor": "#4a9eed",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 100,
+      "roundness": {
+        "type": 3
+      }
+    },
+    {
+      "type": "text",
+      "id": "fe_render_t",
+      "x": 96,
+      "y": 592,
+      "width": 218,
+      "height": 24,
+      "text": "RuntimeEvents / ArtifactCard",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#1e1e1e",
+      "containerId": "fe_render"
+    },
+    {
+      "type": "text",
+      "id": "fe_render_s",
+      "x": 96,
+      "y": 619,
+      "width": 218,
+      "height": 22,
+      "text": "轨迹聚合、产物展示",
+      "fontSize": 14,
+      "fontFamily": 5,
+      "strokeColor": "#424242",
+      "containerId": "fe_render"
+    },
+    {
+      "type": "rectangle",
+      "id": "im_api",
+      "x": 450,
+      "y": 215,
+      "width": 300,
+      "height": 72,
+      "backgroundColor": "#b2f2bb",
+      "fillStyle": "solid",
+      "strokeColor": "#22c55e",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 100,
+      "roundness": {
+        "type": 3
+      }
+    },
+    {
+      "type": "text",
+      "id": "im_api_t",
+      "x": 466,
+      "y": 227,
+      "width": 268,
+      "height": 24,
+      "text": "IM API Routes",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#1e1e1e",
+      "containerId": "im_api"
+    },
+    {
+      "type": "text",
+      "id": "im_api_s",
+      "x": 466,
+      "y": 254,
+      "width": 268,
+      "height": 22,
+      "text": "auth / rooms / messages / runs",
+      "fontSize": 14,
+      "fontFamily": 5,
+      "strokeColor": "#424242",
+      "containerId": "im_api"
+    },
+    {
+      "type": "rectangle",
+      "id": "im_services",
+      "x": 450,
+      "y": 340,
+      "width": 300,
+      "height": 78,
+      "backgroundColor": "#b2f2bb",
+      "fillStyle": "solid",
+      "strokeColor": "#22c55e",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 100,
+      "roundness": {
+        "type": 3
+      }
+    },
+    {
+      "type": "text",
+      "id": "im_services_t",
+      "x": 466,
+      "y": 352,
+      "width": 268,
+      "height": 24,
+      "text": "IM Application Services",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#1e1e1e",
+      "containerId": "im_services"
+    },
+    {
+      "type": "text",
+      "id": "im_services_s",
+      "x": 466,
+      "y": 379,
+      "width": 268,
+      "height": 22,
+      "text": "消息、会话、收藏、事件",
+      "fontSize": 14,
+      "fontFamily": 5,
+      "strokeColor": "#424242",
+      "containerId": "im_services"
+    },
+    {
+      "type": "rectangle",
+      "id": "im_run",
+      "x": 450,
+      "y": 470,
+      "width": 300,
+      "height": 78,
+      "backgroundColor": "#b2f2bb",
+      "fillStyle": "solid",
+      "strokeColor": "#22c55e",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 100,
+      "roundness": {
+        "type": 3
+      }
+    },
+    {
+      "type": "text",
+      "id": "im_run_t",
+      "x": 466,
+      "y": 482,
+      "width": 268,
+      "height": 24,
+      "text": "GroupRunService",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#1e1e1e",
+      "containerId": "im_run"
+    },
+    {
+      "type": "text",
+      "id": "im_run_s",
+      "x": 466,
+      "y": 509,
+      "width": 268,
+      "height": 22,
+      "text": "dispatch / cancel / confirmation",
+      "fontSize": 14,
+      "fontFamily": 5,
+      "strokeColor": "#424242",
+      "containerId": "im_run"
+    },
+    {
+      "type": "rectangle",
+      "id": "im_events",
+      "x": 450,
+      "y": 600,
+      "width": 300,
+      "height": 78,
+      "backgroundColor": "#c3fae8",
+      "fillStyle": "solid",
+      "strokeColor": "#06b6d4",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 100,
+      "roundness": {
+        "type": 3
+      }
+    },
+    {
+      "type": "text",
+      "id": "im_events_t",
+      "x": 466,
+      "y": 612,
+      "width": 268,
+      "height": 24,
+      "text": "RoomEventStreamService",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#1e1e1e",
+      "containerId": "im_events"
+    },
+    {
+      "type": "text",
+      "id": "im_events_s",
+      "x": 466,
+      "y": 639,
+      "width": 268,
+      "height": 22,
+      "text": "IM + runtime SSE 合并",
+      "fontSize": 14,
+      "fontFamily": 5,
+      "strokeColor": "#424242",
+      "containerId": "im_events"
+    },
+    {
+      "type": "rectangle",
+      "id": "bridge",
+      "x": 535,
+      "y": 725,
+      "width": 300,
+      "height": 70,
+      "backgroundColor": "#d0bfff",
+      "fillStyle": "solid",
+      "strokeColor": "#8b5cf6",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 100,
+      "roundness": {
+        "type": 3
+      }
+    },
+    {
+      "type": "text",
+      "id": "bridge_t",
+      "x": 551,
+      "y": 737,
+      "width": 268,
+      "height": 24,
+      "text": "AgentFlowBridge",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#1e1e1e",
+      "containerId": "bridge"
+    },
+    {
+      "type": "text",
+      "id": "bridge_s",
+      "x": 551,
+      "y": 764,
+      "width": 268,
+      "height": 22,
+      "text": "跨边界复用 agent_flow runtime",
+      "fontSize": 14,
+      "fontFamily": 5,
+      "strokeColor": "#424242",
+      "containerId": "bridge"
+    },
+    {
+      "type": "rectangle",
+      "id": "af_runtime",
+      "x": 900,
+      "y": 195,
+      "width": 320,
+      "height": 70,
+      "backgroundColor": "#d0bfff",
+      "fillStyle": "solid",
+      "strokeColor": "#8b5cf6",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 100,
+      "roundness": {
+        "type": 3
+      }
+    },
+    {
+      "type": "text",
+      "id": "af_runtime_t",
+      "x": 916,
+      "y": 207,
+      "width": 288,
+      "height": 24,
+      "text": "Runtime Services",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#1e1e1e",
+      "containerId": "af_runtime"
+    },
+    {
+      "type": "text",
+      "id": "af_runtime_s",
+      "x": 916,
+      "y": 234,
+      "width": 288,
+      "height": 22,
+      "text": "AgentFactory / Tool / Event",
+      "fontSize": 14,
+      "fontFamily": 5,
+      "strokeColor": "#424242",
+      "containerId": "af_runtime"
+    },
+    {
+      "type": "rectangle",
+      "id": "af_context",
+      "x": 900,
+      "y": 300,
+      "width": 320,
+      "height": 86,
+      "backgroundColor": "#c3fae8",
+      "fillStyle": "solid",
+      "strokeColor": "#06b6d4",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 100,
+      "roundness": {
+        "type": 3
+      }
+    },
+    {
+      "type": "text",
+      "id": "af_context_t",
+      "x": 916,
+      "y": 312,
+      "width": 288,
+      "height": 24,
+      "text": "Context Engineering",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#1e1e1e",
+      "containerId": "af_context"
+    },
+    {
+      "type": "text",
+      "id": "af_context_s",
+      "x": 916,
+      "y": 339,
+      "width": 288,
+      "height": 22,
+      "text": "ContextEngine / Providers / StrategyPipeline",
+      "fontSize": 14,
+      "fontFamily": 5,
+      "strokeColor": "#424242",
+      "containerId": "af_context"
+    },
+    {
+      "type": "rectangle",
+      "id": "af_runs",
+      "x": 900,
+      "y": 425,
+      "width": 320,
+      "height": 78,
+      "backgroundColor": "#d0bfff",
+      "fillStyle": "solid",
+      "strokeColor": "#8b5cf6",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 100,
+      "roundness": {
+        "type": 3
+      }
+    },
+    {
+      "type": "text",
+      "id": "af_runs_t",
+      "x": 916,
+      "y": 437,
+      "width": 288,
+      "height": 24,
+      "text": "RunOrchestrationService",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#1e1e1e",
+      "containerId": "af_runs"
+    },
+    {
+      "type": "text",
+      "id": "af_runs_s",
+      "x": 916,
+      "y": 464,
+      "width": 288,
+      "height": 22,
+      "text": "react / plan run 生命周期",
+      "fontSize": 14,
+      "fontFamily": 5,
+      "strokeColor": "#424242",
+      "containerId": "af_runs"
+    },
+    {
+      "type": "rectangle",
+      "id": "af_domain",
+      "x": 900,
+      "y": 545,
+      "width": 320,
+      "height": 78,
+      "backgroundColor": "#d0bfff",
+      "fillStyle": "solid",
+      "strokeColor": "#8b5cf6",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 100,
+      "roundness": {
+        "type": 3
+      }
+    },
+    {
+      "type": "text",
+      "id": "af_domain_t",
+      "x": 916,
+      "y": 557,
+      "width": 288,
+      "height": 24,
+      "text": "Agent Domain",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#1e1e1e",
+      "containerId": "af_domain"
+    },
+    {
+      "type": "text",
+      "id": "af_domain_s",
+      "x": 916,
+      "y": 584,
+      "width": 288,
+      "height": 22,
+      "text": "AgentBase / PlanOrchestrator",
+      "fontSize": 14,
+      "fontFamily": 5,
+      "strokeColor": "#424242",
+      "containerId": "af_domain"
+    },
+    {
+      "type": "rectangle",
+      "id": "af_eda",
+      "x": 900,
+      "y": 665,
+      "width": 320,
+      "height": 78,
+      "backgroundColor": "#ffc9c9",
+      "fillStyle": "solid",
+      "strokeColor": "#ef4444",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 100,
+      "roundness": {
+        "type": 3
+      }
+    },
+    {
+      "type": "text",
+      "id": "af_eda_t",
+      "x": 916,
+      "y": 677,
+      "width": 288,
+      "height": 24,
+      "text": "EDA Tool System",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#1e1e1e",
+      "containerId": "af_eda"
+    },
+    {
+      "type": "text",
+      "id": "af_eda_s",
+      "x": 916,
+      "y": 704,
+      "width": 288,
+      "height": 22,
+      "text": "ToolEventFactory / EventBus / On_bind",
+      "fontSize": 14,
+      "fontFamily": 5,
+      "strokeColor": "#424242",
+      "containerId": "af_eda"
+    },
+    {
+      "type": "rectangle",
+      "id": "af_artifact",
+      "x": 900,
+      "y": 765,
+      "width": 320,
+      "height": 58,
+      "backgroundColor": "#ffd8a8",
+      "fillStyle": "solid",
+      "strokeColor": "#f59e0b",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 100,
+      "roundness": {
+        "type": 3
+      }
+    },
+    {
+      "type": "text",
+      "id": "af_artifact_t",
+      "x": 916,
+      "y": 777,
+      "width": 288,
+      "height": 24,
+      "text": "Artifact / Deploy Tools",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#1e1e1e",
+      "containerId": "af_artifact"
+    },
+    {
+      "type": "text",
+      "id": "af_artifact_s",
+      "x": 916,
+      "y": 804,
+      "width": 288,
+      "height": 22,
+      "text": "artifacts / diff / deploy",
+      "fontSize": 14,
+      "fontFamily": 5,
+      "strokeColor": "#424242",
+      "containerId": "af_artifact"
+    },
+    {
+      "type": "rectangle",
+      "id": "db",
+      "x": 1320,
+      "y": 220,
+      "width": 210,
+      "height": 88,
+      "backgroundColor": "#c3fae8",
+      "fillStyle": "solid",
+      "strokeColor": "#06b6d4",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 100,
+      "roundness": {
+        "type": 3
+      }
+    },
+    {
+      "type": "text",
+      "id": "db_t",
+      "x": 1336,
+      "y": 232,
+      "width": 178,
+      "height": 24,
+      "text": "MongoDB\nDocumentStore",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#1e1e1e",
+      "containerId": "db"
+    },
+    {
+      "type": "text",
+      "id": "db_s",
+      "x": 1336,
+      "y": 259,
+      "width": 178,
+      "height": 22,
+      "text": "产品数据、运行数据、事件日志",
+      "fontSize": 14,
+      "fontFamily": 5,
+      "strokeColor": "#424242",
+      "containerId": "db"
+    },
+    {
+      "type": "rectangle",
+      "id": "llm",
+      "x": 1320,
+      "y": 370,
+      "width": 210,
+      "height": 72,
+      "backgroundColor": "#ffd8a8",
+      "fillStyle": "solid",
+      "strokeColor": "#f59e0b",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 100,
+      "roundness": {
+        "type": 3
+      }
+    },
+    {
+      "type": "text",
+      "id": "llm_t",
+      "x": 1336,
+      "y": 382,
+      "width": 178,
+      "height": 24,
+      "text": "LLM APIs",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#1e1e1e",
+      "containerId": "llm"
+    },
+    {
+      "type": "text",
+      "id": "llm_s",
+      "x": 1336,
+      "y": 409,
+      "width": 178,
+      "height": 22,
+      "text": "chat / stream",
+      "fontSize": 14,
+      "fontFamily": 5,
+      "strokeColor": "#424242",
+      "containerId": "llm"
+    },
+    {
+      "type": "rectangle",
+      "id": "coding",
+      "x": 1320,
+      "y": 500,
+      "width": 210,
+      "height": 72,
+      "backgroundColor": "#ffd8a8",
+      "fillStyle": "solid",
+      "strokeColor": "#f59e0b",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 100,
+      "roundness": {
+        "type": 3
+      }
+    },
+    {
+      "type": "text",
+      "id": "coding_t",
+      "x": 1336,
+      "y": 512,
+      "width": 178,
+      "height": 24,
+      "text": "Coding Agents",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#1e1e1e",
+      "containerId": "coding"
+    },
+    {
+      "type": "text",
+      "id": "coding_s",
+      "x": 1336,
+      "y": 539,
+      "width": 178,
+      "height": 22,
+      "text": "Codex / Claude Code",
+      "fontSize": 14,
+      "fontFamily": 5,
+      "strokeColor": "#424242",
+      "containerId": "coding"
+    },
+    {
+      "type": "rectangle",
+      "id": "storage",
+      "x": 1320,
+      "y": 630,
+      "width": 210,
+      "height": 88,
+      "backgroundColor": "#c3fae8",
+      "fillStyle": "solid",
+      "strokeColor": "#06b6d4",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 100,
+      "roundness": {
+        "type": 3
+      }
+    },
+    {
+      "type": "text",
+      "id": "storage_t",
+      "x": 1336,
+      "y": 642,
+      "width": 178,
+      "height": 24,
+      "text": "File / Deploy Storage",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#1e1e1e",
+      "containerId": "storage"
+    },
+    {
+      "type": "text",
+      "id": "storage_s",
+      "x": 1336,
+      "y": 669,
+      "width": 178,
+      "height": 22,
+      "text": "uploads、diff、deployments",
+      "fontSize": 14,
+      "fontFamily": 5,
+      "strokeColor": "#424242",
+      "containerId": "storage"
+    },
+    {
+      "type": "arrow",
+      "id": "front_to_im",
+      "x": 330,
+      "y": 255,
+      "width": 120,
+      "height": -5,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          120,
+          -5
+        ]
+      ],
+      "strokeColor": "#1e1e1e",
+      "strokeWidth": 3,
+      "endArrowhead": "arrow",
+      "startArrowhead": null
+    },
+    {
+      "type": "text",
+      "id": "front_to_im_label",
+      "x": 345,
+      "y": 220,
+      "width": 170,
+      "height": 22,
+      "text": "REST /api/im",
+      "fontSize": 16,
+      "fontFamily": 5,
+      "strokeColor": "#1e1e1e"
+    },
+    {
+      "type": "arrow",
+      "id": "front_ops_to_im",
+      "x": 330,
+      "y": 625,
+      "width": 120,
+      "height": 15,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          120,
+          15
+        ]
+      ],
+      "strokeColor": "#4a9eed",
+      "strokeWidth": 2,
+      "endArrowhead": "arrow",
+      "startArrowhead": null,
+      "strokeStyle": "dashed"
+    },
+    {
+      "type": "text",
+      "id": "front_ops_to_im_label",
+      "x": 330,
+      "y": 650,
+      "width": 170,
+      "height": 22,
+      "text": "artifact / action API",
+      "fontSize": 16,
+      "fontFamily": 5,
+      "strokeColor": "#4a9eed"
+    },
+    {
+      "type": "arrow",
+      "id": "im_to_bridge",
+      "x": 750,
+      "y": 508,
+      "width": -215,
+      "height": 252,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          -215,
+          252
+        ]
+      ],
+      "strokeColor": "#8b5cf6",
+      "strokeWidth": 2,
+      "endArrowhead": "arrow",
+      "startArrowhead": null
+    },
+    {
+      "type": "text",
+      "id": "im_to_bridge_label",
+      "x": 600,
+      "y": 610,
+      "width": 170,
+      "height": 22,
+      "text": "runtime 调度入口",
+      "fontSize": 16,
+      "fontFamily": 5,
+      "strokeColor": "#8b5cf6"
+    },
+    {
+      "type": "arrow",
+      "id": "bridge_to_af",
+      "x": 835,
+      "y": 760,
+      "width": 65,
+      "height": -296,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          65,
+          -296
+        ]
+      ],
+      "strokeColor": "#8b5cf6",
+      "strokeWidth": 3,
+      "endArrowhead": "arrow",
+      "startArrowhead": null
+    },
+    {
+      "type": "text",
+      "id": "bridge_to_af_label",
+      "x": 720,
+      "y": 565,
+      "width": 170,
+      "height": 22,
+      "text": "create_run / cancel / hooks",
+      "fontSize": 16,
+      "fontFamily": 5,
+      "strokeColor": "#8b5cf6"
+    },
+    {
+      "type": "arrow",
+      "id": "run_to_context",
+      "x": 1060,
+      "y": 425,
+      "width": 0,
+      "height": -39,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          -39
+        ]
+      ],
+      "strokeColor": "#06b6d4",
+      "strokeWidth": 3,
+      "endArrowhead": "arrow",
+      "startArrowhead": null
+    },
+    {
+      "type": "text",
+      "id": "run_to_context_label",
+      "x": 1080,
+      "y": 392,
+      "width": 170,
+      "height": 22,
+      "text": "build_engine / get_engine",
+      "fontSize": 16,
+      "fontFamily": 5,
+      "strokeColor": "#06b6d4"
+    },
+    {
+      "type": "arrow",
+      "id": "domain_to_context",
+      "x": 990,
+      "y": 545,
+      "width": 0,
+      "height": -159,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          -159
+        ]
+      ],
+      "strokeColor": "#06b6d4",
+      "strokeWidth": 2,
+      "endArrowhead": "arrow",
+      "startArrowhead": null
+    },
+    {
+      "type": "text",
+      "id": "domain_to_context_label",
+      "x": 1005,
+      "y": 465,
+      "width": 170,
+      "height": 22,
+      "text": "build(state)",
+      "fontSize": 16,
+      "fontFamily": 5,
+      "strokeColor": "#06b6d4"
+    },
+    {
+      "type": "arrow",
+      "id": "domain_to_eda",
+      "x": 1060,
+      "y": 623,
+      "width": 0,
+      "height": 42,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          42
+        ]
+      ],
+      "strokeColor": "#ef4444",
+      "strokeWidth": 2,
+      "endArrowhead": "arrow",
+      "startArrowhead": null
+    },
+    {
+      "type": "text",
+      "id": "domain_to_eda_label",
+      "x": 1075,
+      "y": 630,
+      "width": 170,
+      "height": 22,
+      "text": "tool.called",
+      "fontSize": 16,
+      "fontFamily": 5,
+      "strokeColor": "#ef4444"
+    },
+    {
+      "type": "arrow",
+      "id": "eda_to_artifact",
+      "x": 1120,
+      "y": 743,
+      "width": 0,
+      "height": 22,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          0,
+          22
+        ]
+      ],
+      "strokeColor": "#f59e0b",
+      "strokeWidth": 2,
+      "endArrowhead": "arrow",
+      "startArrowhead": null
+    },
+    {
+      "type": "text",
+      "id": "eda_to_artifact_label",
+      "x": 1135,
+      "y": 740,
+      "width": 170,
+      "height": 22,
+      "text": "artifacts.*",
+      "fontSize": 16,
+      "fontFamily": 5,
+      "strokeColor": "#f59e0b"
+    },
+    {
+      "type": "arrow",
+      "id": "af_to_ext_db",
+      "x": 1220,
+      "y": 340,
+      "width": 100,
+      "height": -76,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          100,
+          -76
+        ]
+      ],
+      "strokeColor": "#06b6d4",
+      "strokeWidth": 2,
+      "endArrowhead": "arrow",
+      "startArrowhead": null
+    },
+    {
+      "type": "text",
+      "id": "af_to_ext_db_label",
+      "x": 1215,
+      "y": 285,
+      "width": 170,
+      "height": 22,
+      "text": "contexts / runs / events",
+      "fontSize": 16,
+      "fontFamily": 5,
+      "strokeColor": "#06b6d4"
+    },
+    {
+      "type": "arrow",
+      "id": "im_to_db",
+      "x": 750,
+      "y": 380,
+      "width": 570,
+      "height": -116,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          570,
+          -116
+        ]
+      ],
+      "strokeColor": "#06b6d4",
+      "strokeWidth": 2,
+      "endArrowhead": "arrow",
+      "startArrowhead": null,
+      "strokeStyle": "dashed"
+    },
+    {
+      "type": "text",
+      "id": "im_to_db_label",
+      "x": 930,
+      "y": 285,
+      "width": 170,
+      "height": 22,
+      "text": "im_* collections",
+      "fontSize": 16,
+      "fontFamily": 5,
+      "strokeColor": "#06b6d4"
+    },
+    {
+      "type": "arrow",
+      "id": "af_to_llm",
+      "x": 1220,
+      "y": 584,
+      "width": 100,
+      "height": -178,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          100,
+          -178
+        ]
+      ],
+      "strokeColor": "#f59e0b",
+      "strokeWidth": 2,
+      "endArrowhead": "arrow",
+      "startArrowhead": null
+    },
+    {
+      "type": "text",
+      "id": "af_to_llm_label",
+      "x": 1225,
+      "y": 485,
+      "width": 170,
+      "height": 22,
+      "text": "LLM chat/stream",
+      "fontSize": 16,
+      "fontFamily": 5,
+      "strokeColor": "#f59e0b"
+    },
+    {
+      "type": "arrow",
+      "id": "af_to_coding",
+      "x": 1220,
+      "y": 342,
+      "width": 100,
+      "height": 194,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          100,
+          194
+        ]
+      ],
+      "strokeColor": "#f59e0b",
+      "strokeWidth": 2,
+      "endArrowhead": "arrow",
+      "startArrowhead": null,
+      "strokeStyle": "dashed"
+    },
+    {
+      "type": "text",
+      "id": "af_to_coding_label",
+      "x": 1225,
+      "y": 425,
+      "width": 170,
+      "height": 22,
+      "text": "coding context",
+      "fontSize": 16,
+      "fontFamily": 5,
+      "strokeColor": "#f59e0b"
+    },
+    {
+      "type": "arrow",
+      "id": "af_to_storage",
+      "x": 1220,
+      "y": 794,
+      "width": 100,
+      "height": -120,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          100,
+          -120
+        ]
+      ],
+      "strokeColor": "#f59e0b",
+      "strokeWidth": 2,
+      "endArrowhead": "arrow",
+      "startArrowhead": null
+    },
+    {
+      "type": "text",
+      "id": "af_to_storage_label",
+      "x": 1225,
+      "y": 720,
+      "width": 170,
+      "height": 22,
+      "text": "artifact / deploy IO",
+      "fontSize": 16,
+      "fontFamily": 5,
+      "strokeColor": "#f59e0b"
+    },
+    {
+      "type": "arrow",
+      "id": "event_back_to_im",
+      "x": 900,
+      "y": 705,
+      "width": -150,
+      "height": -65,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          -150,
+          -65
+        ]
+      ],
+      "strokeColor": "#ef4444",
+      "strokeWidth": 3,
+      "endArrowhead": "arrow",
+      "startArrowhead": null
+    },
+    {
+      "type": "text",
+      "id": "event_back_to_im_label",
+      "x": 755,
+      "y": 670,
+      "width": 170,
+      "height": 22,
+      "text": "runtime events",
+      "fontSize": 16,
+      "fontFamily": 5,
+      "strokeColor": "#ef4444"
+    },
+    {
+      "type": "arrow",
+      "id": "sse_back_to_front",
+      "x": 450,
+      "y": 640,
+      "width": -120,
+      "height": -15,
+      "points": [
+        [
+          0,
+          0
+        ],
+        [
+          -120,
+          -15
+        ]
+      ],
+      "strokeColor": "#06b6d4",
+      "strokeWidth": 3,
+      "endArrowhead": "arrow",
+      "startArrowhead": null,
+      "strokeStyle": "dashed"
+    },
+    {
+      "type": "text",
+      "id": "sse_back_to_front_label",
+      "x": 335,
+      "y": 585,
+      "width": 170,
+      "height": 22,
+      "text": "SSE 回流",
+      "fontSize": 16,
+      "fontFamily": 5,
+      "strokeColor": "#06b6d4"
+    },
+    {
+      "type": "rectangle",
+      "id": "note",
+      "x": 70,
+      "y": 875,
+      "width": 1420,
+      "height": 135,
+      "backgroundColor": "#ffffff",
+      "fillStyle": "solid",
+      "strokeColor": "#757575",
+      "strokeWidth": 2,
+      "roughness": 1,
+      "opacity": 100,
+      "roundness": {
+        "type": 3
+      }
+    },
+    {
+      "type": "text",
+      "id": "note_t",
+      "x": 95,
+      "y": 895,
+      "width": 170,
+      "height": 24,
+      "text": "图例与边界说明",
+      "fontSize": 20,
+      "fontFamily": 5,
+      "strokeColor": "#1e1e1e",
+      "containerId": "note"
+    },
+    {
+      "type": "text",
+      "id": "note_b",
+      "x": 95,
+      "y": 930,
+      "width": 1320,
+      "height": 58,
+      "text": "实线表示主依赖；虚线表示回流或辅助依赖。大模块内部箭头已省略，仅保留跨边界和 Agent Flow 核心依赖。Context Engineering 管理 provider_config、默认模板、ShortTermMemory 与 StrategyPipeline，是 AgentBase._think、PlanAgent 和 plan step prompt 的统一上下文入口。",
+      "fontSize": 17,
+      "fontFamily": 5,
+      "strokeColor": "#424242",
+      "containerId": "note"
+    }
+  ],
+  "appState": {
+    "viewBackgroundColor": "#ffffff"
+  },
+  "files": {}
+}
