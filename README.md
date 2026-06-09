@@ -8,6 +8,10 @@ AgentHub 是一个以 IM 聊天为交互入口的多 Agent 协作平台。用户
 - `im_backend/`：FastAPI IM 产品后端，负责认证、会话、房间、消息、收藏、产物、部署、工具/技能入口和外部 coding agent 适配。
 - `agent_flow/`：Agent 核心运行系统，负责 Agent、Context、Tool、Run、PlanOrchestrator、事件总线和工具执行。
 
+## 演示
+
+[视频演示地址](https://my.feishu.cn/file/A9mCbC95BoCs5HxkDyTc9U4Hn6c)
+
 ## 快速启动
 
 ### 环境要求
