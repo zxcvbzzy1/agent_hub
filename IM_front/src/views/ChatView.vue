@@ -882,6 +882,12 @@ function openArtifactPreview(item) {
   }
 }
 
+// 内联产物卡片「放大」：复用全屏预览弹窗，把单个 artifact 包成虚拟消息全屏查看（保留应用/保存/历史等能力）。
+function expandArtifact(artifact) {
+  if (!artifact) return
+  openArtifactPreview({ artifact })
+}
+
 function copyMessage(item) {
   copyText(messagePlainText(item))
 }
@@ -1670,6 +1676,7 @@ onUnmounted(() => {
                   v-else-if="part.type === 'artifact'"
                   :artifact="part.metadata?.artifact || part"
                   @selection-edit="onArtifactSelectionEdit"
+                  @expand="expandArtifact"
                 />
                 <div v-else-if="part.type === 'deploy'" class="deploy-card">
                   <div class="card-title">
@@ -1780,7 +1787,7 @@ onUnmounted(() => {
                 <a-tag color="purple" size="small">内联产物</a-tag>
                 <span>{{ formatTime(entry.event.created_at) }}</span>
               </div>
-              <ArtifactCard :artifact="entry.artifact" @selection-edit="onArtifactSelectionEdit" />
+              <ArtifactCard :artifact="entry.artifact" @selection-edit="onArtifactSelectionEdit" @expand="expandArtifact" />
             </div>
           </article>
 
@@ -1948,6 +1955,7 @@ onUnmounted(() => {
             <ArtifactCard
               v-else-if="part.type === 'artifact'"
               :artifact="part.metadata?.artifact || part"
+              :expandable="false"
               @selection-edit="onArtifactSelectionEdit"
             />
             <div v-else-if="part.type === 'deploy'" class="deploy-card">

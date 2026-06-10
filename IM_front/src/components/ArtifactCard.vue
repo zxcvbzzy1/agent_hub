@@ -9,6 +9,7 @@ import {
   CopyOutlined,
   DownloadOutlined,
   EditOutlined,
+  ExpandAltOutlined,
   EyeOutlined,
   FileTextOutlined,
   GlobalOutlined,
@@ -24,8 +25,10 @@ import { looksLikeMarkdownDoc, renderMarkdown } from '@/utils/markdown'
 
 const props = defineProps({
   artifact: { type: Object, default: () => ({}) },
+  // 放大查看：头部「放大」按钮是否可用。卡片在全屏预览弹窗内再次渲染时由父级传 false 关闭，避免递归放大。
+  expandable: { type: Boolean, default: true },
 })
-const emit = defineEmits(['selection-edit'])
+const emit = defineEmits(['selection-edit', 'expand'])
 
 const artifactType = computed(() => (props.artifact?.type || 'message').toLowerCase())
 const title = computed(() => props.artifact?.title || defaultTitle(artifactType.value))
@@ -41,6 +44,15 @@ const isMarkdownDoc = computed(() => looksLikeMarkdownDoc(props.artifact))
 const canApplyDiff = computed(() => artifactType.value === 'diff' && Boolean(editId.value))
 const canSaveDoc = computed(() => Boolean(editable.value && docFilePath.value && editAgentId.value))
 const canShowHistory = computed(() => Boolean(docFilePath.value && editAgentId.value))
+
+// 放大查看：仅文本类（文档/消息/Diff）内联渲染时内容易超高、列宽局促，提供头部「放大」入口；
+// web/deploy 已有 iframe 视口、image 天然受限，不加。父级在全屏弹窗内置 expandable=false 关闭。
+const canExpand = computed(
+  () => props.expandable && ['document', 'message', 'diff'].includes(artifactType.value),
+)
+function emitExpand() {
+  emit('expand', props.artifact)
+}
 
 // 一键应用 Diff：仅回传 edit_id，落盘内容/路径由服务端 pending 记录决定
 const applyState = ref('idle') // idle | applying | applied
@@ -478,6 +490,10 @@ function downloadArtifact() {
       <span class="artifact-title">{{ title }}</span>
       <a-tag size="small" class="artifact-type-tag">{{ typeLabel }}</a-tag>
       <span class="artifact-head-spacer"></span>
+
+      <a-button v-if="canExpand" type="text" size="small" title="放大查看" @click="emitExpand">
+        <template #icon><ExpandAltOutlined /></template>
+      </a-button>
 
       <template v-if="artifactType === 'document'">
         <a-tag v-if="artifact.format" size="small" color="blue">{{ artifact.format }}</a-tag>
