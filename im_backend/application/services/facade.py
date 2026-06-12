@@ -11,6 +11,7 @@ from im_backend.application.services.platform.events import RoomEventStreamServi
 from im_backend.application.services.messaging.favorites import FavoriteService
 from im_backend.application.services.messaging.messages import GroupMessageService
 from im_backend.application.services.messaging.rooms import RoomService
+from im_backend.application.services.orchestration.monitor import RunMonitorService
 from im_backend.application.services.orchestration.runs import GroupRunService
 from im_backend.application.services.orchestration.runtime_reply import PlannerFinalReplyWriter
 from im_backend.infra.agent_flow_bridge.bridge import AgentFlowBridge
@@ -52,6 +53,12 @@ class IMService:
             agents=self.agents,
             favorites=self.favorites,
             default_workdir=default_workdir,
+        )
+        self.monitor = RunMonitorService(
+            store=store,
+            bridge=bridge,
+            conversations=self.conversations,
+            group_runs=self.runs,
         )
         # planner 的最终回复落库成房间消息，使其获得完整消息操作并可随群聊一起清理。
         self._planner_final_writer = PlannerFinalReplyWriter(store=store, messages=self.messages)

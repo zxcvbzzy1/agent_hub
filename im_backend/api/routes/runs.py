@@ -15,6 +15,33 @@ class ConfirmationResolveRequest(BaseModel):
     reason: str = ""
 
 
+@router.get("/runs/active")
+async def list_active_runs(
+    service: IMService = Depends(get_im_service),
+    current_user: dict = Depends(get_current_user),
+):
+    """全局「正在运行的智能体」视图：单聊回复任务 + 群聊编排 run，附最近结束的 run。
+
+    桌面端进程页/顶栏徽标轮询本接口；items 为活跃（可中断），recent 为最近结束（只读）。
+    """
+    _ = current_user
+    return service.monitor.list_active_runs()
+
+
+@router.post("/runs/{run_id}/cancel")
+async def cancel_any_run(
+    run_id: str,
+    service: IMService = Depends(get_im_service),
+    current_user: dict = Depends(get_current_user),
+):
+    """通用中断：run_id 可以是编排 run_id，也可以是单聊回复的 user message_id。"""
+    _ = current_user
+    try:
+        return await service.monitor.cancel(run_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @router.get("/runs/{run_id}/confirmations")
 async def list_run_confirmations(
     run_id: str,
