@@ -399,6 +399,48 @@ class ConversationService:
         record = self._bridge.ensure_agent_exists(agent_id)
         return build_runtime_profile(record, default_workdir=self._default_workdir)
 
+    def list_active_replies(self) -> list[dict[str, Any]]:
+        """单聊维度「正在回复中的智能体」快照（供全局运行监控聚合）。
+
+        以内存里的 _reply_tasks 为准（任务真正活着才算），再用消息状态兜底过滤，
+        避免 done-callback 与状态落库之间的窗口期误报。
+        """
+        items: list[dict[str, Any]] = []
+        for message_id, task in list(self._reply_tasks.items()):
+            if task.done():
+                continue
+            try:
+                message = self._get_message(message_id)
+            except Exception:
+                continue
+            if message.get("status") != "running":
+                continue
+            conversation_id = message.get("conversation_id", "")
+            conversation = (
+                self._store.find_one("im_conversations", {"conversation_id": conversation_id}) or {}
+            )
+            items.append(
+                {
+                    "kind": "dm_reply",
+                    # 取消句柄就是触发回复的 user message_id（cancel_conversation_reply 的入参）。
+                    "run_id": message_id,
+                    "status": "running",
+                    "mode": "reply",
+                    "prompt": message_text(message)[:200],
+                    "agent_ids": [conversation.get("agent_id", "")],
+                    "planner_agent_id": "",
+                    "room_id": "",
+                    "room_title": "",
+                    "conversation_id": conversation_id,
+                    "conversation_title": conversation.get("title", ""),
+                    "message_id": message_id,
+                    "created_at": message.get("created_at"),
+                    "started_at": message.get("updated_at") or message.get("created_at"),
+                    "finished_at": None,
+                }
+            )
+        return items
+
     async def cancel_conversation_reply(self, *, conversation_id: str, message_id: str) -> dict[str, Any]:
         conversation = self.get_conversation(conversation_id)
         message = self._get_message(message_id)
