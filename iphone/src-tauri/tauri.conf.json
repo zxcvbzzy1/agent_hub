@@ -1,20 +1,21 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "iphone",
+  "productName": "AgentHub Mobile",
   "version": "0.1.0",
-  "identifier": "com.zxcvbzzy1.iphone",
+  "identifier": "com.zxcvbzzy1.agenthub.mobile",
   "build": {
     "beforeDevCommand": "npm run dev",
-    "devUrl": "http://localhost:1420",
+    "devUrl": "http://localhost:1430",
     "beforeBuildCommand": "npm run build",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
-        "title": "iphone",
-        "width": 800,
-        "height": 600
+        "title": "AgentHub Mobile",
+        "width": 393,
+        "height": 852,
+        "resizable": true
       }
     ],
     "security": {

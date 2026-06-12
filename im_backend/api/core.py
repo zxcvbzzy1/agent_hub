@@ -28,6 +28,7 @@ class IMContainer:
         self.store = create_document_store()
         self._ensure_message_indexes()
         self._ensure_event_indexes()
+        self._sweep_stale_running()
         self.bridge = AgentFlowBridge(store=self.store, repo_root=self.repo_root)
         self.static_imports = StaticConfigImportService(bridge=self.bridge)
         self.static_import_result = self.static_imports.import_defaults()
@@ -44,6 +45,34 @@ class IMContainer:
             self.store,
             os.getenv("IM_ARTIFACT_ROOT", str(self.repo_root / "im_backend" / "storage" / "artifacts")),
         )
+
+    def _sweep_stale_running(self) -> None:
+        """启动时清扫孤儿运行状态。
+
+        消息/run 的 running|pending 状态落在库里，但真正的执行任务
+        （ConversationService._reply_tasks / RunOrchestrationService._tasks）只存在于进程内存——
+        进程重启后它们必然已死，再留着 running 会让所有前端永远显示「智能体正在运行」。
+        统一标记为 cancelled，并打上 stale_cleanup 元数据便于排查。
+        """
+        try:
+            for message in self.store.find_many("im_messages", {"status": "running"}):
+                metadata = dict(message.get("metadata") or {})
+                metadata["stale_cleanup"] = "服务重启时运行任务已丢失"
+                self.store.update_one(
+                    "im_messages",
+                    {"message_id": message.get("message_id", "")},
+                    {"status": "cancelled", "metadata": metadata},
+                )
+            for status in ("running", "pending"):
+                for run in self.store.find_many("runs", {"status": status}):
+                    self.store.update_one(
+                        "runs",
+                        {"run_id": run.get("run_id", "")},
+                        {"status": "cancelled", "final": run.get("final") or "服务重启，运行中断"},
+                    )
+        except Exception:
+            # 清扫失败不阻塞启动；前端还有 /runs/active 交叉验证兜底。
+            pass
 
     def _ensure_message_indexes(self) -> None:
         """支撑聊天记录懒加载窗口查询的索引（幂等；内存兜底为 no-op）。"""
