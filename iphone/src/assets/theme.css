@@ -1,0 +1,394 @@
+/* ─────────────────────────────────────────────────────────────
+   AgentHub Mobile · 设计 tokens 与基础样式
+   设计语言：iOS 质感 —— 柔和底色、毛玻璃导航、大圆角卡片、
+   indigo→blue 渐变主色、克制的阴影层级。
+   ───────────────────────────────────────────────────────────── */
+
+:root {
+  /* 色板 */
+  --bg: #f4f6fb;
+  --bg-deep: #eceff7;
+  --surface: #ffffff;
+  --surface-glass: rgba(255, 255, 255, 0.78);
+  --ink: #0f172a;
+  --ink-2: #334155;
+  --muted: #64748b;
+  --muted-2: #94a3b8;
+  --line: rgba(15, 23, 42, 0.07);
+
+  --accent: #4f6ef7;
+  --accent-2: #3b82f6;
+  --accent-deep: #4338ca;
+  --accent-grad: linear-gradient(135deg, #6366f1 0%, #4f6ef7 48%, #3b82f6 100%);
+  --accent-soft: rgba(79, 110, 247, 0.10);
+  --accent-soft-2: rgba(79, 110, 247, 0.16);
+
+  --green: #16a34a;
+  --green-soft: rgba(22, 163, 74, 0.12);
+  --red: #dc2626;
+  --red-soft: rgba(220, 38, 38, 0.10);
+  --amber: #d97706;
+  --amber-soft: rgba(217, 119, 6, 0.12);
+
+  /* 圆角 */
+  --r-lg: 22px;
+  --r-md: 16px;
+  --r-sm: 12px;
+  --r-pill: 999px;
+
+  /* 阴影 */
+  --shadow-card: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.06);
+  --shadow-float: 0 4px 12px rgba(15, 23, 42, 0.08), 0 16px 40px rgba(15, 23, 42, 0.12);
+  --shadow-accent: 0 6px 18px rgba(79, 110, 247, 0.32);
+
+  /* 安全区（iOS 刘海/Home条） */
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+
+  /* 布局 */
+  --tabbar-h: 62px;
+  --page-pad: 16px;
+
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'SF Pro Text', 'Helvetica Neue',
+    'Segoe UI', 'Microsoft YaHei', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+}
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.5;
+  overscroll-behavior: none;
+}
+
+/* 全局氛围光晕：左上 indigo、右上 sky 两团极淡的径向渐变，打破纯灰底的单调 */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(420px 320px at -8% -6%, rgba(99, 102, 241, 0.12), transparent 65%),
+    radial-gradient(380px 300px at 108% -4%, rgba(56, 189, 248, 0.10), transparent 65%),
+    radial-gradient(500px 420px at 50% 115%, rgba(99, 102, 241, 0.05), transparent 70%);
+}
+
+button {
+  font: inherit;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+input,
+textarea {
+  font: inherit;
+  border: none;
+  outline: none;
+  background: none;
+  color: inherit;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+/* ── 通用原子 ───────────────────────────────────────────── */
+
+/* 页面容器：底部留出 tabbar 空间 */
+.page {
+  min-height: 100%;
+  padding: calc(var(--safe-top) + 12px) var(--page-pad) calc(var(--tabbar-h) + var(--safe-bottom) + 20px);
+}
+
+/* 大标题（iOS Large Title 风） */
+.page-title {
+  font-size: 28px;
+  font-weight: 800;
+  letter-spacing: -0.4px;
+  margin: 6px 2px 14px;
+}
+
+/* 卡片 */
+.card {
+  background: var(--surface);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-card);
+}
+
+/* 主按钮 */
+.btn-primary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  height: 50px;
+  border-radius: var(--r-md);
+  background: var(--accent-grad);
+  color: #fff;
+  font-size: 16px;
+  font-weight: 700;
+  box-shadow: var(--shadow-accent);
+  transition: transform 0.12s ease, opacity 0.12s ease;
+}
+
+.btn-primary:active {
+  transform: scale(0.97);
+}
+
+.btn-primary:disabled {
+  opacity: 0.5;
+  box-shadow: none;
+}
+
+/* 次按钮 */
+.btn-ghost {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 44px;
+  padding: 0 18px;
+  border-radius: var(--r-md);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 700;
+  transition: transform 0.12s ease;
+}
+
+.btn-ghost:active {
+  transform: scale(0.97);
+}
+
+/* 危险幽灵按钮 */
+.btn-danger {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 40px;
+  padding: 0 16px;
+  border-radius: var(--r-md);
+  background: var(--red-soft);
+  color: var(--red);
+  font-size: 14px;
+  font-weight: 700;
+  transition: transform 0.12s ease;
+}
+
+.btn-danger:active {
+  transform: scale(0.97);
+}
+
+/* 输入框 */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.field label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--ink-2);
+  padding-left: 2px;
+}
+
+.field input {
+  height: 50px;
+  padding: 0 16px;
+  border-radius: var(--r-md);
+  background: var(--surface);
+  border: 1.5px solid transparent;
+  box-shadow: var(--shadow-card);
+  font-size: 16px;
+  transition: border-color 0.15s ease;
+}
+
+.field input:focus {
+  border-color: var(--accent);
+}
+
+.field input::placeholder {
+  color: var(--muted-2);
+}
+
+/* 圆形头像（文字兜底） */
+.avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  border-radius: var(--r-pill);
+  background: var(--accent-grad);
+  color: #fff;
+  font-weight: 800;
+  overflow: hidden;
+}
+
+.avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* 状态小圆点 */
+.dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.dot--running {
+  background: var(--green);
+  box-shadow: 0 0 0 3px var(--green-soft);
+  animation: pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+/* 未读徽标 */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 19px;
+  height: 19px;
+  padding: 0 5px;
+  border-radius: var(--r-pill);
+  background: var(--red);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 1;
+}
+
+/* 毛玻璃吸顶条 */
+.glass-bar {
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: var(--surface-glass);
+  backdrop-filter: blur(18px) saturate(1.4);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4);
+  border-bottom: 0.5px solid var(--line);
+}
+
+/* 空态 */
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 56px 24px;
+  color: var(--muted);
+  font-size: 14px;
+  text-align: center;
+}
+
+.empty .empty-icon {
+  font-size: 40px;
+  opacity: 0.5;
+}
+
+/* 节标签：小型大写风格分组标题 */
+.section-label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin: 18px 4px 9px;
+  font-size: 12.5px;
+  font-weight: 800;
+  letter-spacing: 0.4px;
+  color: var(--muted);
+}
+
+.section-label .count-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--r-pill);
+  background: rgba(15, 23, 42, 0.06);
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
+/* 头像渐变配色组：按实体 id 哈希取色，让列表不再千篇一律 */
+.hue-0 { background: linear-gradient(135deg, #6366f1, #3b82f6); }
+.hue-1 { background: linear-gradient(135deg, #0ea5e9, #06b6d4); }
+.hue-2 { background: linear-gradient(135deg, #8b5cf6, #d946ef); }
+.hue-3 { background: linear-gradient(135deg, #f59e0b, #f97316); }
+.hue-4 { background: linear-gradient(135deg, #10b981, #14b8a6); }
+.hue-5 { background: linear-gradient(135deg, #ef4444, #f97316); }
+
+/* 列表行通用按压反馈 */
+.pressable {
+  transition: transform 0.13s ease, background 0.13s ease, box-shadow 0.13s ease;
+}
+
+.pressable:active {
+  transform: scale(0.975);
+}
+
+/* 细边卡片（比 .card 更轻的层级，配合 hairline 边） */
+.card-line {
+  background: var(--surface);
+  border: 0.5px solid rgba(15, 23, 42, 0.06);
+  border-radius: var(--r-md);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03), 0 6px 18px rgba(15, 23, 42, 0.05);
+}
+
+/* 列表淡入 */
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.rise-in {
+  animation: rise-in 0.28s ease both;
+}
