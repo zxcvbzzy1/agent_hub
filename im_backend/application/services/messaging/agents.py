@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from typing import Any
 
 from im_backend.application.services.platform.cleanup import IMCleanupService
@@ -172,6 +173,86 @@ class IMAgentService:
                 {"metadata": {"owner_user_id": owner_user_id, "visibility": "private", "kind_label": "agent_context"}},
             )
         return context_id
+
+    def update_agent(
+        self,
+        agent_id: str,
+        *,
+        name: str | None = None,
+        role_prompt: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        tool_names: list[str] | None = None,
+        tool_fields: list[str] | None = None,
+        user_id: str = "",
+    ) -> dict[str, Any]:
+        """编辑 Agent：name / role_prompt / 描述等基础字段 + native executor 的可用工具。
+
+        agent_kind / agent_type 不可通过编辑变更（会牵动上下文重新置备）。工具变更落到该 Agent
+        独占的上下文的 available_tools provider 上。
+        """
+        if agent_id in self.PROTECTED_AGENT_IDS:
+            raise ValueError("默认 Agent 不允许编辑")
+        record = self._bridge.ensure_agent_exists(agent_id)
+        if user_id and self.owner_user_id(record) != user_id:
+            raise ValueError("只能编辑当前用户拥有的 Agent")
+
+        existing_meta = record.get("metadata") or {}
+        agent_kind = existing_meta.get("agent_kind") or "native"
+        agent_type = record.get("agent_type")
+
+        # 工具变更仅对 native executor 生效（其它形态没有 available_tools provider）。
+        if (
+            (tool_names is not None or tool_fields is not None)
+            and agent_kind == "native"
+            and agent_type == "executor"
+        ):
+            self._update_agent_tools(
+                record.get("context_id", ""),
+                tool_names or [],
+                tool_fields or [],
+            )
+
+        merged_metadata: dict[str, Any] | None = None
+        if metadata is not None:
+            # store 对 metadata 整体覆盖：先并好旧值，再钉死不可经编辑变更的系统字段。
+            merged_metadata = {**existing_meta, **metadata, "agent_kind": agent_kind}
+            if existing_meta.get("owner_user_id"):
+                merged_metadata["owner_user_id"] = existing_meta["owner_user_id"]
+            if existing_meta.get("visibility"):
+                merged_metadata["visibility"] = existing_meta["visibility"]
+
+        return self._bridge.update_agent(
+            agent_id,
+            name=name,
+            role_prompt=role_prompt,
+            metadata=merged_metadata,
+        )
+
+    def _update_agent_tools(
+        self, context_id: str, tool_names: list[str], tool_fields: list[str]
+    ) -> None:
+        """把所选工具/字段写回该 Agent 独占上下文的 available_tools provider。"""
+        if not context_id:
+            return
+        record = self._bridge.contexts.get_context(context_id)
+        if record is None:
+            return
+        provider_config = copy.deepcopy(record.get("provider_config") or [])
+        tool_params = {
+            "available_fields": list(tool_fields or []),
+            "available_tools": list(tool_names or []),
+        }
+        replaced = False
+        for item in provider_config:
+            if item.get("provider_id") == "available_tools":
+                item["params"] = tool_params
+                item["enabled"] = True
+                replaced = True
+        if not replaced:
+            provider_config.append(
+                {"provider_id": "available_tools", "enabled": True, "params": tool_params}
+            )
+        self._bridge.contexts.update_context_providers(context_id, provider_config)
 
     def delete_agent(self, agent_id: str, *, user_id: str = "") -> dict[str, Any]:
         if agent_id in self.PROTECTED_AGENT_IDS:

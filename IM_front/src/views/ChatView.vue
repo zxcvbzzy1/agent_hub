@@ -65,9 +65,15 @@ const drawerOpen = ref(false)
 const createOpen = ref(false)
 const agentCreateOpen = ref(false)
 const creatingAgent = ref(false)
+// 编辑当前 Agent：复用创建弹窗/表单；空串=创建模式，非空=编辑该 agent_id。
+const editingAgentId = ref('')
+const isEditingAgent = computed(() => Boolean(editingAgentId.value))
 const savingPlanner = ref(false)
 const mentionOpen = ref(false)
 const composer = ref('')
+// 输入框「展开」：打开一个接近全屏的弹窗编辑器，与底部输入框共享同一份 composer。
+const composerExpanded = ref(false)
+const expandedComposerRef = ref(null)
 const mentions = ref([])
 const drawerPlannerId = ref('default_planner')
 const traceOpenOverrides = ref({})
@@ -594,6 +600,26 @@ async function createRoom() {
   }
 }
 
+function resetAgentForm() {
+  agentForm.name = ''
+  agentForm.agent_kind = 'native'
+  agentForm.agent_type = 'executor'
+  agentForm.description = ''
+  agentForm.role_prompt = ''
+  agentForm.workdir = ''
+  agentForm.permission_profile = 'human_confirm'
+  agentForm.avatar_url = ''
+  agentForm.tool_names = []
+  agentForm.tool_fields = []
+  agentForm.tags = []
+}
+
+// 创建/编辑共用同一弹窗与表单：editingAgentId 为空 = 创建，非空 = 编辑当前 Agent。
+async function submitAgent() {
+  if (isEditingAgent.value) await saveAgentEdit()
+  else await createAgent()
+}
+
 async function createAgent() {
   if (!agentForm.name.trim()) {
     message.warning('请输入 Agent 名称')
@@ -622,18 +648,83 @@ async function createAgent() {
       },
     })
     agentCreateOpen.value = false
-    agentForm.name = ''
-    agentForm.agent_kind = 'native'
-    agentForm.agent_type = 'executor'
-    agentForm.description = ''
-    agentForm.role_prompt = ''
-    agentForm.workdir = ''
-    agentForm.permission_profile = 'human_confirm'
-    agentForm.avatar_url = ''
-    agentForm.tool_names = []
-    agentForm.tool_fields = []
-    agentForm.tags = []
+    resetAgentForm()
     message.success('Agent 已创建')
+  } finally {
+    creatingAgent.value = false
+  }
+}
+
+// 仅 owner 且非默认 Agent 可编辑（与后端 PROTECTED + 归属校验对齐），避免给出注定 4xx 的入口。
+function canEditAgent(agent) {
+  if (!agent) return false
+  if (['default_executor', 'default_planner'].includes(agent.agent_id)) return false
+  const owner = agent.metadata?.owner_user_id || agent.metadata?.created_by || ''
+  return !owner || owner === auth.user?.user_id
+}
+
+// 从该 Agent 绑定的上下文里反查已选工具：已创建 agent 的 available_tools.params 是
+// {available_tools, available_fields} 字典；默认模版里 params 可能是参数名数组，按空选区处理。
+function agentToolSelection(agent) {
+  const ctx = (im.contexts || []).find((item) => item.context_id === agent?.context_id)
+  const provider = (ctx?.provider_config || []).find((item) => item.provider_id === 'available_tools')
+  const params = provider?.params
+  if (params && !Array.isArray(params)) {
+    return {
+      tool_names: [...(params.available_tools || [])],
+      tool_fields: [...(params.available_fields || [])],
+    }
+  }
+  return { tool_names: [], tool_fields: [] }
+}
+
+async function openEditAgent(agent) {
+  if (!agent || !canEditAgent(agent)) return
+  if (!(im.contexts || []).length) await im.fetchContexts()
+  const meta = agent.metadata || {}
+  editingAgentId.value = agent.agent_id
+  agentForm.name = agent.name || ''
+  agentForm.agent_kind = meta.agent_kind || 'native'
+  agentForm.agent_type = agent.agent_type || 'executor'
+  agentForm.description = meta.description || ''
+  agentForm.role_prompt = agent.role_prompt || ''
+  agentForm.workdir = meta.workdir || ''
+  agentForm.permission_profile = meta.permission_profile || 'human_confirm'
+  agentForm.avatar_url = meta.avatar_url || ''
+  agentForm.tags = [...(meta.tags || [])]
+  const sel = agentToolSelection(agent)
+  agentForm.tool_names = sel.tool_names
+  agentForm.tool_fields = sel.tool_fields
+  agentCreateTab.value = 'form'
+  agentCreateOpen.value = true
+  if (!(im.tools || []).length) im.fetchTools()
+}
+
+async function saveAgentEdit() {
+  if (!agentForm.name.trim()) {
+    message.warning('请输入 Agent 名称')
+    return
+  }
+  creatingAgent.value = true
+  try {
+    const useToolPicker = isNativeAgentForm.value && agentForm.agent_type === 'executor'
+    // agent_kind / agent_type 不参与编辑（会牵动上下文重置）；metadata 由后端与旧值合并。
+    await im.updateAgent(editingAgentId.value, {
+      name: agentForm.name.trim(),
+      role_prompt: isNativeAgentForm.value ? agentForm.role_prompt : '',
+      tool_names: useToolPicker ? [...agentForm.tool_names] : [],
+      tool_fields: useToolPicker ? [...agentForm.tool_fields] : [],
+      metadata: {
+        description: agentForm.description,
+        capabilities: agentForm.description ? [agentForm.description] : [],
+        tags: [...agentForm.tags],
+        workdir: agentForm.workdir,
+        permission_profile: agentForm.permission_profile || 'human_confirm',
+        avatar_url: agentForm.avatar_url || '',
+      },
+    })
+    agentCreateOpen.value = false
+    message.success('Agent 已更新')
   } finally {
     creatingAgent.value = false
   }
@@ -804,6 +895,18 @@ async function send() {
   }
 }
 
+// 从展开弹窗发送：复用底层 send()，成功（composer 被清空）后关闭弹窗；失败则保留文本继续编辑。
+async function sendFromExpanded() {
+  await send()
+  if (!composer.value.trim()) composerExpanded.value = false
+}
+
+// 展开弹窗打开后聚焦到大编辑区，光标落到文末便于继续输入。
+watch(composerExpanded, (open) => {
+  if (!open) return
+  nextTick(() => expandedComposerRef.value?.focus?.({ cursor: 'end' }))
+})
+
 async function approveConfirmation(part, confirmationMessage) {
   const sourceMessageId = part.metadata?.source_message_id || part.metadata?.message_id
   const confirmationMessageId = part.metadata?.confirmation_message_id || confirmationMessage?.message_id
@@ -851,7 +954,23 @@ function quoteRefSummary(item) {
 }
 
 function isRegenerable(item) {
-  return item.sender_type === 'agent' && im.currentRoom?.type !== 'group'
+  if (im.currentRoom?.type === 'group') return false
+  // agent 回复：随时可重新生成。
+  if (item.sender_type === 'agent') return true
+  // 用户消息：执行失败 / 被中断时没有 agent 回复可点，直接在用户消息上提供重试。
+  return item.sender_type === 'user' && ['failed', 'cancelled'].includes(item.status)
+}
+
+// 失败/取消的用户消息走「重试」，正常的 agent 回复走「重新生成」。
+function regenerateLabel(item) {
+  return item.sender_type === 'user' ? '重试' : '重新生成'
+}
+
+// 异常状态标签配色：失败标红、取消标橙，其余沿用默认。
+function statusTagColor(status) {
+  if (status === 'failed') return 'error'
+  if (status === 'cancelled') return 'warning'
+  return undefined
 }
 
 function artifactTypeLabel(artifact = {}) {
@@ -1041,11 +1160,12 @@ function emitSidebarCollapseState(collapsed) {
 }
 
 async function regenerateMessage(item) {
+  const label = regenerateLabel(item)
   try {
     await im.regenerateReply(item)
-    message.success('已请求重新生成')
+    message.success(item.sender_type === 'user' ? '已重新发起' : '已请求重新生成')
   } catch (error) {
-    message.error('重新生成失败')
+    message.error(`${label}失败`)
   }
 }
 
@@ -1258,6 +1378,11 @@ watch(
       builderInput.value = ''
       builderDraft.value = null
       builderReady.value = false
+      // 关闭即退出编辑态并清表单，避免编辑残留泄漏到下一次「创建」。
+      if (editingAgentId.value) {
+        resetAgentForm()
+        editingAgentId.value = ''
+      }
     }
   },
 )
@@ -1352,16 +1477,29 @@ onUnmounted(() => {
                 <span v-for="tag in agent.metadata.tags.slice(0, 2)" :key="tag" class="agent-tag">{{ tag }}</span>
               </div>
             </div>
-            <a-button
-              v-if="!['default_executor', 'default_planner'].includes(agent.agent_id)"
-              class="nav-delete"
-              type="text"
-              danger
-              size="small"
-              @click.stop="confirmDeleteAgent(agent)"
-            >
-              <template #icon><DeleteOutlined /></template>
-            </a-button>
+            <div class="nav-actions" @click.stop>
+              <a-tooltip title="编辑">
+                <a-button
+                  v-if="canEditAgent(agent)"
+                  class="nav-edit"
+                  type="text"
+                  size="small"
+                  @click.stop="openEditAgent(agent)"
+                >
+                  <template #icon><EditOutlined /></template>
+                </a-button>
+              </a-tooltip>
+              <a-button
+                v-if="!['default_executor', 'default_planner'].includes(agent.agent_id)"
+                class="nav-delete"
+                type="text"
+                danger
+                size="small"
+                @click.stop="confirmDeleteAgent(agent)"
+              >
+                <template #icon><DeleteOutlined /></template>
+              </a-button>
+            </div>
           </button>
           </template>
         </section>
@@ -1598,7 +1736,7 @@ onUnmounted(() => {
               <div class="message-meta">
                 <strong>{{ messageTitle(entry.message) }}</strong>
                 <span>{{ formatTime(entry.message.created_at) }}</span>
-                <a-tag v-if="entry.message.status !== 'sent'" size="small">{{ entry.message.status }}</a-tag>
+                <a-tag v-if="entry.message.status !== 'sent'" size="small" :color="statusTagColor(entry.message.status)">{{ entry.message.status }}</a-tag>
                 <a-tag v-if="entry.message.run_id && im.currentRoom?.type === 'group'" size="small" color="blue">
                   run {{ shortId(entry.message.run_id) }}
                 </a-tag>
@@ -1618,7 +1756,7 @@ onUnmounted(() => {
                       <template #icon><BranchesOutlined /></template>
                     </a-button>
                   </a-tooltip>
-                  <a-tooltip v-if="isRegenerable(entry.message)" title="重新生成">
+                  <a-tooltip v-if="isRegenerable(entry.message)" :title="regenerateLabel(entry.message)">
                     <a-button type="text" size="small" @click.stop="regenerateMessage(entry.message)">
                       <template #icon><ReloadOutlined /></template>
                     </a-button>
@@ -1887,6 +2025,11 @@ onUnmounted(() => {
             @input="handleInput"
             @pressEnter.ctrl.prevent="send"
           />
+          <a-tooltip title="展开输入" placement="topRight">
+            <a-button class="composer-expand-btn" type="text" size="small" @click="composerExpanded = true">
+              <template #icon><ExpandAltOutlined /></template>
+            </a-button>
+          </a-tooltip>
         </div>
         <div class="composer-actions">
           <a-space v-if="im.currentRoom?.type === 'group'">
@@ -1989,9 +2132,9 @@ onUnmounted(() => {
       </a-form>
     </a-modal>
 
-    <a-modal v-model:open="agentCreateOpen" title="创建 Agent" :footer="null">
+    <a-modal v-model:open="agentCreateOpen" :title="isEditingAgent ? '编辑 Agent' : '创建 Agent'" :footer="null">
       <a-tabs v-model:activeKey="agentCreateTab">
-        <a-tab-pane key="form" tab="表单创建">
+        <a-tab-pane key="form" :tab="isEditingAgent ? '编辑表单' : '表单创建'">
       <a-form layout="vertical">
         <a-form-item label="头像">
           <div class="agent-avatar-upload">
@@ -2023,7 +2166,9 @@ onUnmounted(() => {
           <a-segmented
             v-model:value="agentForm.agent_kind"
             :options="agentKindOptions"
+            :disabled="isEditingAgent"
           />
+          <small v-if="isEditingAgent" class="form-lock-hint">编辑时不可更改运行类型</small>
         </a-form-item>
         <a-form-item v-if="isNativeAgentForm" label="类型">
           <a-segmented
@@ -2032,7 +2177,9 @@ onUnmounted(() => {
               { label: 'Executor', value: 'executor' },
               { label: 'Planner', value: 'planner' },
             ]"
+            :disabled="isEditingAgent"
           />
+          <small v-if="isEditingAgent" class="form-lock-hint">编辑时不可更改类型</small>
         </a-form-item>
         <a-form-item label="工作目录">
           <a-input v-model:value="agentForm.workdir" placeholder="留空则使用后端默认工作目录" />
@@ -2078,12 +2225,12 @@ onUnmounted(() => {
             </a-collapse-panel>
           </a-collapse>
         </a-form-item>
-        <a-button type="primary" html-type="submit" block :loading="creatingAgent" @click="createAgent">
-          创建 Agent
+        <a-button type="primary" html-type="submit" block :loading="creatingAgent" @click="submitAgent">
+          {{ isEditingAgent ? '保存修改' : '创建 Agent' }}
         </a-button>
       </a-form>
         </a-tab-pane>
-        <a-tab-pane key="chat" tab="对话式创建">
+        <a-tab-pane v-if="!isEditingAgent" key="chat" tab="对话式创建">
           <div class="builder-chat">
             <div class="builder-messages">
               <a-empty
@@ -2162,6 +2309,12 @@ onUnmounted(() => {
                   {{ item.agent_id }} · {{ item.metadata?.agent_kind || 'native' }}
                 </template>
               </a-list-item-meta>
+              <template v-if="canEditAgent(item)" #actions>
+                <a-button type="text" size="small" @click="drawerOpen = false; openEditAgent(item)">
+                  <template #icon><EditOutlined /></template>
+                  编辑
+                </a-button>
+              </template>
             </a-list-item>
           </template>
         </a-list>
@@ -2263,6 +2416,60 @@ onUnmounted(() => {
       />
       <p v-if="editArtifactIsMarkdown" class="edit-artifact-hint">提示：该文件为 Markdown，保存后在文档卡片中会按 Markdown 渲染。</p>
     </a-modal>
+
+    <!-- 输入框展开：全屏编辑器（与底部输入框共享 composer） -->
+    <a-modal
+      v-model:open="composerExpanded"
+      title="编辑消息"
+      wrap-class-name="composer-expand-modal"
+      :footer="null"
+      destroy-on-close
+    >
+      <div v-if="selectionEditTarget || replyTarget || quoteTarget" class="composer-refs">
+        <div v-if="selectionEditTarget" class="composer-ref">
+          <EditOutlined />
+          <span class="composer-ref-label">针对选区修改 {{ selectionEditTarget.file_path || selectionEditTarget.title || '当前文档' }}：</span>
+          <span class="composer-ref-text">{{ (selectionEditTarget.selection?.text || '').slice(0, 80) }}</span>
+          <a-button type="text" size="small" @click="clearSelectionEditTarget">
+            <template #icon><CloseOutlined /></template>
+          </a-button>
+        </div>
+        <div v-if="replyTarget" class="composer-ref">
+          <MessageOutlined />
+          <span class="composer-ref-label">回复 @{{ messageTitle(replyTarget) }}：</span>
+          <span class="composer-ref-text">{{ quoteRefSummary(replyTarget) }}</span>
+          <a-button type="text" size="small" @click="clearReplyTarget">
+            <template #icon><CloseOutlined /></template>
+          </a-button>
+        </div>
+        <div v-if="quoteTarget" class="composer-ref">
+          <BranchesOutlined />
+          <span class="composer-ref-label">引用 @{{ messageTitle(quoteTarget) }}：</span>
+          <span class="composer-ref-text">{{ quoteRefSummary(quoteTarget) }}</span>
+          <a-button type="text" size="small" @click="clearQuoteTarget">
+            <template #icon><CloseOutlined /></template>
+          </a-button>
+        </div>
+      </div>
+      <a-textarea
+        ref="expandedComposerRef"
+        v-model:value="composer"
+        class="composer-expand-editor"
+        :placeholder="im.currentRoom?.type === 'group' ? '输入消息。输入 @ 可选择群内 agent' : '输入消息，当前会话历史会注入给这个 agent'"
+        @keydown.ctrl.enter.prevent="sendFromExpanded"
+        @keydown.meta.enter.prevent="sendFromExpanded"
+      />
+      <div class="composer-expand-foot">
+        <span class="composer-expand-hint">Ctrl / ⌘ + Enter 发送</span>
+        <a-space>
+          <a-button @click="composerExpanded = false">取消</a-button>
+          <a-button type="primary" :loading="sending" @click="sendFromExpanded">
+            <template #icon><SendOutlined /></template>
+            发送
+          </a-button>
+        </a-space>
+      </div>
+    </a-modal>
   </main>
 </template>
 
@@ -2331,6 +2538,13 @@ onUnmounted(() => {
   color: #8c8c8c;
   font-size: 12px;
   margin: -4px 0 8px;
+}
+
+.form-lock-hint {
+  display: block;
+  margin-top: 4px;
+  color: #9ca3af;
+  font-size: 12px;
 }
 
 .run-artifacts-head {

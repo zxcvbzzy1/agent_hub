@@ -160,6 +160,21 @@ class AgentFlowBridge:
             metadata=metadata or {},
         )
 
+    def update_agent(
+        self,
+        agent_id: str,
+        *,
+        name: str | None = None,
+        role_prompt: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        return self.agents.update_agent(
+            agent_id,
+            name=name,
+            role_prompt=role_prompt,
+            metadata=metadata,
+        )
+
     def create_agent_from_instance(
         self,
         *,

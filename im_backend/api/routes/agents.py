@@ -3,7 +3,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 
 from im_backend.api.core import get_agent_builder, get_agent_catalog, get_current_user, get_im_service
-from im_backend.api.schemas import AgentBuilderChatRequest, AgentConversationCreateRequest, AgentCreateRequest
+from im_backend.api.schemas import (
+    AgentBuilderChatRequest,
+    AgentConversationCreateRequest,
+    AgentCreateRequest,
+    AgentUpdateRequest,
+)
 from im_backend.application.services.messaging.agent_builder import AgentBuilderService
 from im_backend.application.services.messaging.agents import IMAgentService
 from im_backend.application.services.facade import IMService
@@ -74,6 +79,30 @@ async def create_agent(
             tool_fields=request.tool_fields,
         )
     except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"item": item}
+
+
+@router.patch("/agents/{agent_id}")
+async def update_agent(
+    agent_id: str,
+    request: AgentUpdateRequest,
+    current_user: dict = Depends(get_current_user),
+    service: IMService = Depends(get_im_service),
+):
+    try:
+        item = service.update_agent(
+            agent_id,
+            name=request.name,
+            role_prompt=request.role_prompt,
+            metadata=request.metadata,
+            tool_names=request.tool_names,
+            tool_fields=request.tool_fields,
+            user_id=current_user["user_id"],
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"item": item}
 

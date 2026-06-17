@@ -198,6 +198,9 @@ class IMService:
     def create_agent(self, **kwargs) -> dict[str, Any]:
         return self.agents.create_agent(**kwargs)
 
+    def update_agent(self, agent_id: str, **kwargs) -> dict[str, Any]:
+        return self.agents.update_agent(agent_id, **kwargs)
+
     def delete_agent(self, agent_id: str, *, user_id: str = "") -> dict[str, Any]:
         return self.agents.delete_agent(agent_id, user_id=user_id)
 

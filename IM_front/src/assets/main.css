@@ -344,19 +344,36 @@
 
 .nav-card {
   position: relative;
-  grid-template-columns: 40px minmax(0, 1fr) 28px;
+  grid-template-columns: 40px minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
 }
 
-.nav-delete {
+.nav-actions {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+}
+
+.nav-delete,
+.nav-edit {
   width: 28px;
   height: 28px;
   opacity: 0;
 }
 
+.nav-edit {
+  color: var(--muted);
+}
+
+.nav-edit:hover {
+  color: var(--accent);
+}
+
 .nav-card:hover .nav-delete,
-.nav-delete:focus-visible {
+.nav-card:hover .nav-edit,
+.nav-delete:focus-visible,
+.nav-edit:focus-visible {
   opacity: 1;
 }
 
@@ -656,6 +673,52 @@
 
 .message-preview-modal .image-part {
   max-width: 100%;
+}
+
+/* 输入框展开：接近全屏的弹窗编辑器，大编辑区填满高度。 */
+.composer-expand-modal .ant-modal {
+  top: 0;
+  width: min(960px, calc(100vw - 32px)) !important;
+  max-width: none;
+  margin: 24px auto;
+  padding-bottom: 0;
+}
+
+.composer-expand-modal .ant-modal-content {
+  display: flex;
+  flex-direction: column;
+  height: calc(100vh - 48px);
+  min-height: 0;
+  overflow: hidden;
+}
+
+.composer-expand-modal .ant-modal-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+.composer-expand-modal .composer-expand-editor {
+  flex: 1 1 auto;
+  min-height: 0;
+  height: 100% !important;
+  resize: none;
+  font-size: 15px;
+  line-height: 1.7;
+}
+
+.composer-expand-foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.composer-expand-hint {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .message-row {
@@ -1159,6 +1222,24 @@
 
 .mention-wrap {
   position: relative;
+}
+
+/* 输入框右上角的「展开」按钮：浮在文本域之上，半透明底避免遮挡首行文字。 */
+.composer-expand-btn {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 5;
+  width: 26px;
+  height: 26px;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 8px;
+}
+
+.composer-expand-btn:hover {
+  color: var(--accent);
+  background: rgba(255, 255, 255, 0.95);
 }
 
 .mention-popover {
