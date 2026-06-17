@@ -339,6 +339,12 @@ export const useIMStore = defineStore('im', {
       await this.selectAgent(response.item.agent_id)
       return response.item
     },
+    async updateAgent(agentId, payload) {
+      const response = await imApi.updateAgent(agentId, payload)
+      // 重新拉取 agents 列表，让侧栏/抽屉/标题等基于 im.agents 的派生 UI 立即反映改动。
+      await this.fetchAgents()
+      return response.item
+    },
     async builderChat(payload) {
       // 仅转发：对话式创建的草稿/回复由 ChatView 本地维护，不入全局 store。
       return imApi.builderChat(payload)
@@ -620,8 +626,11 @@ export const useIMStore = defineStore('im', {
         await this.fetchConversations()
       }
     },
-    async regenerateReply(agentMessage) {
-      const userId = agentMessage?.metadata?.reply_to
+    async regenerateReply(message) {
+      // 既支持点 agent 回复重生（取其 reply_to 指向的用户消息），也支持直接对失败/取消的
+      // 用户消息重试（此时没有 agent 回复消息可点）。后端 regenerate 始终以用户消息为入口。
+      const userId =
+        message?.sender_type === 'user' ? message.message_id : message?.metadata?.reply_to
       if (!userId || !this.currentConversation) return
       await imApi.regenerateConversationMessage(this.currentConversation.conversation_id, userId)
       await this.refreshMessages()
@@ -753,12 +762,15 @@ export const useIMStore = defineStore('im', {
         ))
         if (this.currentRoom?.type === 'group') this.fetchTasks().catch(() => {})
       }
-      if (event.name === 'workflow.failed' && event.payload?.cancelled) {
+      if (event.name === 'workflow.failed') {
+        // 用户中断 -> cancelled；真正执行失败 -> failed（缺这一支会导致失败消息一直停在 running，
+        // 触发不了「重试」按钮）。run_id 可能缺省，加非空守卫避免误匹配 run_id 同为空的其它消息。
         const runId = event.payload?.run_id
         const messageId = event.payload?.message_id
+        const nextStatus = event.payload?.cancelled ? 'cancelled' : 'failed'
         this.messages = this.messages.map((messageItem) => (
-          messageItem.run_id === runId || messageItem.message_id === messageId
-            ? { ...messageItem, status: 'cancelled' }
+          (runId && messageItem.run_id === runId) || (messageId && messageItem.message_id === messageId)
+            ? { ...messageItem, status: nextStatus }
             : messageItem
         ))
         if (this.currentRoom?.type === 'group') this.fetchTasks().catch(() => {})

@@ -59,6 +59,15 @@ class AgentCreateRequest(BaseModel):
     tool_fields: list[str] = Field(default_factory=list)
 
 
+class AgentUpdateRequest(BaseModel):
+    # 全部可选：只更新本次传入的字段（None 表示不改）。
+    name: str | None = None
+    role_prompt: str | None = None
+    metadata: dict[str, Any] | None = None
+    tool_names: list[str] | None = None
+    tool_fields: list[str] | None = None
+
+
 class AgentConversationCreateRequest(BaseModel):
     title: str = ""
     avatar_url: str = ""

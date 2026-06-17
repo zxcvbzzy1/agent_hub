@@ -10,6 +10,9 @@ export const imApi = {
   createAgent(payload) {
     return http.post('/api/im/agents', payload)
   },
+  updateAgent(agentId, payload) {
+    return http.patch(`/api/im/agents/${agentId}`, payload)
+  },
   builderChat(payload) {
     return http.post('/api/im/agents/builder/chat', payload)
   },
