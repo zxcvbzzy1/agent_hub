@@ -22,7 +22,10 @@ http.interceptors.request.use((config) => {
 
 http.interceptors.response.use(
   (response) => response.data,
-  (error) => {
+  async (error) => {
+    if (error?.response?.data instanceof Blob) {
+      try { error.response.data = JSON.parse(await error.response.data.text()) } catch { /* Preserve original error. */ }
+    }
     const detail = error?.response?.data?.detail || error?.message || '请求失败'
     if (error?.response?.status === 401) {
       localStorage.removeItem('agent-im-auth')

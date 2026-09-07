@@ -33,7 +33,9 @@ class ConversationService:
         agents: IMAgentService,
         favorites: FavoriteService,
         cleanup: IMCleanupService | None = None,
+        files=None,
     ) -> None:
+        self.files = files
         self._store = store
         self._bridge = bridge
         self._events = events
@@ -317,6 +319,7 @@ class ConversationService:
         sender_type: str,
         sender_id: str,
         content_parts: list[dict[str, Any]],
+        user_id: str = "",
         reply_to: str = "",
         quote_of: str = "",
         run_id: str = "",
@@ -340,7 +343,8 @@ class ConversationService:
             status=status,
             metadata=metadata or {},
         )
-        record = self._store.insert_one("im_messages", message.to_dict())
+        record = (self.files.save_message(message.to_dict(), user_id or sender_id)
+                  if self.files else self._store.insert_one("im_messages", message.to_dict()))
         self._store.update_one(
             "im_conversations",
             {"conversation_id": conversation_id},
@@ -616,14 +620,18 @@ class ConversationService:
 
     def _format_history_message(self, message: dict[str, Any]) -> str:
         role = "用户" if message.get("sender_type") == "user" else "Agent"
-        return f"### 历史消息\n{role}：{message_text(message)}"
+        return f"### 历史消息\n{role}：{self._context_text(message)}"
+
+    def _context_text(self, message: dict) -> str:
+        return self.files.context_text(message) if self.files else message_text(message)
 
     def _compose_prompt(self, message: dict[str, Any]) -> str:
         """拼接被回复/引用消息的上下文，让 agent 看到完整意图。"""
         return compose_prompt_with_references(
             message,
             lookup=lambda mid: find_im_message(self._store, mid),
-            text_of=message_text,
+            text_of=self._context_text,
+            reference_text_of=(lambda ref: self.files.context_text(ref, reference=True)) if self.files else None,
         )
 
     def _apply_agent_workdir(self, agent, agent_id: str) -> None:

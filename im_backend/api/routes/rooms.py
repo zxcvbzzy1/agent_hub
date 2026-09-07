@@ -130,6 +130,7 @@ async def add_message(
         item = service.add_message(
             room_id=room_id,
             conversation_id=request.conversation_id,
+            user_id=current_user["user_id"],
             sender_type=sender_type,
             sender_id=sender_id,
             content_parts=[part.model_dump() for part in request.content_parts],

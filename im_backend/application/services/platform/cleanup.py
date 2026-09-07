@@ -11,6 +11,7 @@ class IMCleanupService:
         self._store = store
 
     def delete_conversation(self, conversation_id: str) -> dict[str, int]:
+        self._store.delete_many("im_conversation_files", {"conversation_id": conversation_id})
         messages = self._store.find_many("im_messages", {"conversation_id": conversation_id})
         run_ids = self._run_ids(messages)
         stats = {
@@ -26,6 +27,7 @@ class IMCleanupService:
         return stats
 
     def delete_room(self, room_id: str) -> dict[str, int]:
+        self._store.delete_many("im_conversation_files", {"room_id": room_id})
         messages = self._store.find_many("im_messages", {"room_id": room_id})
         run_ids = self._run_ids(messages)
         stats = {
@@ -83,6 +85,7 @@ class IMCleanupService:
 
     def delete_message(self, message: dict[str, Any]) -> dict[str, int]:
         message_id = message.get("message_id", "")
+        self._store.delete_many("im_conversation_files", {"message_id": message_id})
         run_id = message.get("run_id", "")
         stats = {
             "messages": self._store.delete_one("im_messages", {"message_id": message_id}),

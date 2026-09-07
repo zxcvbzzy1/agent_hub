@@ -19,6 +19,8 @@ from im_backend.application.services.facade import IMService
 from im_backend.application.services.platform.bootstrap import StaticConfigImportService
 from im_backend.infra.agent_flow_bridge.bridge import AgentFlowBridge
 from im_backend.infra.storage.artifacts import ArtifactStorage
+from im_backend.infra.storage.files import LocalFileStorage
+from im_backend.application.services.file import FileService
 from im_backend.infra.storage.document_store import create_document_store
 
 
@@ -34,7 +36,10 @@ class IMContainer:
         self.static_import_result = self.static_imports.import_defaults()
         self.room_events = RoomEventStreamService(self.store)
         self.auth = AuthService(self.store)
+        self.files = FileService(self.store, LocalFileStorage(self.repo_root / "upload"), self.room_events)
+        self.files.ensure_indexes()
         self.im = IMService(
+            files=self.files,
             store=self.store,
             bridge=self.bridge,
             room_events=self.room_events,
@@ -147,3 +152,7 @@ def get_current_token(
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(status_code=401, detail="未登录")
     return credentials.credentials
+
+
+def get_file_service() -> FileService:
+    return get_container().files

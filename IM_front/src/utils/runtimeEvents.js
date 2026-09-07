@@ -57,6 +57,7 @@ export const sseEventNames = [
   'room.created',
   'room.updated',
   'message.created',
+  'file.deleted',
   'message.regenerated',
   'conversation.updated',
   'favorite.created',

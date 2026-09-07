@@ -16,6 +16,7 @@ class ContentPart:
     mime_type: str = ""
     size: int = 0
     artifact_id: str = ""
+    file_id: str = ""
     diff: str = ""
     title: str = ""
     description: str = ""
@@ -32,6 +33,7 @@ class ContentPart:
             mime_type=data.get("mime_type", ""),
             size=int(data.get("size", 0) or 0),
             artifact_id=data.get("artifact_id", ""),
+            file_id=data.get("file_id", ""),
             diff=data.get("diff", ""),
             title=data.get("title", ""),
             description=data.get("description", ""),
@@ -48,6 +50,7 @@ class ContentPart:
             "mime_type": self.mime_type,
             "size": self.size,
             "artifact_id": self.artifact_id,
+            "file_id": self.file_id,
             "diff": self.diff,
             "title": self.title,
             "description": self.description,

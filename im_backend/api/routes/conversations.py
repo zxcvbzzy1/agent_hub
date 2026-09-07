@@ -66,6 +66,7 @@ async def add_conversation_message(
             sender_id = current_user["user_id"]
         item = service.add_conversation_message(
             conversation_id=conversation_id,
+            user_id=current_user["user_id"],
             sender_type=sender_type,
             sender_id=sender_id,
             content_parts=[part.model_dump() for part in request.content_parts],
