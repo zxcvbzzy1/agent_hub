@@ -27,6 +27,7 @@ class ContentPartRequest(BaseModel):
     mime_type: str = ""
     size: int = 0
     artifact_id: str = ""
+    file_id: str = ""
     diff: str = ""
     title: str = ""
     description: str = ""

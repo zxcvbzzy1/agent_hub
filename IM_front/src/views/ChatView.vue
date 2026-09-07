@@ -53,6 +53,9 @@ import { useAuthStore } from '@/stores/auth'
 import { useIMStore } from '@/stores/im'
 import { imApi } from '@/api/im'
 import ArtifactCard from '@/components/ArtifactCard.vue'
+import ChatAttachments from '@/components/ChatAttachments.vue'
+import ChatFileCard from '@/components/ChatFileCard.vue'
+import { useChatFiles } from '@/composables/useChatFiles'
 import { renderMarkdown, looksLikeMarkdownDoc } from '@/utils/markdown'
 
 const im = useIMStore()
@@ -70,11 +73,20 @@ const editingAgentId = ref('')
 const isEditingAgent = computed(() => Boolean(editingAgentId.value))
 const savingPlanner = ref(false)
 const mentionOpen = ref(false)
-const composer = ref('')
+const draftKey = computed(() => {
+  if (im.currentRoom?.type === 'group') return `group:${im.currentRoom.room_id}:${im.currentGroupConversation?.conversation_id || ''}`
+  return im.currentConversation ? `conversation:${im.currentConversation.conversation_id}` : `agent:${im.currentAgentId}`
+})
+const chatFiles = useChatFiles(draftKey)
+const currentDraft = chatFiles.draft
+function draftField(field) {
+  return computed({ get: () => currentDraft.value[field], set: value => { currentDraft.value[field] = value } })
+}
+const composer = draftField('text')
 // 输入框「展开」：打开一个接近全屏的弹窗编辑器，与底部输入框共享同一份 composer。
 const composerExpanded = ref(false)
 const expandedComposerRef = ref(null)
-const mentions = ref([])
+const mentions = draftField('mentions')
 const drawerPlannerId = ref('default_planner')
 const traceOpenOverrides = ref({})
 // trace-card 懒加载缓存：{ [runId]: { status: 'loading'|'loaded'|'error', byId: Map<event_id, fullEvent> } }
@@ -93,10 +105,10 @@ watch(agentsSectionOpen, (v) => localStorage.setItem('im:sidebar:agents-open', v
 watch(groupsSectionOpen, (v) => localStorage.setItem('im:sidebar:groups-open', v))
 watch(feedSectionOpen, (v) => localStorage.setItem('im:sidebar:feed-open', v))
 const previewMessage = ref(null)
-const replyTarget = ref(null)
-const quoteTarget = ref(null)
+const replyTarget = draftField('reply')
+const quoteTarget = draftField('quote')
 // 选区编辑目标：来自 ArtifactCard 的 selection-edit 事件（选中代码 -> 在聊天中描述修改）
-const selectionEditTarget = ref(null)
+const selectionEditTarget = draftField('selection')
 const conversationQuery = ref('')
 const archivedOpen = ref(false)
 const uploadingAvatar = ref(false)
@@ -318,7 +330,7 @@ const chatScrollSignature = computed(() => {
       if (entry.kind === 'message') {
         const messageItem = entry.message
         const contentSize = (messageItem.content_parts || [])
-          .map((part) => part.text || part.diff || part.title || part.description || part.url || part.type || '')
+          .map((part) => part.text || part.diff || part.title || part.description || part.name || part.url || part.type || '')
           .join('').length
         return `m:${messageItem.message_id}:${messageItem.status}:${messageItem.created_at}:${contentSize}`
       }
@@ -403,8 +415,8 @@ function formatTime(ts) {
 
 function latestMessageText(item) {
   const source = item.last_message || item
-  const part = source.content_parts?.find((entry) => entry.text || entry.diff || entry.title)
-  return part?.text || part?.diff || part?.title || item.prompt || item.final || '暂无内容'
+  const part = source.content_parts?.find((entry) => entry.text || entry.diff || entry.title || entry.name)
+  return part?.text || part?.diff || part?.title || part?.name || item.prompt || item.final || '暂无内容'
 }
 
 function isTraceOpen(trace) {
@@ -841,16 +853,19 @@ function insertMention(agent) {
 }
 
 async function send() {
+  if (sending.value) return
   if (!im.currentRoom && !im.currentAgentId) {
     message.warning('请选择 agent 或群聊')
     return
   }
-  if (!composer.value.trim()) return
+  if (!composer.value.trim() && !currentDraft.value.items.length) return
+  if (chatFiles.busy.value) { message.warning('请等待上传完成，或重试／移除失败的附件'); return }
+  const submittedDraft = currentDraft.value
   sending.value = true
   try {
     const userText = composer.value.trim()
     let text = userText
-    const metadata = { client: 'IM_front' }
+    const metadata = { client: 'IM_front', client_message_id: submittedDraft.requestId }
     if (selectionEditTarget.value) {
       const t = selectionEditTarget.value
       const snippet = String(t.selection?.text || '').slice(0, 2000)
@@ -868,7 +883,7 @@ async function send() {
     }
     const payload = {
       sender_type: 'user',
-      content_parts: [{ type: 'text', text }],
+      content_parts: [...(text ? [{ type: 'text', text }] : []), ...submittedDraft.items.map(item => ({ type: 'file', file_id: item.file.file_id }))],
       mentions: [...mentions.value],
       metadata,
     }
@@ -881,24 +896,46 @@ async function send() {
         planner_agent_id: im.currentRoom?.metadata?.planner_agent_id || drawerPlannerId.value || 'default_planner',
         context_id: dispatchOptions.context_id,
         max_replan_rounds: dispatchOptions.max_replan_rounds,
+        onConversationCreated: (conversationId) => {
+          chatFiles.moveDraft(submittedDraft, `conversation:${conversationId}`)
+        },
+        onCommitted: () => {
+          submittedDraft.requestId = crypto.randomUUID()
+          submittedDraft.text = ''
+          submittedDraft.items.splice(0)
+          submittedDraft.mentions.splice(0)
+          submittedDraft.reply = null
+          submittedDraft.quote = null
+          submittedDraft.selection = null
+          // New conversations may now use a different draft object.
+          if (currentDraft.value.items === submittedDraft.items) {
+            currentDraft.value.text = ''
+            currentDraft.value.reply = currentDraft.value.quote = currentDraft.value.selection = null
+          }
+          mentionOpen.value = false
+        },
       },
     )
-    composer.value = ''
-    mentions.value = []
-    mentionOpen.value = false
-    replyTarget.value = null
-    quoteTarget.value = null
-    selectionEditTarget.value = null
     await scrollToBottom()
+    return true
+  } catch {
+    // HTTP interceptor displays the error; the submitted draft remains available.
+    return false
   } finally {
     sending.value = false
   }
 }
 
 // 从展开弹窗发送：复用底层 send()，成功（composer 被清空）后关闭弹窗；失败则保留文本继续编辑。
+function handleExpandedKeydown(event) {
+  if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault()
+    sendFromExpanded()
+  }
+}
+
 async function sendFromExpanded() {
-  await send()
-  if (!composer.value.trim()) composerExpanded.value = false
+  if (await send()) composerExpanded.value = false
 }
 
 // 展开弹窗打开后聚焦到大编辑区，光标落到文末便于继续输入。
@@ -929,6 +966,12 @@ async function approveConfirmation(part, confirmationMessage) {
   message.success('已批准并启动外部 Agent')
 }
 
+function onFileDeleted(fileId) {
+  im.markFileDeleted(fileId)
+  chatFiles.markDeleted(fileId)
+}
+watch(() => im.deletedFileIds, (ids) => { for (const id of ids) chatFiles.markDeleted(id) }, { deep: true })
+
 function copyText(text) {
   navigator.clipboard?.writeText(text)
   message.success('已复制')
@@ -937,7 +980,7 @@ function copyText(text) {
 function messagePlainText(item) {
   if (!item) return ''
   return (item.content_parts || [])
-    .map((part) => part.text || part.diff || part.title || part.description || part.url || part.metadata?.artifact?.content || '')
+    .map((part) => part.text || part.diff || part.title || part.description || part.name || part.url || part.metadata?.artifact?.content || '')
     .filter(Boolean)
     .join('\n')
     .trim()
@@ -954,11 +997,11 @@ function quoteRefSummary(item) {
 }
 
 function isRegenerable(item) {
-  if (im.currentRoom?.type === 'group') return false
+  if (im.currentRoom?.type === 'group') return item.sender_type === 'user' && ['sent', 'failed', 'cancelled'].includes(item.status)
   // agent 回复：随时可重新生成。
   if (item.sender_type === 'agent') return true
   // 用户消息：执行失败 / 被中断时没有 agent 回复可点，直接在用户消息上提供重试。
-  return item.sender_type === 'user' && ['failed', 'cancelled'].includes(item.status)
+  return item.sender_type === 'user' && ['sent', 'failed', 'cancelled'].includes(item.status)
 }
 
 // 失败/取消的用户消息走「重试」，正常的 agent 回复走「重新生成」。
@@ -1162,7 +1205,9 @@ function emitSidebarCollapseState(collapsed) {
 async function regenerateMessage(item) {
   const label = regenerateLabel(item)
   try {
-    await im.regenerateReply(item)
+    if (im.currentRoom?.type === 'group') {
+      await im.dispatch(item.message_id, { auto_start: dispatchOptions.auto_start, planner_agent_id: im.currentRoom.metadata?.planner_agent_id || 'default_planner', ...dispatchOptions })
+    } else await im.regenerateReply(item)
     message.success(item.sender_type === 'user' ? '已重新发起' : '已请求重新生成')
   } catch (error) {
     message.error(`${label}失败`)
@@ -1792,6 +1837,7 @@ onUnmounted(() => {
                 <div v-if="part.type === 'text'" class="text-part md-body" v-html="renderMarkdown(part.text)"></div>
                 <pre v-else-if="part.type === 'code'" class="code-part"><code>{{ part.text }}</code></pre>
                 <img v-else-if="part.type === 'image'" class="image-part" :src="part.url" :alt="part.name || 'image'" />
+                <ChatFileCard v-else-if="part.type === 'file' && part.file_id" :part="part" @deleted="onFileDeleted" />
                 <a-button v-else-if="part.type === 'file'" :href="part.url" target="_blank">
                   <template #icon><FileTextOutlined /></template>
                   {{ part.name || '文件' }}
@@ -1981,6 +2027,8 @@ onUnmounted(() => {
       </div>
 
       <footer class="composer">
+        <ChatAttachments :items="currentDraft.items" :target-key="draftKey" :disabled="sending || (!im.currentAgentId && !im.currentRoom)"
+          @upload="chatFiles.uploadFiles" @reuse="chatFiles.addExisting" @remove="chatFiles.removeItem" @retry="chatFiles.retry" />
         <div v-if="selectionEditTarget" class="composer-refs">
           <div class="composer-ref">
             <EditOutlined />
@@ -2019,6 +2067,7 @@ onUnmounted(() => {
           </div>
           <a-textarea
             ref="composerRef"
+            :disabled="sending"
             :value="composer"
             :auto-size="{ minRows: 2, maxRows: 6 }"
             :placeholder="im.currentRoom?.type === 'group' ? '输入消息。输入 @ 可选择群内 agent' : '输入消息，当前会话历史会注入给这个 agent'"
@@ -2035,7 +2084,7 @@ onUnmounted(() => {
           <a-space v-if="im.currentRoom?.type === 'group'">
             <a-input-number v-model:value="dispatchOptions.max_replan_rounds" :min="0" :max="10" />
           </a-space>
-          <a-button type="primary" :loading="sending" @click="send">
+          <a-button type="primary" :loading="sending" :disabled="chatFiles.busy.value" @click="send">
             <template #icon><SendOutlined /></template>
             发送
           </a-button>
@@ -2077,6 +2126,7 @@ onUnmounted(() => {
             <div v-if="part.type === 'text'" class="text-part md-body" v-html="renderMarkdown(part.text)"></div>
             <pre v-else-if="part.type === 'code'" class="code-part"><code>{{ part.text }}</code></pre>
             <img v-else-if="part.type === 'image'" class="image-part" :src="part.url" :alt="part.name || 'image'" />
+            <ChatFileCard v-else-if="part.type === 'file' && part.file_id" :part="part" @deleted="onFileDeleted" />
             <a-button v-else-if="part.type === 'file'" :href="part.url" target="_blank">
               <template #icon><FileTextOutlined /></template>
               {{ part.name || '文件' }}
@@ -2453,17 +2503,19 @@ onUnmounted(() => {
       </div>
       <a-textarea
         ref="expandedComposerRef"
+        :disabled="sending"
         v-model:value="composer"
         class="composer-expand-editor"
         :placeholder="im.currentRoom?.type === 'group' ? '输入消息。输入 @ 可选择群内 agent' : '输入消息，当前会话历史会注入给这个 agent'"
-        @keydown.ctrl.enter.prevent="sendFromExpanded"
-        @keydown.meta.enter.prevent="sendFromExpanded"
+        @keydown="handleExpandedKeydown"
       />
+      <ChatAttachments :items="currentDraft.items" :target-key="draftKey" :disabled="sending || (!im.currentAgentId && !im.currentRoom)"
+          @upload="chatFiles.uploadFiles" @reuse="chatFiles.addExisting" @remove="chatFiles.removeItem" @retry="chatFiles.retry" />
       <div class="composer-expand-foot">
         <span class="composer-expand-hint">Ctrl / ⌘ + Enter 发送</span>
         <a-space>
           <a-button @click="composerExpanded = false">取消</a-button>
-          <a-button type="primary" :loading="sending" @click="sendFromExpanded">
+          <a-button type="primary" :loading="sending" :disabled="chatFiles.busy.value" @click="sendFromExpanded">
             <template #icon><SendOutlined /></template>
             发送
           </a-button>

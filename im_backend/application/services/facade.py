@@ -25,7 +25,9 @@ class IMService:
         bridge: AgentFlowBridge,
         room_events: RoomEventStreamService,
         default_workdir: str | Path,
+        files=None,
     ) -> None:
+        self.files = files
         self._store = store
         self._bridge = bridge
         self._events = room_events
@@ -33,7 +35,7 @@ class IMService:
         self.favorites = FavoriteService(store=store, events=room_events)
         self.agents = IMAgentService(bridge=bridge, cleanup=self.cleanup)
         self.rooms = RoomService(store=store, bridge=bridge, events=room_events, cleanup=self.cleanup, agents=self.agents)
-        self.messages = GroupMessageService(store=store, bridge=bridge, events=room_events, rooms=self.rooms, agents=self.agents)
+        self.messages = GroupMessageService(store=store, bridge=bridge, events=room_events, rooms=self.rooms, agents=self.agents, files=files)
         self.actions = MessageActionService(store=store, events=room_events)
         self.conversations = ConversationService(
             store=store,
@@ -43,6 +45,7 @@ class IMService:
             agents=self.agents,
             favorites=self.favorites,
             cleanup=self.cleanup,
+            files=files,
         )
         self.runs = GroupRunService(
             store=store,
@@ -64,6 +67,9 @@ class IMService:
         self._planner_final_writer = PlannerFinalReplyWriter(store=store, messages=self.messages)
         bridge.events.subscribe(self._planner_final_writer.handle_event)
 
+    def _hydrate(self, items):
+        return self.files.hydrate(items) if self.files else items
+
     def create_room(self, **kwargs) -> dict[str, Any]:
         return self.rooms.create_room(**kwargs)
 
@@ -80,7 +86,7 @@ class IMService:
         return self.rooms.delete_room(room_id)
 
     def list_messages(self, room_id: str, conversation_id: str | None = None) -> list[dict[str, Any]]:
-        return self.messages.list_messages(room_id, conversation_id=conversation_id)
+        return self._hydrate(self.messages.list_messages(room_id, conversation_id=conversation_id))
 
     def list_messages_window(
         self,
@@ -90,12 +96,13 @@ class IMService:
         limit: int | None = None,
         before_id: str | None = None,
     ) -> tuple[list[dict[str, Any]], bool]:
-        return self.messages.list_messages_window(
+        items, more = self.messages.list_messages_window(
             room_id, conversation_id=conversation_id, limit=limit, before_id=before_id
         )
+        return self._hydrate(items), more
 
     def get_message(self, message_id: str) -> dict[str, Any]:
-        return self.messages.get_message(message_id)
+        return self._hydrate([self.messages.get_message(message_id)])[0]
 
     def add_message(self, **kwargs) -> dict[str, Any]:
         return self.messages.add_message(**kwargs)
@@ -127,7 +134,7 @@ class IMService:
         return self.conversations.get_conversation(conversation_id)
 
     def list_conversation_messages(self, conversation_id: str) -> list[dict[str, Any]]:
-        return self.conversations.list_conversation_messages(conversation_id)
+        return self._hydrate(self.conversations.list_conversation_messages(conversation_id))
 
     def list_conversation_messages_window(
         self,
@@ -136,9 +143,10 @@ class IMService:
         limit: int | None = None,
         before_id: str | None = None,
     ) -> tuple[list[dict[str, Any]], bool]:
-        return self.conversations.list_conversation_messages_window(
+        items, more = self.conversations.list_conversation_messages_window(
             conversation_id, limit=limit, before_id=before_id
         )
+        return self._hydrate(items), more
 
     def list_agent_conversations(self, agent_id: str, user_id: str = "") -> list[dict[str, Any]]:
         return self.conversations.list_agent_conversations(agent_id, user_id=user_id)

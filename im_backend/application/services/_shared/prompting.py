@@ -27,6 +27,7 @@ def compose_prompt_with_references(
     *,
     lookup: Callable[[str], dict[str, Any] | None],
     text_of: Callable[[dict[str, Any]], str],
+    reference_text_of: Callable[[dict[str, Any]], str] | None = None,
 ) -> str:
     """把用户消息的 reply_to / quote_of 引用内容拼进 prompt。
 
@@ -46,7 +47,10 @@ def compose_prompt_with_references(
         ref = lookup(ref_id)
         if not ref:
             continue
-        ref_text = _clip(text_of(ref))
+        # References must stay within the current chat, especially attachment paths.
+        if any(ref.get(key, "") != message.get(key, "") for key in ("room_id", "conversation_id")):
+            continue
+        ref_text = reference_text_of(ref) if reference_text_of else _clip(text_of(ref))
         if not ref_text:
             continue
         blocks.append(f"【{label} {_sender_label(ref)}】\n{ref_text}")

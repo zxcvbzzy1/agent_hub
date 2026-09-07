@@ -95,6 +95,7 @@ class GroupRunService:
             message,
             lookup=lambda mid: find_im_message(self._store, mid),
             text_of=self._messages.message_text,
+            reference_text_of=(lambda ref: self._messages.files.context_text(ref, reference=True)) if getattr(self._messages, "files", None) else None,
         )
         target_agent_ids = self._select_target_agents(room, message)
         profiles = [self._runtime_profile(agent_id, user_id=user_id) for agent_id in target_agent_ids]

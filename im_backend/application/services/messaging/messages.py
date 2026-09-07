@@ -21,7 +21,9 @@ class GroupMessageService:
         events: RoomEventStreamService,
         rooms: RoomService,
         agents: IMAgentService,
+        files=None,
     ) -> None:
+        self.files = files
         self._store = store
         self._bridge = bridge
         self._events = events
@@ -69,6 +71,7 @@ class GroupMessageService:
         sender_type: str,
         sender_id: str,
         content_parts: list[dict[str, Any]],
+        user_id: str = "",
         conversation_id: str = "",
         mentions: list[str] | None = None,
         reply_to: str = "",
@@ -78,6 +81,10 @@ class GroupMessageService:
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         room = self._rooms.ensure_group_room(room_id)
+        if conversation_id:
+            conversation = self._store.find_one("im_conversations", {"conversation_id": conversation_id})
+            if not conversation or conversation.get("room_id") != room_id:
+                raise ValueError("会话不属于该群聊")
         parts = [ContentPart.from_dict(part) for part in content_parts]
         if not parts:
             raise ValueError("content_parts 不能为空")
@@ -98,7 +105,8 @@ class GroupMessageService:
             status=status,
             metadata=metadata or {},
         )
-        record = self._store.insert_one("im_messages", message.to_dict())
+        record = (self.files.save_message(message.to_dict(), user_id or sender_id)
+                  if self.files else self._store.insert_one("im_messages", message.to_dict()))
         self._store.update_one("im_rooms", {"room_id": room_id}, {"updated_at": record["created_at"]})
         self._events.publish(room_id, "message.created", {"message": record})
         return record
@@ -129,4 +137,4 @@ class GroupMessageService:
         return messages[:50]
 
     def message_text(self, message: dict[str, Any]) -> str:
-        return extract_message_text(message)
+        return self.files.context_text(message) if self.files else extract_message_text(message)

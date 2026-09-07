@@ -1,4 +1,5 @@
 import { defineStore } from 'pinia'
+import { message as toast } from 'ant-design-vue'
 import { API_BASE_URL } from '@/api/http'
 import { imApi } from '@/api/im'
 import { sseEventNames } from '@/utils/runtimeEvents'
@@ -34,6 +35,7 @@ export const useIMStore = defineStore('im', {
     agents: [],
     rooms: [],
     currentAgentId: '',
+    deletedFileIds: [],
     currentConversation: null,
     currentGroupRoom: null,
     currentRoom: null,
@@ -494,37 +496,45 @@ export const useIMStore = defineStore('im', {
       return r.item
     },
     async sendMessage(payload, options = {}) {
-      if (this.mode === 'agent' && this.currentAgentId) {
-        await this.createConversation(this.currentAgentId)
+      // Capture destination before any await: switching chats must not redirect the send.
+      const roomId = this.mode === 'group' ? this.currentRoom?.room_id : ''
+      const agentId = this.currentAgentId
+      let conversationId = roomId ? this.currentGroupConversation?.conversation_id : this.currentConversation?.conversation_id
+      if (!roomId && !conversationId && agentId) {
+        const created = await imApi.createAgentConversation(agentId, { metadata: { source: 'IM_front' } })
+        conversationId = created.item.conversation_id
+        options.onConversationCreated?.(conversationId)
+        if (this.mode === 'agent' && this.currentAgentId === agentId) await this.selectConversation(conversationId)
       }
-      if (!this.currentRoom && !this.currentConversation) throw new Error('请先选择或创建会话')
-      const isGroup = this.mode === 'group' && this.currentRoom
-      const response = isGroup
-        ? await imApi.addMessage(this.currentRoom.room_id, {
-            ...payload,
-            conversation_id: this.currentGroupConversation?.conversation_id,
-          })
-        : await imApi.addConversationMessage(this.currentConversation.conversation_id, payload)
+      if (!roomId && !conversationId) throw new Error('请先选择或创建会话')
+      const isCurrent = () => roomId
+        ? this.currentRoom?.room_id === roomId && (this.currentGroupConversation?.conversation_id || '') === (conversationId || '')
+        : this.currentConversation?.conversation_id === conversationId
+      const response = roomId
+        ? await imApi.addMessage(roomId, { ...payload, conversation_id: conversationId })
+        : await imApi.addConversationMessage(conversationId, payload)
       const messageItem = response.item
-      if (isGroup) {
-        const dispatchResponse = await imApi.dispatch(this.currentRoom.room_id, {
-          message_id: messageItem.message_id,
-          ...options,
-        })
-        if (dispatchResponse.item?.type === 'confirmation') {
-          this.mergeMessage(dispatchResponse.item.confirmation)
-          await this.refreshMessages()
+      options.onCommitted?.(messageItem)
+      if (isCurrent()) this.mergeMessage(messageItem)
+      try {
+        if (roomId) {
+          const { onCommitted, onConversationCreated, ...dispatchOptions } = options
+          const result = await imApi.dispatch(roomId, { message_id: messageItem.message_id, ...dispatchOptions })
+          if (isCurrent() && result.item?.type === 'confirmation') this.mergeMessage(result.item.confirmation)
+          if (isCurrent()) await this.fetchTasks()
+        } else {
+          await imApi.replyConversation(conversationId, { message_id: messageItem.message_id, auto_start: options.auto_start ?? true })
         }
-        await this.fetchTasks()
-      } else {
-        await imApi.replyConversation(this.currentConversation.conversation_id, {
-          message_id: messageItem.message_id,
-          auto_start: options.auto_start ?? true,
-        })
-        await this.refreshMessages()
-        await this.fetchConversations()
+        if (isCurrent()) await this.refreshMessages()
+      } catch {
+        toast.warning('消息已发送，启动或刷新失败；可在原消息上重试，无需重新发送')
       }
       return messageItem
+    },
+    markFileDeleted(fileId) {
+      if (!this.deletedFileIds.includes(fileId)) this.deletedFileIds.push(fileId)
+      this.messages = this.messages.map(item => ({ ...item, content_parts: (item.content_parts || []).map(part =>
+        part.file_id === fileId ? { ...part, metadata: { ...part.metadata, file_status: 'delete' } } : part) }))
     },
     async dispatch(messageId, payload = {}) {
       return imApi.dispatch(this.currentGroupRoom.room_id, { message_id: messageId, ...payload })
@@ -726,6 +736,7 @@ export const useIMStore = defineStore('im', {
           (c) => c.confirmation_id !== event.payload.confirmation_id,
         )
       }
+      if (event.name === 'file.deleted') this.markFileDeleted(event.payload?.file_id)
       if (event.name === 'message.regenerated') {
         this.refreshMessages().catch(() => {})
       }
