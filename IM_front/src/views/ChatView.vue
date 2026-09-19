@@ -1721,7 +1721,7 @@ onUnmounted(() => {
           </a-button>
         </a-tooltip>
       </div>
-      <header class="chat-hero" @click="drawerOpen = true">
+      <header class="chat-hero" @click="drawerOpen = true" :hidden="sidebarCollapsed">
         <div class="hero-title">
           <a-avatar :size="44" :src="heroAvatar">
             <TeamOutlined v-if="im.currentRoom?.type === 'group'" />
