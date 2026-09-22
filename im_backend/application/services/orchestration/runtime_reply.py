@@ -19,7 +19,7 @@ class PlannerFinalReplyWriter:
         self._store = store
         self._messages = messages
 
-    def handle_event(self, event: dict[str, Any]) -> None:
+    async def handle_event(self, event: dict[str, Any]) -> None:
         if event.get("name") != "planner.final":
             return
         payload = event.get("payload") or {}
@@ -46,7 +46,7 @@ class PlannerFinalReplyWriter:
                 return
 
         planner_id = payload.get("planner_id") or payload.get("agent_id") or "default_planner"
-        self._messages.add_message(
+        await self._messages.add_message(
             room_id=room_id,
             conversation_id=user_message.get("conversation_id", ""),
             sender_type="agent",

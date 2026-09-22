@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import Header, APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from im_backend.api.core import get_current_user, get_im_service, get_room_events
@@ -25,7 +25,7 @@ async def create_room(
     service: IMService = Depends(get_im_service),
 ):
     try:
-        item = service.create_room(
+        item = await service.create_room(
             type=request.type,
             title=request.title,
             member_agent_ids=request.member_agent_ids,
@@ -60,7 +60,7 @@ async def update_room(
 ):
     _ = current_user
     try:
-        item = service.update_room(
+        item = await service.update_room(
             room_id,
             title=request.title,
             avatar_url=request.avatar_url,
@@ -83,7 +83,7 @@ async def delete_room(
 ):
     _ = current_user
     try:
-        return {"item": service.delete_room(room_id)}
+        return {"item": await service.delete_room(room_id)}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -102,13 +102,13 @@ async def list_messages(
         # 不带 limit 时返回全量（兼容旧行为）；带 limit 时返回懒加载窗口 + has_more。
         if limit is None:
             return {
-                "items": service.list_messages(room_id, conversation_id=conversation_id),
+                "items": await service.overlay_message_states(service.list_messages(room_id, conversation_id=conversation_id)),
                 "has_more": False,
             }
         items, has_more = service.list_messages_window(
             room_id, conversation_id=conversation_id, limit=limit, before_id=before_id
         )
-        return {"items": items, "has_more": has_more}
+        return {"items": await service.overlay_message_states(items), "has_more": has_more}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -127,7 +127,7 @@ async def add_message(
         sender_id = request.sender_id
         if sender_type == "user":
             sender_id = current_user["user_id"]
-        item = service.add_message(
+        item = await service.add_message(
             room_id=room_id,
             conversation_id=request.conversation_id,
             user_id=current_user["user_id"],
@@ -153,7 +153,7 @@ async def list_room_tasks(
     service: IMService = Depends(get_im_service),
 ):
     try:
-        return {"items": service.list_room_tasks(room_id, conversation_id=conversation_id)}
+        return {"items": await service.list_room_tasks(room_id, conversation_id=conversation_id)}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -167,7 +167,7 @@ async def list_room_conversations(
     service: IMService = Depends(get_im_service),
 ):
     try:
-        return {"items": service.list_room_conversations(room_id, user_id=current_user["user_id"])}
+        return {"items": await service.list_room_conversations(room_id, user_id=current_user["user_id"])}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -182,7 +182,7 @@ async def create_room_conversation(
     service: IMService = Depends(get_im_service),
 ):
     try:
-        item = service.create_room_conversation(
+        item = await service.create_room_conversation(
             room_id=room_id,
             created_by=current_user["user_id"],
             title=request.title,
@@ -220,7 +220,7 @@ async def dispatch_message(
     return {"item": item}
 
 
-@router.post("/rooms/{room_id}/runs/{run_id}/cancel")
+@router.post("/rooms/{room_id}/runs/{run_id}/cancel", status_code=202)
 async def cancel_room_run(
     room_id: str,
     run_id: str,
@@ -228,7 +228,7 @@ async def cancel_room_run(
     service: IMService = Depends(get_im_service),
 ):
     try:
-        item = service.cancel_room_run(
+        item = await service.cancel_room_run(
             room_id=room_id,
             run_id=run_id,
             actor_id=current_user["user_id"],
@@ -243,6 +243,7 @@ async def cancel_room_run(
 @router.get("/rooms/{room_id}/events")
 async def stream_room_events(
     room_id: str,
+    last_event_id: str | None = Header(default=None),
     service: IMService = Depends(get_im_service),
     events: RoomEventStreamService = Depends(get_room_events),
 ):
@@ -254,6 +255,7 @@ async def stream_room_events(
         events.stream_merged(
             room_id,
             runtime_events=service._bridge.events,
+            last_id=last_event_id,
             runtime_ids_provider=lambda: service.list_room_run_ids(room_id),
         ),
         media_type="text/event-stream",

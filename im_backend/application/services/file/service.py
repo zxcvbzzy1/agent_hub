@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import asyncio
 import logging
 import threading
 import time
@@ -226,7 +227,12 @@ class FileService:
             text = text[:2000] + '\n…（引用内容已截断）'
         return '\n\n'.join(filter(None, [text, '\n'.join(paths)]))
 
-    def delete(self, file_id: str, user_id: str) -> dict:
+    async def delete(self, file_id: str, user_id: str) -> dict:
+        record = await asyncio.to_thread(self._delete_sync, file_id, user_id)
+        await self._publish_deleted(file_id)
+        return record
+
+    def _delete_sync(self, file_id: str, user_id: str) -> dict:
         with self._lock:
             record = self.get(file_id)
             if record['owner_user_id'] != user_id:
@@ -234,22 +240,27 @@ class FileService:
             if record['status'] == 'delete':
                 return record
             record = self.store.update_one('im_files', {'file_id': file_id}, {'status': 'deleting'})
-            self._publish_deleted(file_id)
             self.storage.delete(record)
             return self.store.update_one('im_files', {'file_id': file_id}, {'status': 'delete', 'expires_at': None})
 
-    def _publish_deleted(self, file_id):
+    async def _publish_deleted(self, file_id):
         if not self.events:
             return
         refs = self.store.find_many('im_conversation_files', {'file_id': file_id})
         scopes = {r.get('room_id') or r.get('conversation_id') for r in refs}
         for scope in filter(None, scopes):
             try:
-                self.events.publish(scope, 'file.deleted', {'file_id': file_id})
+                await self.events.publish(scope, 'file.deleted', {'file_id': file_id})
             except Exception:
                 logger.exception('Could not publish file deletion %s', file_id)
 
-    def sweep(self):
+    async def sweep(self):
+        deleted = await asyncio.to_thread(self._sweep_sync)
+        for file_id in deleted:
+            await self._publish_deleted(file_id)
+
+    def _sweep_sync(self):
+        deleted = []
         with self._lock:
             # Activation interrupted after message commit: recover before expiring anything.
             for record in self.store.find_many('im_files', {'status': 'attached', 'expires_at': {'$ne': None}}):
@@ -264,8 +275,11 @@ class FileService:
             candidates += self.store.find_many('im_files', {'status': 'pending', 'expires_at': {'$lte': time.time()}})
             for record in candidates:
                 try:
-                    self.delete(record['file_id'], record['owner_user_id'])
+                    self._delete_sync(record['file_id'], record['owner_user_id'])
+                    deleted.append(record['file_id'])
                 except Exception:
                     logger.exception('File cleanup will retry: %s', record['file_id'])
 
             self.storage.sweep_orphans(lambda fid: self.store.find_one('im_files', {'file_id': fid}) is not None)
+
+        return deleted

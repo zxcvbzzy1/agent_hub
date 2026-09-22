@@ -18,7 +18,7 @@ async def record_action(
     service: IMService = Depends(get_im_service),
 ):
     try:
-        item = service.record_action(
+        item = await service.record_action(
             message_id=message_id,
             action_type=request.action_type,
             actor_id=current_user["user_id"],
@@ -37,7 +37,7 @@ async def favorite_message(
     service: IMService = Depends(get_im_service),
 ):
     try:
-        item = service.favorite_message(
+        item = await service.favorite_message(
             message_id=message_id,
             title=request.title,
             created_by=current_user["user_id"],

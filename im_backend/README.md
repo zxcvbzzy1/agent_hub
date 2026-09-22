@@ -68,3 +68,63 @@ Claude Code / Codex agent 第一版默认需要人工确认；未确认前只生
 /Users/zxcvbzzy1/miniconda3/envs/MY_env/bin/python -m pytest im_backend/checks/file_upload_test.py im_backend/tests/test_prompting.py -v
 npm --prefix IM_front run build
 ```
+
+## Redis 运行时（第一阶段）
+
+安装依赖后，将根目录 `redis.env.example` 中的配置加入 `.env`。
+`REDIS_URL` 支持完整的 Redis URL；所有同一部署的 API worker 必须使用相同的
+`REDIS_KEY_PREFIX`，测试和其他部署应使用不同前缀。Redis 不可用时服务启动失败，
+请求阶段返回 503，不会降级到进程内事件队列。
+
+```bash
+/Users/zxcvbzzy1/miniconda3/envs/MY_env/bin/python -m pip install -r agent_flow/requirements-api.txt
+/Users/zxcvbzzy1/miniconda3/envs/MY_env/bin/python -m uvicorn im_backend.api.index:app --host 127.0.0.1 --port 8010 --workers 2
+```
+
+本阶段 worker 指 API 进程。Agent 任务仍由创建它的进程执行；Redis 不负责任务排队或
+执行接管。共享工作目录仍使用原有文件系统。独立运行 `agent_flow.api` 时也要配置 Redis。
+
+### 事件与续传
+
+- `events:run:{runtime_scope_id}` 保存 Agent 事件；`events:scope:{scope_id}` 保存 IM 合流。
+  键名前统一加配置前缀。群聊事件 scope 是 room ID；单聊是 conversation ID。
+- 群聊先建立消息与 Run 的关联及 Redis 路由，再启动执行；运行事件发布到两个 Stream。
+- 非增量事件继续归档 Mongo；`llm.delta`、`agent.delta` 仅保存 Redis。
+- 每条 Stream 最多约 100,000 条，按最近 24 小时裁剪，并在闲置 24 小时后过期。
+  数量限制可能缩短高流量会话的实际续传窗口。裁剪在写入和开始读取时执行。
+- SSE `id` 是当前 Stream 的 Redis ID，JSON `event_id` 仍是业务去重 ID。
+  客户端重连发送 `Last-Event-ID`；多个连接独立 `XREAD`，没有竞争消费组。
+- 首次连接合并 Mongo 历史与 Redis 增量，发送 `stream.ready` 后进入实时流。
+  游标过期发送 `stream.reset`，客户端清空事件视图并重新同步。历史 token 被裁剪后，
+  只能恢复归档事件和最终消息。每 15 秒发送空闲心跳。
+- 查询执行详情继续读取 Mongo，旧事件无需迁移；旧历史没有 token 续传能力。
+
+### 状态、取消与确认
+
+Redis `state:{kind}:{target_id}` 保存当前状态，`active` 索引活跃任务。
+群聊 kind 为 `orchestration`、target 为 Run ID；单聊 kind 为 `dm_reply`、target 为用户消息 ID。
+单聊的运行事件范围仍然是 conversation ID，两种 ID 不可混用。
+
+取消接口返回 HTTP 202；`cancel_requested` 表示取消请求已登记，并非执行已停止。
+所属进程每 500ms 检查控制记录，完成取消后再推送终态。人工确认记录也存放 Redis，
+可以在任意 API worker 提交结果。运行监控和消息列表合并 Redis 当前状态与 Mongo 历史。
+
+每个进程每 10 秒刷新心跳，心跳有效期 30 秒。失联任务由其他活跃进程标记中断，
+不会自动接管或重跑。API 启动不再批量取消其他进程的任务。
+上线前停止旧版本进程中的运行任务；没有 Redis 归属记录的旧运行中任务不迁移执行。
+
+异步接口改造后，调用事件 `publish()`、Run 创建/查询/取消，以及会发布事件的 IM
+业务方法时必须 `await`。纯 Mongo 历史读取仍保持同步。资源通过 FastAPI lifespan
+初始化和关闭，测试中也应使用同一事件循环并管理 lifespan/运行时连接。
+
+### 验证
+
+```bash
+/Users/zxcvbzzy1/miniconda3/envs/MY_env/bin/python -m pytest agent_flow/api_services_test.py im_backend/tests/test_redis_runtime.py im_backend/tests/test_redis_im_integration.py im_backend/tests/test_run_monitor.py im_backend/tests/test_coding_unification_and_builder.py -v
+cd IM_front
+npm run build
+```
+
+第一组测试使用独立 Redis key 前缀并启动子进程验证跨进程广播与控制；第二组使用
+独立 Mongo 测试数据库及临时上传目录验证真实 IM 接口。均不调用真实 LLM，结束时
+只清理测试创建的命名空间，不使用 `FLUSHDB` 或 `FLUSHALL`。

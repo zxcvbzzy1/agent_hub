@@ -15,7 +15,7 @@ class MessageActionService:
     def get_message(self, message_id: str) -> dict[str, Any]:
         return require_im_message(self._store, message_id)
 
-    def record_action(
+    async def record_action(
         self,
         *,
         message_id: str,
@@ -33,7 +33,7 @@ class MessageActionService:
         )
         record = self._store.insert_one("im_message_actions", action.to_dict())
         stream_id = message.get("room_id") or message.get("conversation_id")
-        self._events.publish(
+        await self._events.publish(
             stream_id,
             "message.action",
             {"message_id": message_id, "action": record},

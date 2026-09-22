@@ -25,10 +25,10 @@ async def list_active_runs(
     桌面端进程页/顶栏徽标轮询本接口；items 为活跃（可中断），recent 为最近结束（只读）。
     """
     _ = current_user
-    return service.monitor.list_active_runs()
+    return await service.monitor.list_active_runs()
 
 
-@router.post("/runs/{run_id}/cancel")
+@router.post("/runs/{run_id}/cancel", status_code=202)
 async def cancel_any_run(
     run_id: str,
     service: IMService = Depends(get_im_service),
@@ -50,7 +50,7 @@ async def list_run_confirmations(
 ):
     """列出该 run 待处理的人工确认（前端重连后可补拉，避免错过 SSE）。"""
     _ = current_user
-    return {"items": service._bridge.human_confirmations.list_pending(run_id)}
+    return {"items": await service._bridge.human_confirmations.list_pending(run_id)}
 
 
 @router.post("/runs/{run_id}/confirmations/{confirmation_id}")
@@ -64,7 +64,7 @@ async def resolve_run_confirmation(
     """解析一条人工确认（允许/拒绝），唤醒在 agent_flow 侧等待的工具调用。"""
     _ = current_user
     try:
-        return service._bridge.human_confirmations.resolve(
+        return await service._bridge.human_confirmations.resolve(
             run_id=run_id,
             confirmation_id=confirmation_id,
             approved=request.approved,

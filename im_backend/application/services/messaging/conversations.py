@@ -42,9 +42,9 @@ class ConversationService:
         self._agents = agents
         self._favorites = favorites
         self._default_workdir = str(Path(default_workdir).expanduser().resolve())
-        self._agent_locks: dict[str, asyncio.Lock] = {}
         self._reply_tasks: dict[str, asyncio.Task] = {}
-        self._cleanup = cleanup or IMCleanupService(store)
+        self.runtime = bridge.runtime
+        self._cleanup = cleanup or IMCleanupService(store, bridge.runtime)
 
     def get_conversation(self, conversation_id: str) -> dict[str, Any]:
         conversation = self._store.find_one("im_conversations", {"conversation_id": conversation_id})
@@ -109,7 +109,7 @@ class ConversationService:
         conversations.sort(key=lambda item: not item.get("pinned", False))
         return conversations
 
-    def update_conversation(
+    async def update_conversation(
         self,
         conversation_id: str,
         *,
@@ -138,7 +138,7 @@ class ConversationService:
             return self.get_conversation(conversation_id)
         record = self._store.update_one("im_conversations", {"conversation_id": conversation_id}, updates)
         record = record or self.get_conversation(conversation_id)
-        self._events.publish(conversation_id, "conversation.updated", {"conversation": record})
+        await self._events.publish(conversation_id, "conversation.updated", {"conversation": record})
         return record
 
     async def regenerate_reply(
@@ -157,10 +157,16 @@ class ConversationService:
 
         # 取消可能仍在运行的旧回复任务，并等它完全结算（状态写回 cancelled、回调 pop）后再继续，
         # 否则被取消的旧任务会在新任务注册后才把用户消息改回 cancelled，并把新任务从 _reply_tasks 中 pop 掉。
-        task = self._reply_tasks.get(message_id)
-        if task and not task.done():
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
+        current = await self.runtime.get_state("dm_reply", message_id)
+        if current and current["status"] in {"pending", "running"}:
+            await self.runtime.request_cancel("dm_reply", message_id)
+            for _ in range(20):
+                await asyncio.sleep(0.1)
+                current = await self.runtime.get_state("dm_reply", message_id)
+                if not current or current["status"] not in {"pending", "running"}:
+                    break
+            else:
+                raise ValueError("上一轮仍在取消中，请稍后重试")
 
         # 删除上一轮该用户消息触发的 agent 回复（含同条消息内的内联产物）。
         removed = 0
@@ -168,12 +174,12 @@ class ConversationService:
             if reply.get("sender_type") != "agent":
                 continue
             if (reply.get("metadata") or {}).get("reply_to") == message_id:
-                self._cleanup.delete_message(reply)
+                await self._cleanup.delete_message(reply)
                 removed += 1
 
         # 重置用户消息状态并重新触发回复。
         self._store.update_one("im_messages", {"message_id": message_id}, {"status": "sent", "run_id": ""})
-        self._events.publish(
+        await self._events.publish(
             conversation_id,
             "message.regenerated",
             {"message_id": message_id, "removed": removed},
@@ -185,7 +191,7 @@ class ConversationService:
         )
         return {"type": "dm_regenerated", "message_id": message_id, "removed": removed, "reply": result}
 
-    def create_agent_conversation(
+    async def create_agent_conversation(
         self,
         *,
         agent_id: str,
@@ -203,7 +209,7 @@ class ConversationService:
             metadata={"conversation_kind": "agent_dm", **(metadata or {})},
         )
         record = self._store.insert_one("im_conversations", conversation.to_dict())
-        self._events.publish(record["conversation_id"], "conversation.created", {"conversation": record})
+        await self._events.publish(record["conversation_id"], "conversation.created", {"conversation": record})
         return record
 
     def list_activity(self, user_id: str = "") -> list[dict[str, Any]]:
@@ -245,7 +251,7 @@ class ConversationService:
         message_count = len(self.list_conversation_messages(conversation["conversation_id"]))
         return {**conversation, "last_message": last_message, "message_count": message_count}
 
-    def list_room_conversations(self, room_id: str, user_id: str = "") -> list[dict[str, Any]]:
+    async def list_room_conversations(self, room_id: str, user_id: str = "") -> list[dict[str, Any]]:
         """列出某个群聊 room 下的所有会话（按 created_at 升序）。
 
         若该 room 还没有任何会话，则创建一条默认会话「默认对话」，并把所有 room_id 命中
@@ -267,7 +273,7 @@ class ConversationService:
         )
         record = self._store.insert_one("im_conversations", conversation.to_dict())
         self._backfill_room_messages(room_id, record["conversation_id"])
-        self._events.publish(record["conversation_id"], "conversation.created", {"conversation": record})
+        await self._events.publish(record["conversation_id"], "conversation.created", {"conversation": record})
         return [self._attach_last_message(record)]
 
     def _backfill_room_messages(self, room_id: str, conversation_id: str) -> None:
@@ -288,7 +294,7 @@ class ConversationService:
                     {"conversation_id": conversation_id},
                 )
 
-    def create_room_conversation(
+    async def create_room_conversation(
         self,
         *,
         room_id: str,
@@ -304,15 +310,15 @@ class ConversationService:
             metadata={"conversation_kind": "group"},
         )
         record = self._store.insert_one("im_conversations", conversation.to_dict())
-        self._events.publish(record["conversation_id"], "conversation.created", {"conversation": record})
+        await self._events.publish(record["conversation_id"], "conversation.created", {"conversation": record})
         return record
 
-    def delete_conversation(self, conversation_id: str) -> dict[str, Any]:
+    async def delete_conversation(self, conversation_id: str) -> dict[str, Any]:
         self.get_conversation(conversation_id)
-        stats = self._cleanup.delete_conversation(conversation_id)
+        stats = await self._cleanup.delete_conversation(conversation_id)
         return {"deleted": True, "conversation_id": conversation_id, "stats": stats}
 
-    def add_conversation_message(
+    async def add_conversation_message(
         self,
         *,
         conversation_id: str,
@@ -350,7 +356,7 @@ class ConversationService:
             {"conversation_id": conversation_id},
             {"updated_at": record["created_at"]},
         )
-        self._events.publish(conversation_id, "message.created", {"message": record})
+        await self._events.publish(conversation_id, "message.created", {"message": record})
         return record
 
     async def reply_to_conversation_message(
@@ -371,233 +377,107 @@ class ConversationService:
         # 触发前先校验 agent 存在（缺失会抛 KeyError），再决定是否启动回复任务。
         self._runtime_profile(agent_id)
         if not auto_start:
-            self._events.publish(conversation_id, "agent.reply.pending", {"message_id": message_id, "agent_id": agent_id})
+            await self._events.publish(conversation_id, "agent.reply.pending", {"message_id": message_id, "agent_id": agent_id})
             return {"type": "dm_reply_pending", "message_id": message_id, "agent_id": agent_id}
 
-        if message.get("status") == "running":
+        await self.runtime.bind_scope(conversation_id, conversation_id)
+        fields = {
+            "run_id": message_id, "message_id": message_id, "agent_id": agent_id,
+            "agent_ids": [agent_id], "conversation_id": conversation_id,
+            "conversation_title": conversation.get("title", ""), "room_id": "",
+            "runtime_scope_id": conversation_id, "scope_id": conversation_id,
+            "mode": "reply", "prompt": message_text(message)[:200],
+            "created_at": message.get("created_at"),
+        }
+        if not await self.runtime.claim("dm_reply", message_id, fields):
             return {"type": "dm_reply_started", "message_id": message_id, "agent_id": agent_id}
         self._store.update_one("im_messages", {"message_id": message_id}, {"status": "running"})
-        self._events.publish(
-            conversation_id,
-            "agent.reply.started",
-            {"message_id": message_id, "agent_id": agent_id, "conversation_id": conversation_id},
-        )
-        # native 与 coding（claude_code / codex）统一走 _run_reply_task：coding agent 现在也是
-        # 一个 provider 化的 CodingExecutorAgent，由 ContextEngine 注入历史/收藏/回复引用/产物协议。
-        task = asyncio.create_task(
-            self._run_reply_task(
-                conversation_id=conversation_id,
-                message_id=message_id,
-                agent_id=agent_id,
-            )
-        )
+        await self._events.publish(conversation_id, "agent.reply.started", fields)
+        task = asyncio.create_task(self._run_reply_task(
+            conversation_id=conversation_id, message_id=message_id, agent_id=agent_id))
         self._reply_tasks[message_id] = task
-        task.add_done_callback(
-            lambda finished, mid=message_id: (
-                self._reply_tasks.pop(mid, None) if self._reply_tasks.get(mid) is finished else None
-            )
-        )
+        self.runtime.track("dm_reply", message_id, task)
+        task.add_done_callback(lambda finished, mid=message_id: self._reply_tasks.pop(mid, None)
+                               if self._reply_tasks.get(mid) is finished else None)
         return {"type": "dm_reply_started", "message_id": message_id, "agent_id": agent_id}
 
     def _runtime_profile(self, agent_id: str) -> AgentRuntimeProfile:
         record = self._bridge.ensure_agent_exists(agent_id)
         return build_runtime_profile(record, default_workdir=self._default_workdir)
 
-    def list_active_replies(self) -> list[dict[str, Any]]:
-        """单聊维度「正在回复中的智能体」快照（供全局运行监控聚合）。
+    async def list_active_replies(self):
+        return [state for state in await self.runtime.active_states() if state["kind"] == "dm_reply"]
 
-        以内存里的 _reply_tasks 为准（任务真正活着才算），再用消息状态兜底过滤，
-        避免 done-callback 与状态落库之间的窗口期误报。
-        """
-        items: list[dict[str, Any]] = []
-        for message_id, task in list(self._reply_tasks.items()):
-            if task.done():
-                continue
-            try:
-                message = self._get_message(message_id)
-            except Exception:
-                continue
-            if message.get("status") != "running":
-                continue
-            conversation_id = message.get("conversation_id", "")
-            conversation = (
-                self._store.find_one("im_conversations", {"conversation_id": conversation_id}) or {}
-            )
-            items.append(
-                {
-                    "kind": "dm_reply",
-                    # 取消句柄就是触发回复的 user message_id（cancel_conversation_reply 的入参）。
-                    "run_id": message_id,
-                    "status": "running",
-                    "mode": "reply",
-                    "prompt": message_text(message)[:200],
-                    "agent_ids": [conversation.get("agent_id", "")],
-                    "planner_agent_id": "",
-                    "room_id": "",
-                    "room_title": "",
-                    "conversation_id": conversation_id,
-                    "conversation_title": conversation.get("title", ""),
-                    "message_id": message_id,
-                    "created_at": message.get("created_at"),
-                    "started_at": message.get("updated_at") or message.get("created_at"),
-                    "finished_at": None,
-                }
-            )
-        return items
-
-    async def cancel_conversation_reply(self, *, conversation_id: str, message_id: str) -> dict[str, Any]:
-        conversation = self.get_conversation(conversation_id)
+    async def cancel_conversation_reply(self, *, conversation_id, message_id):
+        self.get_conversation(conversation_id)
         message = self._get_message(message_id)
-        if message.get("conversation_id") != conversation_id:
-            raise ValueError("message 不属于该 conversation")
-        if message.get("sender_type") != "user":
-            raise ValueError("只能中断 user 消息触发的回复")
-        if message.get("status") == "cancelled":
-            return {
-                "type": "dm_reply_cancelled",
-                "conversation_id": conversation_id,
-                "message_id": message_id,
-                "cancelled": True,
-            }
-        if message.get("status") != "running":
-            raise ValueError("该消息没有正在运行的回复")
+        if message.get("conversation_id") != conversation_id or message.get("sender_type") != "user":
+            raise ValueError("只能取消当前会话的用户消息回复")
+        state = await self.runtime.request_cancel("dm_reply", message_id)
+        return {"type": "dm_reply_cancel_requested", "message_id": message_id,
+                "agent_id": state.get("agent_id"), "cancel_requested": bool(state.get("cancel_requested"))}
 
-        task = self._reply_tasks.get(message_id)
-        if task and not task.done():
-            task.cancel()
-        self._mark_reply_cancelled(
-            conversation_id=conversation_id,
-            message_id=message_id,
-            agent_id=conversation.get("agent_id", ""),
-            publish=True,
-        )
-        return {
-            "type": "dm_reply_cancelled",
-            "conversation_id": conversation_id,
-            "message_id": message_id,
-            "cancelled": True,
-        }
+    async def _update_reply(self, message_id, changes):
+        await self.runtime.put_state("dm_reply", message_id, changes)
+        self._store.update_one("im_messages", {"message_id": message_id},
+                               {"status": changes["status"]})
 
-    async def _run_reply_task(self, *, conversation_id: str, message_id: str, agent_id: str) -> None:
-        lock = self._agent_locks.setdefault(agent_id, asyncio.Lock())
-        registered = False
-        async with lock:
-            agent = self._bridge.get_agent(agent_id)
+    async def _run_reply_task(self, *, conversation_id, message_id, agent_id):
+        from domain.run_context import current_run_id
+        token = current_run_id.set(conversation_id)
+        try:
+            agent = self._bridge.agents.build_run_agent(agent_id)
             message = self._get_message(message_id)
-            if message.get("status") == "cancelled":
-                return
             self._rebuild_agent_history(agent, conversation_id=conversation_id, before_message_id=message_id)
             prompt = self._compose_prompt(message)
             self._apply_agent_workdir(agent, agent_id)
             self._apply_pinned_context(agent, conversation_id)
-            self._bridge.register_agent_runtime_scope(agent_id, conversation_id)
-            registered = True
-            self._events.publish(
-                conversation_id,
-                "workflow.started",
-                {
-                    "scope_id": conversation_id,
-                    "conversation_id": conversation_id,
-                    "message_id": message_id,
-                    "agent_id": agent_id,
-                    "mode": "direct",
-                    "prompt": prompt,
-                },
-            )
+            await self._events.publish(conversation_id, "workflow.started", {
+                "scope_id": conversation_id, "conversation_id": conversation_id,
+                "message_id": message_id, "agent_id": agent_id, "mode": "direct", "prompt": prompt})
             started_at = time.time()
-            try:
-                await agent.start_with_history(prompt)
-                if self._get_message(message_id).get("status") == "cancelled":
-                    return
-                final = agent.states.get("final", "") or agent.states.get("finish_reason", "")
-                content_parts: list[dict[str, Any]] = [
-                    {"type": "text", "text": final or "Agent 已完成回复"}
-                ]
-                content_parts.extend(
-                    collect_inline_artifact_parts(
-                        self._bridge.list_run_events(conversation_id),
-                        since=started_at,
-                        run_id=conversation_id,
-                    )
-                )
-                reply = self.add_conversation_message(
-                    conversation_id=conversation_id,
-                    sender_type="agent",
-                    sender_id=agent_id,
-                    content_parts=content_parts,
-                    status="finished",
-                    metadata={"source": "direct_agent_reply", "reply_to": message_id},
-                )
-                self._store.update_one("im_messages", {"message_id": message_id}, {"status": "finished"})
-                self._events.publish(
-                    conversation_id,
-                    "agent.reply.finished",
-                    {"message_id": message_id, "agent_id": agent_id, "reply": reply},
-                )
-                self._events.publish(
-                    conversation_id,
-                    "workflow.finished",
-                    {
-                        "scope_id": conversation_id,
-                        "conversation_id": conversation_id,
-                        "message_id": message_id,
-                        "agent_id": agent_id,
-                        "mode": "direct",
-                        "final": final,
-                    },
-                )
-                return
-            except asyncio.CancelledError:
-                current = self._get_message(message_id)
-                self._mark_reply_cancelled(
-                    conversation_id=conversation_id,
-                    message_id=message_id,
-                    agent_id=agent_id,
-                    publish=current.get("status") != "cancelled",
-                )
-                raise
-            except Exception as exc:
-                self._store.update_one("im_messages", {"message_id": message_id}, {"status": "failed"})
-                self._events.publish(
-                    conversation_id,
-                    "workflow.failed",
-                    {
-                        "scope_id": conversation_id,
-                        "conversation_id": conversation_id,
-                        "message_id": message_id,
-                        "agent_id": agent_id,
-                        "mode": "direct",
-                        "error": str(exc),
-                    },
-                )
-                raise
-            finally:
-                if registered:
-                    self._bridge.unregister_agent_runtime_scope(agent_id, conversation_id)
+            await agent.start_with_history(prompt)
+            state = await self.runtime.get_state("dm_reply", message_id)
+            if state.get("cancel_requested"):
+                raise asyncio.CancelledError()
+            final = agent.states.get("final", "") or agent.states.get("finish_reason", "")
+            parts = [{"type": "text", "text": final or "Agent 已完成回复"}]
+            parts.extend(collect_inline_artifact_parts(
+                self._bridge.list_run_events(conversation_id), since=started_at, run_id=conversation_id))
+            reply = await self.add_conversation_message(
+                conversation_id=conversation_id, sender_type="agent", sender_id=agent_id,
+                content_parts=parts, status="finished",
+                metadata={"source": "direct_agent_reply", "reply_to": message_id})
+            await self._update_reply(message_id, {"status": "finished", "final": final,
+                                                   "finished_at": time.time(), "cancel_requested": False})
+            await self._events.publish(conversation_id, "agent.reply.finished", {
+                "message_id": message_id, "agent_id": agent_id, "reply": reply})
+            await self._events.publish(conversation_id, "workflow.finished", {
+                "scope_id": conversation_id, "conversation_id": conversation_id,
+                "message_id": message_id, "agent_id": agent_id, "mode": "direct", "final": final})
+        except asyncio.CancelledError:
+            await self._mark_reply_cancelled(conversation_id=conversation_id, message_id=message_id,
+                                             agent_id=agent_id, publish=True)
+            raise
+        except Exception as exc:
+            await self._update_reply(message_id, {"status": "failed", "error": str(exc),
+                                                   "finished_at": time.time()})
+            await self._events.publish(conversation_id, "workflow.failed", {
+                "scope_id": conversation_id, "conversation_id": conversation_id,
+                "message_id": message_id, "agent_id": agent_id, "mode": "direct", "error": str(exc)})
+            raise
+        finally:
+            current_run_id.reset(token)
 
-    def _mark_reply_cancelled(
-        self,
-        *,
-        conversation_id: str,
-        message_id: str,
-        agent_id: str,
-        publish: bool,
-    ) -> None:
-        self._store.update_one("im_messages", {"message_id": message_id}, {"status": "cancelled"})
+    async def _mark_reply_cancelled(self, *, conversation_id, message_id, agent_id, publish,
+                                    reason="用户中断"):
+        await self._update_reply(message_id, {"status": "cancelled", "cancel_reason": reason,
+                                               "finished_at": time.time(), "cancel_requested": False})
         if publish:
-            self._events.publish(
-                conversation_id,
-                "workflow.failed",
-                {
-                    "scope_id": conversation_id,
-                    "conversation_id": conversation_id,
-                    "message_id": message_id,
-                    "agent_id": agent_id,
-                    "mode": "direct",
-                    "error": "用户中断",
-                    "cancelled": True,
-                },
-            )
+            await self._events.publish(conversation_id, "workflow.failed", {
+                "scope_id": conversation_id, "conversation_id": conversation_id,
+                "message_id": message_id, "agent_id": agent_id, "mode": "direct",
+                "error": reason, "cancelled": True})
 
     def _get_message(self, message_id: str) -> dict[str, Any]:
         return require_im_message(self._store, message_id)

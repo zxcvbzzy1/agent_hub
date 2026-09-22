@@ -25,7 +25,7 @@ class RoomService:
         self._cleanup = cleanup
         self._agents = agents
 
-    def create_room(
+    async def create_room(
         self,
         *,
         type: str,
@@ -64,7 +64,7 @@ class RoomService:
             metadata=room_metadata,
         )
         record = self._store.insert_one("im_rooms", room.to_dict())
-        self._events.publish(record["room_id"], "room.created", {"room": record})
+        await self._events.publish(record["room_id"], "room.created", {"room": record})
         return record
 
     def list_rooms(self) -> list[dict[str, Any]]:
@@ -76,7 +76,7 @@ class RoomService:
             raise KeyError(f"房间不存在: {room_id}")
         return room
 
-    def update_room(
+    async def update_room(
         self,
         room_id: str,
         *,
@@ -116,14 +116,14 @@ class RoomService:
         if not updates:
             return room
         record = self._store.update_one("im_rooms", {"room_id": room_id}, updates)
-        self._events.publish(room_id, "room.updated", {"room": record})
+        await self._events.publish(room_id, "room.updated", {"room": record})
         return record or self.get_room(room_id)
 
-    def delete_room(self, room_id: str) -> dict[str, Any]:
+    async def delete_room(self, room_id: str) -> dict[str, Any]:
         room = self.get_room(room_id)
         if room.get("type") != "group":
             raise ValueError("room 删除只服务群聊")
-        stats = self._cleanup.delete_room(room_id)
+        stats = await self._cleanup.delete_room(room_id)
         return {"deleted": True, "room_id": room_id, "stats": stats}
 
     def ensure_group_room(self, room_id: str) -> dict[str, Any]:

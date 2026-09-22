@@ -24,30 +24,30 @@ class RunMonitorService:
         self._conversations = conversations
         self._group_runs = group_runs
 
-    def list_active_runs(self, recent_limit: int = 20) -> dict[str, Any]:
+    async def list_active_runs(self, recent_limit: int = 20) -> dict[str, Any]:
         active: list[dict[str, Any]] = []
         recent: list[dict[str, Any]] = []
-        for record in self._bridge.runs.list_runs():
+        for record in await self._bridge.runs.list_runs():
             item = self._trim_orchestration_run(record)
             if record.get("status") in ACTIVE_STATUSES:
                 active.append(item)
             elif len(recent) < recent_limit:
                 recent.append(item)
         # 单聊回复任务放在最前：它们通常是用户当下最关心的。
-        active = self._conversations.list_active_replies() + active
+        active = (await self._conversations.list_active_replies()) + active
         return {"items": active, "recent": recent}
 
     async def cancel(self, target_id: str) -> dict[str, Any]:
         """通用中断：自动识别目标是编排 run 还是单聊回复，复用既有取消逻辑与事件广播。"""
-        run = self._bridge.runs.get_run(target_id)
+        run = await self._bridge.runs.get_run(target_id)
         if run is not None:
             message = self._store.find_one("im_messages", {"run_id": target_id}) or {}
             room_id = message.get("room_id", "")
             if room_id:
-                return self._group_runs.cancel_room_run(room_id=room_id, run_id=target_id)
+                return await self._group_runs.cancel_room_run(room_id=room_id, run_id=target_id)
             # 没有 IM 消息挂载（例如 API 直接创建的 run）：直接走 bridge 取消。
-            cancelled = self._bridge.cancel_run(target_id)
-            return {"type": "run_cancelled", "run_id": target_id, "cancelled": True, "run": cancelled}
+            cancelled = await self._bridge.cancel_run(target_id)
+            return {"type": "run_cancelled", "run_id": target_id, "cancel_requested": bool(cancelled.get("cancel_requested")), "run": cancelled}
 
         message = self._store.find_one("im_messages", {"message_id": target_id})
         if message and message.get("conversation_id") and message.get("sender_type") == "user":
@@ -70,6 +70,7 @@ class RunMonitorService:
             "kind": "orchestration",
             "run_id": run_id,
             "status": record.get("status", ""),
+            "cancel_requested": record.get("cancel_requested", False),
             "mode": record.get("mode", ""),
             "prompt": str(record.get("prompt", ""))[:200],
             "agent_ids": agent_ids,

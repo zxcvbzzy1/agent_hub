@@ -35,10 +35,11 @@ class AgentFlowBridge:
     runtime calls.
     """
 
-    def __init__(self, *, store, repo_root: str | Path) -> None:
+    def __init__(self, *, store, repo_root: str | Path, runtime=None) -> None:
         self._store = store
         self._root_dir = Path(repo_root).resolve()
-        self.events = EventStreamService(self._store)
+        self.events = EventStreamService(self._store, runtime)
+        self.runtime = self.events.runtime
         self.frontend_bridge = FrontendEventBridge(self.events, factory)
         self.human_confirmations = HumanConfirmationService(self.events)
         register_tool_event_observer(self.frontend_bridge)
@@ -61,7 +62,7 @@ class AgentFlowBridge:
             self.frontend_bridge,
         )
         # agent_flow 侧的 runtime 会话服务，与 im_backend 的 ConversationService 同名，用别名区分。
-        self.conversations = RuntimeConversationService(self._store)
+        self.conversations = RuntimeConversationService(self._store, self.runtime)
 
     @property
     def store(self):
@@ -210,13 +211,13 @@ class AgentFlowBridge:
             metadata=metadata or {},
         )
 
-    def delete_agent(self, agent_id: str) -> dict[str, Any]:
-        return self.agents.delete_agent(agent_id)
+    async def delete_agent(self, agent_id: str) -> dict[str, Any]:
+        return await self.agents.delete_agent(agent_id)
 
     def create_runtime_conversation(self, *, title: str, metadata: dict[str, Any]) -> dict[str, Any]:
         return self.conversations.create_conversation(title=title, metadata=metadata)
 
-    def add_runtime_message(
+    async def add_runtime_message(
         self,
         *,
         conversation_id: str,
@@ -224,14 +225,14 @@ class AgentFlowBridge:
         content: str,
         metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        return self.conversations.add_message(
+        return await self.conversations.add_message(
             conversation_id=conversation_id,
             role=role,
             content=content,
             metadata=metadata or {},
         )
 
-    def create_run(
+    async def create_run(
         self,
         *,
         prompt: str,
@@ -246,7 +247,7 @@ class AgentFlowBridge:
         auto_start: bool = True,
         pinned_context: list[str] | None = None,
     ) -> dict[str, Any]:
-        return self.runs.create_run(
+        return await self.runs.create_run(
             prompt=prompt,
             mode=mode,
             executor_agent_id=executor_agent_id,
@@ -260,8 +261,8 @@ class AgentFlowBridge:
             pinned_context=pinned_context or [],
         )
 
-    def cancel_run(self, run_id: str) -> dict[str, Any]:
-        return self.runs.cancel_run(run_id)
+    async def cancel_run(self, run_id: str) -> dict[str, Any]:
+        return await self.runs.cancel_run(run_id)
 
     def list_run_events(self, run_id: str) -> list[dict[str, Any]]:
         return self.events.list_events(run_id)
