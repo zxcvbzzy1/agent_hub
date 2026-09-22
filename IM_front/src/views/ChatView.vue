@@ -276,8 +276,12 @@ const runningConversationMessage = computed(() => {
     .sort((a, b) => (b.created_at || 0) - (a.created_at || 0))[0] || null
 })
 
+const cancellationPending = computed(() => Boolean(
+  (im.currentRoom?.type === 'group' ? runningGroupTask.value : runningConversationMessage.value)?.cancel_requested,
+))
 const canInterrupt = computed(() => {
-  return im.currentRoom?.type === 'group' ? Boolean(runningGroupTask.value) : Boolean(runningConversationMessage.value)
+  const task = im.currentRoom?.type === 'group' ? runningGroupTask.value : runningConversationMessage.value
+  return Boolean(task) && !task.cancel_requested
 })
 
 const chatItems = computed(() => {
@@ -1733,6 +1737,7 @@ onUnmounted(() => {
           </div>
         </div>
         <div class="hero-actions">
+          <span v-if="cancellationPending">取消处理中…</span>
           <a-button
             v-if="canInterrupt"
             danger

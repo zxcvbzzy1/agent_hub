@@ -31,7 +31,7 @@ class IMService:
         self._store = store
         self._bridge = bridge
         self._events = room_events
-        self.cleanup = IMCleanupService(store)
+        self.cleanup = IMCleanupService(store, bridge.runtime)
         self.favorites = FavoriteService(store=store, events=room_events)
         self.agents = IMAgentService(bridge=bridge, cleanup=self.cleanup)
         self.rooms = RoomService(store=store, bridge=bridge, events=room_events, cleanup=self.cleanup, agents=self.agents)
@@ -66,12 +66,36 @@ class IMService:
         # planner 的最终回复落库成房间消息，使其获得完整消息操作并可随群聊一起清理。
         self._planner_final_writer = PlannerFinalReplyWriter(store=store, messages=self.messages)
         bridge.events.subscribe(self._planner_final_writer.handle_event)
+        bridge.runtime.on_orphan = self._handle_orphan
+
+    async def _handle_orphan(self, state):
+        if state["kind"] == "dm_reply":
+            await self.conversations._mark_reply_cancelled(
+                conversation_id=state["conversation_id"], message_id=state["target_id"],
+                agent_id=state["agent_id"], publish=True, reason="执行进程失联，运行中断")
+            for item in await self._bridge.human_confirmations.list_pending(state["conversation_id"]):
+                await self._bridge.human_confirmations.resolve(
+                    run_id=item["run_id"], confirmation_id=item["confirmation_id"],
+                    approved=False, reason="执行进程失联")
+        else:
+            await self._bridge.runs.handle_orphan(state)
+
+    async def overlay_message_states(self, items):
+        for item in items:
+            if item.get("sender_type") != "user":
+                continue
+            kind = "orchestration" if item.get("run_id") else "dm_reply"
+            target_id = item.get("run_id") or item["message_id"]
+            state = await self._bridge.runtime.get_state(kind, target_id)
+            if state:
+                item.update(status=state["status"], cancel_requested=state.get("cancel_requested", False))
+        return items
 
     def _hydrate(self, items):
         return self.files.hydrate(items) if self.files else items
 
-    def create_room(self, **kwargs) -> dict[str, Any]:
-        return self.rooms.create_room(**kwargs)
+    async def create_room(self, **kwargs) -> dict[str, Any]:
+        return await self.rooms.create_room(**kwargs)
 
     def list_rooms(self) -> list[dict[str, Any]]:
         return self.rooms.list_rooms()
@@ -79,11 +103,11 @@ class IMService:
     def get_room(self, room_id: str) -> dict[str, Any]:
         return self.rooms.get_room(room_id)
 
-    def update_room(self, room_id: str, **kwargs) -> dict[str, Any]:
-        return self.rooms.update_room(room_id, **kwargs)
+    async def update_room(self, room_id: str, **kwargs) -> dict[str, Any]:
+        return await self.rooms.update_room(room_id, **kwargs)
 
-    def delete_room(self, room_id: str) -> dict[str, Any]:
-        return self.rooms.delete_room(room_id)
+    async def delete_room(self, room_id: str) -> dict[str, Any]:
+        return await self.rooms.delete_room(room_id)
 
     def list_messages(self, room_id: str, conversation_id: str | None = None) -> list[dict[str, Any]]:
         return self._hydrate(self.messages.list_messages(room_id, conversation_id=conversation_id))
@@ -104,20 +128,20 @@ class IMService:
     def get_message(self, message_id: str) -> dict[str, Any]:
         return self._hydrate([self.messages.get_message(message_id)])[0]
 
-    def add_message(self, **kwargs) -> dict[str, Any]:
-        return self.messages.add_message(**kwargs)
+    async def add_message(self, **kwargs) -> dict[str, Any]:
+        return await self.messages.add_message(**kwargs)
 
     def list_agent_messages(self, agent_id: str, user_id: str = "") -> list[dict[str, Any]]:
         return self.messages.list_agent_messages(agent_id, user_id=user_id)
 
-    def list_room_tasks(self, room_id: str, conversation_id: str | None = None) -> list[dict[str, Any]]:
-        return self.runs.list_room_tasks(room_id, conversation_id=conversation_id)
+    async def list_room_tasks(self, room_id: str, conversation_id: str | None = None) -> list[dict[str, Any]]:
+        return await self.runs.list_room_tasks(room_id, conversation_id=conversation_id)
 
-    def list_room_conversations(self, room_id: str, user_id: str = "") -> list[dict[str, Any]]:
-        return self.conversations.list_room_conversations(room_id, user_id=user_id)
+    async def list_room_conversations(self, room_id: str, user_id: str = "") -> list[dict[str, Any]]:
+        return await self.conversations.list_room_conversations(room_id, user_id=user_id)
 
-    def create_room_conversation(self, *, room_id: str, created_by: str = "", title: str = "") -> dict[str, Any]:
-        return self.conversations.create_room_conversation(
+    async def create_room_conversation(self, *, room_id: str, created_by: str = "", title: str = "") -> dict[str, Any]:
+        return await self.conversations.create_room_conversation(
             room_id=room_id, created_by=created_by, title=title
         )
 
@@ -127,8 +151,8 @@ class IMService:
     async def dispatch_message(self, **kwargs) -> dict[str, Any]:
         return await self.runs.dispatch_message(**kwargs)
 
-    def cancel_room_run(self, **kwargs) -> dict[str, Any]:
-        return self.runs.cancel_room_run(**kwargs)
+    async def cancel_room_run(self, **kwargs) -> dict[str, Any]:
+        return await self.runs.cancel_room_run(**kwargs)
 
     def get_conversation(self, conversation_id: str) -> dict[str, Any]:
         return self.conversations.get_conversation(conversation_id)
@@ -154,14 +178,14 @@ class IMService:
     def list_activity(self, user_id: str = "") -> list[dict[str, Any]]:
         return self.conversations.list_activity(user_id=user_id)
 
-    def create_agent_conversation(self, **kwargs) -> dict[str, Any]:
-        return self.conversations.create_agent_conversation(**kwargs)
+    async def create_agent_conversation(self, **kwargs) -> dict[str, Any]:
+        return await self.conversations.create_agent_conversation(**kwargs)
 
-    def delete_conversation(self, conversation_id: str) -> dict[str, Any]:
-        return self.conversations.delete_conversation(conversation_id)
+    async def delete_conversation(self, conversation_id: str) -> dict[str, Any]:
+        return await self.conversations.delete_conversation(conversation_id)
 
-    def update_conversation(self, conversation_id: str, **kwargs) -> dict[str, Any]:
-        return self.conversations.update_conversation(conversation_id, **kwargs)
+    async def update_conversation(self, conversation_id: str, **kwargs) -> dict[str, Any]:
+        return await self.conversations.update_conversation(conversation_id, **kwargs)
 
     async def regenerate_conversation_reply(self, **kwargs) -> dict[str, Any]:
         return await self.conversations.regenerate_reply(**kwargs)
@@ -170,23 +194,23 @@ class IMService:
     def list_favorites(self, *, scope_type: str, scope_id: str) -> list[dict[str, Any]]:
         return self.favorites.list_favorites(scope_type=scope_type, scope_id=scope_id)
 
-    def create_favorite(self, **kwargs) -> dict[str, Any]:
-        return self.favorites.create_favorite(**kwargs)
+    async def create_favorite(self, **kwargs) -> dict[str, Any]:
+        return await self.favorites.create_favorite(**kwargs)
 
-    def favorite_message(self, **kwargs) -> dict[str, Any]:
-        return self.favorites.favorite_message(**kwargs)
+    async def favorite_message(self, **kwargs) -> dict[str, Any]:
+        return await self.favorites.favorite_message(**kwargs)
 
-    def update_favorite(self, favorite_id: str, **kwargs) -> dict[str, Any]:
-        return self.favorites.update_favorite(favorite_id, **kwargs)
+    async def update_favorite(self, favorite_id: str, **kwargs) -> dict[str, Any]:
+        return await self.favorites.update_favorite(favorite_id, **kwargs)
 
-    def delete_favorite(self, favorite_id: str) -> dict[str, Any]:
-        return self.favorites.delete_favorite(favorite_id)
+    async def delete_favorite(self, favorite_id: str) -> dict[str, Any]:
+        return await self.favorites.delete_favorite(favorite_id)
 
     def list_tools(self) -> list[dict[str, Any]]:
         return self.agents.list_tools()
 
-    def add_conversation_message(self, **kwargs) -> dict[str, Any]:
-        return self.conversations.add_conversation_message(**kwargs)
+    async def add_conversation_message(self, **kwargs) -> dict[str, Any]:
+        return await self.conversations.add_conversation_message(**kwargs)
 
     async def reply_to_conversation_message(self, **kwargs) -> dict[str, Any]:
         return await self.conversations.reply_to_conversation_message(**kwargs)
@@ -209,8 +233,8 @@ class IMService:
     def update_agent(self, agent_id: str, **kwargs) -> dict[str, Any]:
         return self.agents.update_agent(agent_id, **kwargs)
 
-    def delete_agent(self, agent_id: str, *, user_id: str = "") -> dict[str, Any]:
-        return self.agents.delete_agent(agent_id, user_id=user_id)
+    async def delete_agent(self, agent_id: str, *, user_id: str = "") -> dict[str, Any]:
+        return await self.agents.delete_agent(agent_id, user_id=user_id)
 
-    def record_action(self, **kwargs) -> dict[str, Any]:
-        return self.actions.record_action(**kwargs)
+    async def record_action(self, **kwargs) -> dict[str, Any]:
+        return await self.actions.record_action(**kwargs)

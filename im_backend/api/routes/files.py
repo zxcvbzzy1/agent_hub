@@ -63,8 +63,8 @@ def download_file(file_id: str, user=Depends(get_current_user), service: FileSer
 
 
 @router.delete('/files/{file_id}')
-def delete_file(file_id: str, user=Depends(get_current_user), service: FileService = Depends(get_file_service)):
+async def delete_file(file_id: str, user=Depends(get_current_user), service: FileService = Depends(get_file_service)):
     try:
-        return {'item': service.delete(file_id, user['user_id'])}
+        return {'item': await service.delete(file_id, user['user_id'])}
     except (ValueError, KeyError, OSError, PyMongoError) as exc:
         raise file_error(exc) from exc

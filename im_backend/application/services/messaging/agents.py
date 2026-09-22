@@ -254,14 +254,14 @@ class IMAgentService:
             )
         self._bridge.contexts.update_context_providers(context_id, provider_config)
 
-    def delete_agent(self, agent_id: str, *, user_id: str = "") -> dict[str, Any]:
+    async def delete_agent(self, agent_id: str, *, user_id: str = "") -> dict[str, Any]:
         if agent_id in self.PROTECTED_AGENT_IDS:
             raise ValueError("默认 Agent 不允许删除")
         record = self._bridge.ensure_agent_exists(agent_id)
         if user_id and self.owner_user_id(record) != user_id:
             raise ValueError("只能删除当前用户拥有的 Agent")
-        agent_flow_result = self._bridge.delete_agent(agent_id)
-        im_stats = self._cleanup.delete_agent_im_refs(agent_id)
+        agent_flow_result = await self._bridge.delete_agent(agent_id)
+        im_stats = await self._cleanup.delete_agent_im_refs(agent_id)
         return {
             "deleted": True,
             "agent_id": agent_id,

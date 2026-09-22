@@ -4,11 +4,10 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager, suppress
 
-from starlette.concurrency import run_in_threadpool
-
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from pymongo.errors import PyMongoError
+from redis.exceptions import RedisError
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 
@@ -20,23 +19,27 @@ from im_backend.api.router import router as im_router
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     container = get_container()
-    await run_in_threadpool(container.files.sweep)
+    await container.bridge.runtime.start()
 
     async def cleanup_files():
         while True:
             await asyncio.sleep(3600)
             try:
-                await run_in_threadpool(container.files.sweep)
+                await container.files.sweep()
             except Exception:
                 logging.getLogger(__name__).exception("File cleanup failed; will retry")
 
-    task = asyncio.create_task(cleanup_files())
+    task = None
     try:
+        await container.files.sweep()
+        task = asyncio.create_task(cleanup_files())
         yield
     finally:
-        task.cancel()
-        with suppress(asyncio.CancelledError):
-            await task
+        if task:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        await container.bridge.runtime.close()
 
 
 def create_app() -> FastAPI:
@@ -45,6 +48,10 @@ def create_app() -> FastAPI:
     @app.exception_handler(PyMongoError)
     async def database_unavailable(request, exc):
         return JSONResponse(status_code=503, content={"detail": "数据库不可用，请稍后重试"})
+    @app.exception_handler(RedisError)
+    async def redis_unavailable(request, exc):
+        return JSONResponse(status_code=503, content={"detail": "Redis 运行时不可用"})
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -59,9 +66,11 @@ def create_app() -> FastAPI:
     async def health():
         container = get_container()
         container.store.ping()
+        await container.bridge.runtime.redis.ping()
         return {
             "status": "ok",
             "mongo": "mongodb",
+            "redis": "ok",
             "service": "im_backend",
         }
 

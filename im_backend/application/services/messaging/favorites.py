@@ -43,7 +43,7 @@ class FavoriteService:
         return items
 
     # ── 写 ────────────────────────────────────────────────────────
-    def create_favorite(
+    async def create_favorite(
         self,
         *,
         scope_type: str,
@@ -63,14 +63,14 @@ class FavoriteService:
             created_by=created_by,
         )
         record = self._store.insert_one("im_favorites", favorite.to_dict())
-        self._events.publish(scope_id, "favorite.created", {"favorite": record})
+        await self._events.publish(scope_id, "favorite.created", {"favorite": record})
         return record
 
-    def favorite_message(self, *, message_id: str, title: str = "", created_by: str = "user") -> dict[str, Any]:
+    async def favorite_message(self, *, message_id: str, title: str = "", created_by: str = "user") -> dict[str, Any]:
         message = require_im_message(self._store, message_id)
         scope_type, scope_id = self._resolve_message_scope(message)
         content = message_text(message) or "(空消息)"
-        return self.create_favorite(
+        return await self.create_favorite(
             scope_type=scope_type,
             scope_id=scope_id,
             content=content,
@@ -79,7 +79,7 @@ class FavoriteService:
             created_by=created_by,
         )
 
-    def update_favorite(
+    async def update_favorite(
         self,
         favorite_id: str,
         *,
@@ -101,13 +101,13 @@ class FavoriteService:
             return favorite
         record = self._store.update_one("im_favorites", {"favorite_id": favorite_id}, updates)
         record = record or self.get_favorite(favorite_id)
-        self._events.publish(record["scope_id"], "favorite.updated", {"favorite": record})
+        await self._events.publish(record["scope_id"], "favorite.updated", {"favorite": record})
         return record
 
-    def delete_favorite(self, favorite_id: str) -> dict[str, Any]:
+    async def delete_favorite(self, favorite_id: str) -> dict[str, Any]:
         favorite = self.get_favorite(favorite_id)
         self._store.delete_one("im_favorites", {"favorite_id": favorite_id})
-        self._events.publish(favorite["scope_id"], "favorite.deleted", {"favorite_id": favorite_id})
+        await self._events.publish(favorite["scope_id"], "favorite.deleted", {"favorite_id": favorite_id})
         return {"deleted": True, "favorite_id": favorite_id}
 
     # ── 内部 ──────────────────────────────────────────────────────

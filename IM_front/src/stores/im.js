@@ -54,6 +54,7 @@ export const useIMStore = defineStore('im', {
     events: [],
     loading: false,
     source: null,
+    streamStatus: 'closed',
     tools: [],
     // 待处理的人工确认（危险命令）：{confirmation_id, run_id, tool_name, arguments, ...}
     humanConfirmations: [],
@@ -543,7 +544,7 @@ export const useIMStore = defineStore('im', {
       if (!this.currentGroupRoom?.room_id || !runId) return null
       const response = await imApi.cancelRoomRun(this.currentGroupRoom.room_id, runId)
       this.messages = this.messages.map((messageItem) => (
-        messageItem.run_id === runId ? { ...messageItem, status: 'cancelled' } : messageItem
+        messageItem.run_id === runId ? { ...messageItem, cancel_requested: true } : messageItem
       ))
       await Promise.all([this.fetchTasks(), this.refreshMessages()])
       return response.item
@@ -552,7 +553,7 @@ export const useIMStore = defineStore('im', {
       if (!this.currentConversation?.conversation_id || !messageId) return null
       const response = await imApi.cancelConversationMessage(this.currentConversation.conversation_id, messageId)
       this.messages = this.messages.map((messageItem) => (
-        messageItem.message_id === messageId ? { ...messageItem, status: 'cancelled' } : messageItem
+        messageItem.message_id === messageId ? { ...messageItem, cancel_requested: true } : messageItem
       ))
       await Promise.all([this.refreshMessages(), this.fetchConversations()])
       return response.item
@@ -653,6 +654,7 @@ export const useIMStore = defineStore('im', {
       }
       // 切换/断开会话时清空去重索引与增量缓冲，避免跨会话串味或残留 rAF 把旧 batch 并入新数组。
       resetEventStreamState()
+      this.streamStatus = 'closed'
     },
     connectRoom(roomId) {
       this.connectStream(`/api/im/rooms/${roomId}/events`)
@@ -663,15 +665,46 @@ export const useIMStore = defineStore('im', {
     connectStream(path) {
       this.closeStream()
       const source = new EventSource(`${API_BASE_URL}${path}`)
-      source.onmessage = (event) => this.consumeEvent(JSON.parse(event.data))
+      this.streamStatus = 'connecting'
+      let syncing = true
+      const consume = (event) => {
+        if (this.source !== source) return
+        const item = JSON.parse(event.data)
+        // Reconcile approvals from shared state after history replay.
+        if (syncing && item.name.startsWith('human.confirmation.')) return
+        this.consumeEvent(item)
+      }
+      source.onmessage = consume
       for (const name of sseEventNames) {
-        source.addEventListener(name, (event) => this.consumeEvent(JSON.parse(event.data)))
+        source.addEventListener(name, consume)
       }
-      source.onerror = () => {
-        source.close()
-        if (this.source === source) this.source = null
-      }
+      source.addEventListener('stream.reset', () => {
+        if (this.source !== source) return
+        syncing = true
+        resetEventStreamState()
+        this.events = []
+        this.humanConfirmations = []
+      })
+      source.addEventListener('stream.ready', async () => {
+        if (this.source !== source) return
+        syncing = false
+        this.streamStatus = 'connected'
+        await this.refreshMessages().catch(() => {})
+        if (this.source !== source) return
+        if (this.currentRoom?.type === 'group') await this.fetchTasks().catch(() => {})
+        await this.syncHumanConfirmations(source).catch(() => {})
+      })
+      source.onopen = () => { if (this.source === source) this.streamStatus = 'connected' }
+      // Keep the EventSource alive: the browser reconnects with Last-Event-ID.
+      source.onerror = () => { if (this.source === source) this.streamStatus = 'reconnecting' }
       this.source = source
+    },
+    async syncHumanConfirmations(source = this.source) {
+      const ids = this.currentRoom?.type === 'group'
+        ? [...new Set([...this.tasks.map(t => t.run_id), ...this.events.map(e => e.run_id)].filter(Boolean))]
+        : [this.currentConversation?.conversation_id].filter(Boolean)
+      const responses = await Promise.all(ids.map(id => imApi.listRunConfirmations(id)))
+      if (this.source === source) this.humanConfirmations = responses.flatMap(r => r.items || [])
     },
     flushPendingEvents() {
       cancelEventFlush()
@@ -763,6 +796,14 @@ export const useIMStore = defineStore('im', {
           messageItem.message_id === messageId ? { ...messageItem, status: 'running' } : messageItem
         ))
       }
+      if (event.name === 'agent.reply.finished' || event.name === 'workflow.finished') {
+        const { message_id: messageId, run_id: runId } = event.payload || {}
+        this.messages = this.messages.map(item => (
+          (messageId && item.message_id === messageId) || (runId && item.run_id === runId)
+            ? { ...item, status: 'finished', cancel_requested: false } : item
+        ))
+        if (this.currentRoom?.type === 'group') this.fetchTasks().catch(() => {})
+      }
       if (event.name === 'run.cancelled') {
         const runId = event.payload?.run_id
         const messageId = event.payload?.message_id
@@ -781,7 +822,7 @@ export const useIMStore = defineStore('im', {
         const nextStatus = event.payload?.cancelled ? 'cancelled' : 'failed'
         this.messages = this.messages.map((messageItem) => (
           (runId && messageItem.run_id === runId) || (messageId && messageItem.message_id === messageId)
-            ? { ...messageItem, status: nextStatus }
+            ? { ...messageItem, status: nextStatus, cancel_requested: false }
             : messageItem
         ))
         if (this.currentRoom?.type === 'group') this.fetchTasks().catch(() => {})

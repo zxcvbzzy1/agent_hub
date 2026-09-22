@@ -64,7 +64,7 @@ class GroupMessageService:
     def get_message(self, message_id: str) -> dict[str, Any]:
         return require_im_message(self._store, message_id)
 
-    def add_message(
+    async def add_message(
         self,
         *,
         room_id: str,
@@ -108,7 +108,7 @@ class GroupMessageService:
         record = (self.files.save_message(message.to_dict(), user_id or sender_id)
                   if self.files else self._store.insert_one("im_messages", message.to_dict()))
         self._store.update_one("im_rooms", {"room_id": room_id}, {"updated_at": record["created_at"]})
-        self._events.publish(room_id, "message.created", {"message": record})
+        await self._events.publish(room_id, "message.created", {"message": record})
         return record
 
     def list_agent_messages(self, agent_id: str, user_id: str = "") -> list[dict[str, Any]]:

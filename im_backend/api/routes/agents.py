@@ -115,7 +115,7 @@ async def delete_agent(
 ):
     _ = current_user
     try:
-        return {"item": service.delete_agent(agent_id, user_id=current_user["user_id"])}
+        return {"item": await service.delete_agent(agent_id, user_id=current_user["user_id"])}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
@@ -154,7 +154,7 @@ async def create_agent_conversation(
     service: IMService = Depends(get_im_service),
 ):
     try:
-        item = service.create_agent_conversation(
+        item = await service.create_agent_conversation(
             agent_id=agent_id,
             created_by=current_user["user_id"],
             title=request.title,

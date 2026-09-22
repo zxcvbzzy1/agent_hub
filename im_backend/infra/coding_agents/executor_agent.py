@@ -61,7 +61,7 @@ class CodingExecutorAgent(AgentBase):
         final_prompt = self.context_engine.build(self.states) or prompt
         runner = runner_for_kind(self.profile.agent_kind)
         if runner is None:
-            self._mark_failed(f"不支持的 coding agent: {self.profile.agent_kind}", run_id)
+            await self._mark_failed(f"不支持的 coding agent: {self.profile.agent_kind}", run_id)
             return
 
         final_chunks: list[str] = []
@@ -88,36 +88,36 @@ class CodingExecutorAgent(AgentBase):
                 }
                 if event.type == "agent.delta":
                     clean, markers = delta_parser.feed(str(payload.get("delta", "")))
-                    self._emit_artifacts(run_id, markers, seen_artifacts)
+                    await self._emit_artifacts(run_id, markers, seen_artifacts)
                     if not clean:
                         continue
                     final_chunks.append(clean)
                     payload["delta"] = clean
-                    self._publish(run_id, "agent.delta", payload)
+                    await self._publish(run_id, "agent.delta", payload)
                     continue
                 if event.type == "agent.final":
                     clean, markers = final_parser.feed(str(payload.get("final", "")))
                     tail_clean, tail_markers = final_parser.flush()
                     clean += tail_clean
-                    self._emit_artifacts(run_id, markers + tail_markers, seen_artifacts)
+                    await self._emit_artifacts(run_id, markers + tail_markers, seen_artifacts)
                     final_text = clean or final_text
                     emitted_final = True
                     payload["final"] = clean
-                    self._publish(run_id, "agent.final", payload)
+                    await self._publish(run_id, "agent.final", payload)
                     continue
                 if event.type == "agent.failed":
                     failed = str(payload.get("stderr") or payload.get("error") or "Coding agent 执行失败")
-                self._publish(run_id, event.type, payload)
+                await self._publish(run_id, event.type, payload)
         except Exception as exc:
-            self._mark_failed(str(exc), run_id)
+            await self._mark_failed(str(exc), run_id)
             return
 
         # 冲刷流式缓冲里残留的标记/文本
         tail_clean, tail_markers = delta_parser.flush()
-        self._emit_artifacts(run_id, tail_markers, seen_artifacts)
+        await self._emit_artifacts(run_id, tail_markers, seen_artifacts)
         if tail_clean:
             final_chunks.append(tail_clean)
-            self._publish(
+            await self._publish(
                 run_id,
                 "agent.delta",
                 {
@@ -129,7 +129,7 @@ class CodingExecutorAgent(AgentBase):
             )
 
         if failed:
-            self._mark_failed(failed, run_id)
+            await self._mark_failed(failed, run_id)
             return
 
         # 流结束后，把收集到的 deploy 标记真实起端口并发出 artifacts.deploy 卡片事件。
@@ -141,7 +141,7 @@ class CodingExecutorAgent(AgentBase):
         self.states["final"] = final
         self.store_dialogue_history(prompt, final)
         if not emitted_final:
-            self._publish(
+            await self._publish(
                 run_id,
                 "agent.final",
                 {
@@ -182,11 +182,11 @@ class CodingExecutorAgent(AgentBase):
         role = "用户" if message.get("role") == "user" else "Agent"
         return f"### 历史消息\n{role}：{message.get('content', '')}"
 
-    def _mark_failed(self, error: str, run_id: str) -> None:
+    async def _mark_failed(self, error: str, run_id: str) -> None:
         self.states["is_finished"] = False
         self.states["finish_reason"] = error
         self.states["final"] = ""
-        self._publish(
+        await self._publish(
             run_id,
             "agent.failed",
             {
@@ -197,7 +197,7 @@ class CodingExecutorAgent(AgentBase):
             },
         )
 
-    def _emit_artifacts(
+    async def _emit_artifacts(
         self,
         run_id: str,
         markers: list[dict[str, Any]],
@@ -222,7 +222,7 @@ class CodingExecutorAgent(AgentBase):
                     {**marker, "agent_id": self.id, "run_id": run_id}
                 )
             except Exception as exc:
-                self._publish(
+                await self._publish(
                     run_id,
                     "artifact.failed",
                     {
@@ -234,7 +234,7 @@ class CodingExecutorAgent(AgentBase):
                     },
                 )
                 continue
-            self._publish(run_id, artifact_payload["event_name"], artifact_payload)
+            await self._publish(run_id, artifact_payload["event_name"], artifact_payload)
 
     async def _run_pending_deploys(self, run_id: str) -> None:
         """对收集到的 deploy 标记调用真实 deployment_manager 起端口，发出 artifacts.deploy 事件。
@@ -259,7 +259,7 @@ class CodingExecutorAgent(AgentBase):
                     run_id=run_id,
                 )
             except Exception as exc:
-                self._publish(
+                await self._publish(
                     run_id,
                     "artifact.failed",
                     {
@@ -272,9 +272,12 @@ class CodingExecutorAgent(AgentBase):
                 )
                 continue
             payload = build_deploy_event_payload(deployment, self.id, run_id)
-            self._publish(run_id, "artifacts.deploy", payload)
+            await self._publish(run_id, "artifacts.deploy", payload)
 
-    def _publish(self, run_id: str, name: str, payload: dict[str, Any]) -> None:
+    async def _publish(self, run_id: str, name: str, payload: dict[str, Any]) -> None:
         if not run_id:
             return
-        self._streams.publish(run_id, name, payload)
+        if name == "agent.delta":
+            await self._streams.no_store_publish(run_id, name, payload)
+        else:
+            await self._streams.publish(run_id, name, payload)

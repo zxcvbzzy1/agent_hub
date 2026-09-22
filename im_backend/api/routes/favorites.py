@@ -28,7 +28,7 @@ async def create_favorite(
     service: IMService = Depends(get_im_service),
 ):
     try:
-        item = service.create_favorite(
+        item = await service.create_favorite(
             scope_type=request.scope_type,
             scope_id=request.scope_id,
             content=request.content,
@@ -52,7 +52,7 @@ async def update_favorite(
 ):
     _ = current_user
     try:
-        item = service.update_favorite(
+        item = await service.update_favorite(
             favorite_id,
             title=request.title,
             content=request.content,
@@ -73,6 +73,6 @@ async def delete_favorite(
 ):
     _ = current_user
     try:
-        return {"item": service.delete_favorite(favorite_id)}
+        return {"item": await service.delete_favorite(favorite_id)}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

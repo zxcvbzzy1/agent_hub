@@ -38,7 +38,7 @@ class GroupRunService:
         self._favorites = favorites
         self._default_workdir = str(Path(default_workdir).expanduser().resolve())
 
-    def list_room_tasks(self, room_id: str, conversation_id: str | None = None) -> list[dict[str, Any]]:
+    async def list_room_tasks(self, room_id: str, conversation_id: str | None = None) -> list[dict[str, Any]]:
         room = self._rooms.ensure_group_room(room_id)
         if room.get("type") != "group":
             raise ValueError("只有群聊 room 才有编排任务")
@@ -47,7 +47,7 @@ class GroupRunService:
             run_id = message.get("run_id")
             if not run_id:
                 continue
-            run = self._store.find_one("runs", {"run_id": run_id}) or {}
+            run = await self._bridge.runs.get_run(run_id) or {}
             tasks.append(
                 {
                     "task_id": run_id,
@@ -56,6 +56,7 @@ class GroupRunService:
                     "prompt": run.get("prompt") or self._messages.message_text(message),
                     "mode": run.get("mode") or message.get("metadata", {}).get("mode", ""),
                     "status": run.get("status") or message.get("status", ""),
+                    "cancel_requested": run.get("cancel_requested", False),
                     "plan": run.get("plan", {}),
                     "final": run.get("final", ""),
                     "created_at": message.get("created_at"),
@@ -102,7 +103,7 @@ class GroupRunService:
         external_profiles = [profile for profile in profiles if profile.agent_kind in {"claude_code", "codex"}]
 
         if external_profiles and not approved:
-            return self._create_confirmation(
+            return await self._create_confirmation(
                 room_id=room_id,
                 message_id=message_id,
                 profiles=external_profiles,
@@ -118,7 +119,7 @@ class GroupRunService:
         executor_agent_ids = [*native_agent_ids, *[profile.agent_id for profile in external_profiles]]
         if not executor_agent_ids:
             raise ValueError("没有可调度的 executor")
-        run = self._create_agent_flow_run(
+        run = await self._create_agent_flow_run(
             room=room,
             message=message,
             prompt=prompt,
@@ -131,9 +132,13 @@ class GroupRunService:
             user_id=user_id,
             conversation_id=conversation_id,
         )
-        return self._mark_dispatched(room_id, message_id, run)
+        await self._bridge.runtime.bind_scope(run["run_id"], room_id)
+        result = await self._mark_dispatched(room_id, message_id, run)
+        if auto_start:
+            result["run"] = await self._bridge.runs.start_run(run["run_id"])
+        return result
 
-    def cancel_room_run(self, *, room_id: str, run_id: str, actor_id: str = "user") -> dict[str, Any]:
+    async def cancel_room_run(self, *, room_id: str, run_id: str, actor_id: str = "user") -> dict[str, Any]:
         self._rooms.ensure_group_room(room_id)
         messages = [
             message
@@ -142,25 +147,9 @@ class GroupRunService:
         ]
         if not messages:
             raise KeyError(f"run 不属于该 room: {run_id}")
-        message_id = messages[0].get("message_id", "")
-        # 群聊 coding agent 跑在 agent_flow plan run 内，run_id 即 agent_flow run_id（不再有
-        # "coding-" 前缀的独立 run），统一通过 bridge.cancel_run 取消。
-        run = self._bridge.cancel_run(run_id)
-        self._store.update_one(
-            "im_messages",
-            {"message_id": message_id},
-            {"status": "cancelled"},
-        )
-        payload = {
-            "run_id": run_id,
-            "message_id": message_id,
-            "room_id": room_id,
-            "actor_id": actor_id,
-            "cancelled": True,
-            "run": run,
-        }
-        self._events.publish(room_id, "run.cancelled", payload)
-        return {"type": "run_cancelled", **payload}
+        run = await self._bridge.cancel_run(run_id)
+        return {"type": "run_cancel_requested", "run_id": run_id,
+                "cancel_requested": bool(run.get("cancel_requested")), "run": run}
 
     def _select_target_agents(self, room: dict[str, Any], message: dict[str, Any]) -> list[str]:
         mentions = [
@@ -176,7 +165,7 @@ class GroupRunService:
         record = self._agents.ensure_agent_access(agent_id, user_id) if user_id else self._bridge.ensure_agent_exists(agent_id)
         return build_runtime_profile(record, default_workdir=self._default_workdir)
 
-    def _create_agent_flow_run(
+    async def _create_agent_flow_run(
         self,
         *,
         room: dict[str, Any],
@@ -202,7 +191,7 @@ class GroupRunService:
         for history_message in self._room_history_before(
             room["room_id"], message["message_id"], conversation_id
         ):
-            self._bridge.add_runtime_message(
+            await self._bridge.add_runtime_message(
                 conversation_id=runtime_conversation["conversation_id"],
                 role="assistant" if history_message.get("sender_type") == "agent" else "user",
                 content=self._messages.message_text(history_message),
@@ -214,13 +203,13 @@ class GroupRunService:
                     "sender_id": history_message.get("sender_id", ""),
                 },
             )
-        runtime_message = self._bridge.add_runtime_message(
+        runtime_message = await self._bridge.add_runtime_message(
             conversation_id=runtime_conversation["conversation_id"],
             role="user",
             content=prompt,
             metadata={"source": "im_backend", "room_id": room["room_id"], "message_id": message["message_id"]},
         )
-        return self._bridge.create_run(
+        return await self._bridge.create_run(
             prompt=prompt,
             mode=mode,
             executor_agent_id=executor_agent_id,
@@ -230,7 +219,7 @@ class GroupRunService:
             max_replan_rounds=max_replan_rounds,
             conversation_id=runtime_conversation["conversation_id"],
             message_id=runtime_message["message_id"],
-            auto_start=auto_start,
+            auto_start=False,
             pinned_context=(
                 self._favorites.context_items("conversation", conversation_id)
                 if conversation_id
@@ -248,16 +237,16 @@ class GroupRunService:
             tail=15,
         )
 
-    def _mark_dispatched(self, room_id: str, message_id: str, run: dict[str, Any]) -> dict[str, Any]:
+    async def _mark_dispatched(self, room_id: str, message_id: str, run: dict[str, Any]) -> dict[str, Any]:
         self._store.update_one(
             "im_messages",
             {"message_id": message_id},
             {"run_id": run["run_id"], "status": "running" if run.get("status") == "running" else "sent"},
         )
-        self._events.publish(room_id, "run.created", {"message_id": message_id, "run": run})
+        await self._events.publish(room_id, "run.created", {"message_id": message_id, "run": run})
         return {"type": "run", "run": run}
 
-    def _create_confirmation(
+    async def _create_confirmation(
         self,
         *,
         room_id: str,
@@ -274,7 +263,7 @@ class GroupRunService:
             "prompt": prompt,
             "reason": "外部 coding agent 执行前需要人工确认",
         }
-        confirmation = self._messages.add_message(
+        confirmation = await self._messages.add_message(
             room_id=room_id,
             conversation_id=conversation_id,
             sender_type="system",
@@ -304,5 +293,5 @@ class GroupRunService:
                 "metadata": confirmation["metadata"],
             },
         ) or confirmation
-        self._events.publish(room_id, "confirmation.requested", {"confirmation": confirmation, **confirmation_payload})
+        await self._events.publish(room_id, "confirmation.requested", {"confirmation": confirmation, **confirmation_payload})
         return {"type": "confirmation", "confirmation": confirmation}

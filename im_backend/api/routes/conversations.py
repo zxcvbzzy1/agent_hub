@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import Header, APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
 from im_backend.api.core import get_current_user, get_im_service, get_room_events
@@ -43,11 +43,11 @@ async def list_conversation_messages(
     try:
         # 不带 limit 时返回全量（内部/兼容旧行为）；带 limit 时返回懒加载窗口 + has_more。
         if limit is None:
-            return {"items": service.list_conversation_messages(conversation_id), "has_more": False}
+            return {"items": await service.overlay_message_states(service.list_conversation_messages(conversation_id)), "has_more": False}
         items, has_more = service.list_conversation_messages_window(
             conversation_id, limit=limit, before_id=before_id
         )
-        return {"items": items, "has_more": has_more}
+        return {"items": await service.overlay_message_states(items), "has_more": has_more}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -64,7 +64,7 @@ async def add_conversation_message(
         sender_id = request.sender_id
         if sender_type == "user":
             sender_id = current_user["user_id"]
-        item = service.add_conversation_message(
+        item = await service.add_conversation_message(
             conversation_id=conversation_id,
             user_id=current_user["user_id"],
             sender_type=sender_type,
@@ -101,7 +101,7 @@ async def reply_to_conversation_message(
     return {"item": item}
 
 
-@router.post("/conversations/{conversation_id}/messages/{message_id}/cancel")
+@router.post("/conversations/{conversation_id}/messages/{message_id}/cancel", status_code=202)
 async def cancel_conversation_message(
     conversation_id: str,
     message_id: str,
@@ -130,7 +130,7 @@ async def update_conversation(
 ):
     _ = current_user
     try:
-        item = service.update_conversation(
+        item = await service.update_conversation(
             conversation_id,
             pinned=request.pinned,
             archived=request.archived,
@@ -173,7 +173,7 @@ async def delete_conversation(
 ):
     _ = current_user
     try:
-        return {"item": service.delete_conversation(conversation_id)}
+        return {"item": await service.delete_conversation(conversation_id)}
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
@@ -181,6 +181,7 @@ async def delete_conversation(
 @router.get("/conversations/{conversation_id}/events")
 async def stream_conversation_events(
     conversation_id: str,
+    last_event_id: str | None = Header(default=None),
     service: IMService = Depends(get_im_service),
     events: RoomEventStreamService = Depends(get_room_events),
 ):
@@ -192,6 +193,7 @@ async def stream_conversation_events(
         events.stream_merged(
             conversation_id,
             runtime_events=service._bridge.events,
+            last_id=last_event_id,
             runtime_ids_provider=lambda: [conversation_id],
         ),
         media_type="text/event-stream",
