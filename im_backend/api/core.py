@@ -68,8 +68,14 @@ class IMContainer:
           详情(GET /runs/{run_id}/events)都走这条；同时覆盖按 run_id 的批量清理。
         created_at 升序索引即可同时服务升/降序排序，Mongo 可反向遍历。
         """
-        self.store.ensure_index("im_events", [("scope_id", 1), ("created_at", 1)])
-        self.store.ensure_index("events", [("run_id", 1), ("created_at", 1)])
+        self.store.ensure_index("im_events", [("scope_id", 1), ("version", 1), ("created_at", 1), ("event_id", 1)])
+        self.store.ensure_index("events", [("run_id", 1), ("version", 1), ("created_at", 1), ("event_id", 1)])
+        self.store.ensure_index("events", [("run_id", 1), ("execution_id", 1), ("created_at", 1), ("event_id", 1)])
+        self.store.ensure_index("events", [("event_id", 1)], unique=True)
+        self.store.ensure_index("im_events", [("event_id", 1)], unique=True)
+        self.store.ensure_index("runs", [("run_id", 1)], unique=True)
+        self.store.ensure_index("runs", [("source_message_id", 1)])
+        self.store.ensure_index("runs", [("kind", 1), ("status", 1)])
 
 
 @lru_cache(maxsize=1)

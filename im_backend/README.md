@@ -69,62 +69,85 @@ Claude Code / Codex agent 第一版默认需要人工确认；未确认前只生
 npm --prefix IM_front run build
 ```
 
-## Redis 运行时（第一阶段）
+## Redis 运行时与三级轨迹（v2）
 
-安装依赖后，将根目录 `redis.env.example` 中的配置加入 `.env`。
-`REDIS_URL` 支持完整的 Redis URL；所有同一部署的 API worker 必须使用相同的
-`REDIS_KEY_PREFIX`，测试和其他部署应使用不同前缀。Redis 不可用时服务启动失败，
-请求阶段返回 503，不会降级到进程内事件队列。
+配置根目录 `redis.env.example` 中的 `REDIS_URL` 和 `REDIS_KEY_PREFIX`。
+同一部署的 worker 共享前缀，测试使用独立前缀。MongoDB 仍可使用单机部署，
+不需要副本集、事务或 Outbox。Agent 由创建它的 API worker 执行，不自动接管或重跑。
 
 ```bash
-/Users/zxcvbzzy1/miniconda3/envs/MY_env/bin/python -m pip install -r agent_flow/requirements-api.txt
 /Users/zxcvbzzy1/miniconda3/envs/MY_env/bin/python -m uvicorn im_backend.api.index:app --host 127.0.0.1 --port 8010 --workers 2
 ```
 
-本阶段 worker 指 API 进程。Agent 任务仍由创建它的进程执行；Redis 不负责任务排队或
-执行接管。共享工作目录仍使用原有文件系统。独立运行 `agent_flow.api` 时也要配置 Redis。
+### 数据与职责
 
-### 事件与续传
+- Mongo `runs` 是编排和单聊执行状态的事实来源。每次单聊回复及重新生成都有独立
+  `run_id`；消息的 `run_id` 指向当前尝试，`source_message_id` 用于查找全部尝试。
+- `RunStateService` 先更新 Mongo，再删除 Redis 快照。点查未命中才回填，列表直接查库。
+  `cache:v2:run:{run_id}` 默认 TTL 5 秒；失效代次和条件回填阻止并发旧查询污染缓存。
+  代次标记的 TTL 长于回填窗口，因此删除后不会永久遗留缓存元数据。
+- 缓存操作超时 0.5 秒，删除共尝试 3 次。失败时记录日志并依靠 TTL 收敛；查询回源。
+  这不是强一致或崩溃补偿方案，数据库提交到缓存失效之间仍可能短暂旧读。
+- `RedisExecutionControl` 只维护 `control:v2:{kind}:{run_id}`、活跃索引、心跳、取消和审批。
+  缓存删除不影响控制记录。kind 为 `orchestration` 或 `dm_reply`，两者均以 run ID 定位。
+  取消依旧返回 202，所属 worker 每 500ms 检查信号。业务数据和最终事件处理完后才释放控制。
+  启动和执行控制依赖 Redis；缓存降级不意味着允许绕过抢占启动任务。
 
-- `events:run:{runtime_scope_id}` 保存 Agent 事件；`events:scope:{scope_id}` 保存 IM 合流。
-  键名前统一加配置前缀。群聊事件 scope 是 room ID；单聊是 conversation ID。
-- 群聊先建立消息与 Run 的关联及 Redis 路由，再启动执行；运行事件发布到两个 Stream。
-- 非增量事件继续归档 Mongo；`llm.delta`、`agent.delta` 仅保存 Redis。
-- 每条 Stream 最多约 100,000 条，按最近 24 小时裁剪，并在闲置 24 小时后过期。
-  数量限制可能缩短高流量会话的实际续传窗口。裁剪在写入和开始读取时执行。
-- SSE `id` 是当前 Stream 的 Redis ID，JSON `event_id` 仍是业务去重 ID。
-  客户端重连发送 `Last-Event-ID`；多个连接独立 `XREAD`，没有竞争消费组。
-- 首次连接合并 Mongo 历史与 Redis 增量，发送 `stream.ready` 后进入实时流。
-  游标过期发送 `stream.reset`，客户端清空事件视图并重新同步。历史 token 被裁剪后，
-  只能恢复归档事件和最终消息。每 15 秒发送空闲心跳。
-- 查询执行详情继续读取 Mongo，旧事件无需迁移；旧历史没有 token 续传能力。
+### 两条事件通道
 
-### 状态、取消与确认
+- `events:v2:run:{run_id}`：模型调用、思考、工具与智能体输出。持久化在 `events`；
+  `llm.delta` / `agent.delta` 只短期保存在 Redis。
+- `events:v2:scope:{scope_id}`：流程、任务、智能体生命周期，以及消息、审批、产物通知。
+  持久化在 `im_events`，不会自动复制 run Stream。群聊 scope 是 room，单聊是 conversation。
+- 事件带 `version=2`、run/scope/conversation/message 关联；每次智能体调用独立
+  `execution_id`，步骤开始、结束与工具事件精确关联。同一智能体重复执行不会合并轨迹。
+- Stream 默认保留最近 24 小时、约 100,000 条。SSE 使用 Redis ID 续传，`event_id` 去重，
+  每 15 秒空闲心跳。摘要和 scope 重连会补查数据库，包括已经归档但推送失败的事件。
+- 持久化事件先归档，再推送；推送单次最多等待 1 秒，共尝试 3 次。失败不改变已完成业务状态，
+  没有持久化重试队列，未归档事件和过期 token 不承诺恢复。
 
-Redis `state:{kind}:{target_id}` 保存当前状态，`active` 索引活跃任务。
-群聊 kind 为 `orchestration`、target 为 Run ID；单聊 kind 为 `dm_reply`、target 为用户消息 ID。
-单聊的运行事件范围仍然是 conversation ID，两种 ID 不可混用。
+### 查询与界面
 
-取消接口返回 HTTP 202；`cancel_requested` 表示取消请求已登记，并非执行已停止。
-所属进程每 500ms 检查控制记录，完成取消后再推送终态。人工确认记录也存放 Redis，
-可以在任意 API worker 提交结果。运行监控和消息列表合并 Redis 当前状态与 Mongo 历史。
+- 房间/会话现有 `/events` SSE 只返回 scope；默认界面只显示业务轨迹名称。
+- `GET /api/im/runs/{run_id}/events?view=summary&execution_id=...&limit=100&after=...`
+  返回 `{items, next_cursor}`，不含正文；`limit` 最大 200。省略 `view` 仍兼容旧全量查询。
+- `GET /api/im/runs/{run_id}/events/stream` 是摘要 SSE，可选 `execution_id`。
+- `GET /api/im/runs/{run_id}/events/{event_id}` 返回单事件正文。
+- `GET /api/im/scopes/{scope_id}/events/{event_id}` 返回业务事件详情。
+- 首次展开 scope 获取名称并订阅摘要；再点击单条名称才加载正文。同一 run 共享连接，
+  全部折叠或切换会话关闭连接。逐 token 增量不列行，最终内容归档后可查看。
+- 正常回复、产物和人工确认仍直接可见。独立 agent_flow 新增
+  `/api/runs/{run_id}/scope/events`，原 run SSE 保留执行事件。
 
-每个进程每 10 秒刷新心跳，心跳有效期 30 秒。失联任务由其他活跃进程标记中断，
-不会自动接管或重跑。API 启动不再批量取消其他进程的任务。
-上线前停止旧版本进程中的运行任务；没有 Redis 归属记录的旧运行中任务不迁移执行。
+### 发布与验证
 
-异步接口改造后，调用事件 `publish()`、Run 创建/查询/取消，以及会发布事件的 IM
-业务方法时必须 `await`。纯 Mongo 历史读取仍保持同步。资源通过 FastAPI lifespan
-初始化和关闭，测试中也应使用同一事件循环并管理 lifespan/运行时连接。
-
-### 验证
+先停止接收新执行，等待或取消旧版本任务，再配套更新前后端和重启所有 worker。
+不要让新旧 worker 混跑。新版键空间隔离旧镜像；不清空共享 Redis。
+旧 Mongo 事件保留但不在新轨迹中展示，历史聊天消息照常显示，不迁移运行中的旧任务。
 
 ```bash
 /Users/zxcvbzzy1/miniconda3/envs/MY_env/bin/python -m pytest agent_flow/api_services_test.py im_backend/tests/test_redis_runtime.py im_backend/tests/test_redis_im_integration.py im_backend/tests/test_run_monitor.py im_backend/tests/test_coding_unification_and_builder.py -v
+node --test IM_front/checks/trace_client_check.mjs
 cd IM_front
 npm run build
 ```
 
-第一组测试使用独立 Redis key 前缀并启动子进程验证跨进程广播与控制；第二组使用
-独立 Mongo 测试数据库及临时上传目录验证真实 IM 接口。均不调用真实 LLM，结束时
-只清理测试创建的命名空间，不使用 `FLUSHDB` 或 `FLUSHALL`。
+后端测试使用独立 Redis 前缀、Mongo 测试数据库及临时上传目录，模型/执行器使用替身。
+覆盖跨进程广播与控制、缓存竞争及故障、摘要分页与重连、重复调用、重新生成和删除。
+测试只清理自己的命名空间，不使用 `FLUSHDB` 或 `FLUSHALL`。
+
+乐观锁版本控制
+
+
+[客户端连接] 
+     │
+     ├── 携带 last_id (旧游标)
+     │
+     ├── 校验游标有效性 (first <= last_id <= high)
+     │      ├─ [有效] ──► 跳过全量拉取，直接从 last_id 继续监听
+     │      └─ [失效] ──► 发送 stream.reset，全量对齐 (DB+Redis) ──► 游标强行推至 high
+     │
+     ├── 进入增量循环 (XREAD key: last_id)
+     │      └─ 每收到一条新消息 ──► last_id = cursor (向前推进)
+     │
+     └── [网络中断/重连] ──► 客户端携带最新的 last_id 重新请求！

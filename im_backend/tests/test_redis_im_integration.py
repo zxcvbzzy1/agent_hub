@@ -5,6 +5,10 @@ import asyncio
 import json
 import os
 import uuid
+from types import SimpleNamespace
+from redis.exceptions import ConnectionError
+from pymongo.errors import OperationFailure
+from im_backend.tests.test_redis_runtime import runtime, decode
 
 import httpx
 import pytest
@@ -85,22 +89,22 @@ async def test_dm_reply_artifact_history_state_and_cleanup(backend, monkeypatch)
     await post(client, '/favorites', headers, {'scope_type':'conversation','scope_id':cid,'content':'remember'})
     mid = (await post(client, f'/conversations/{cid}/messages', headers,
         {'content_parts':[{'type':'text','text':'hello'}]}))['message_id']
-    await post(client, f'/conversations/{cid}/reply', headers, {'message_id':mid})
-    assert (await wait_finished(container.bridge.runtime, 'dm_reply', mid))['status'] == 'finished'
+    run_id = (await post(client, f'/conversations/{cid}/reply', headers, {'message_id':mid}))['run_id']
+    assert (await wait_finished(container.bridge.runtime, 'dm_reply', run_id))['status'] == 'finished'
     response = await client.get(f'/api/im/conversations/{cid}/messages')
     messages = response.json()['items']
     assert messages[0]['status'] == 'finished'
     reply = next(m for m in messages if m['sender_type']=='agent')
     assert reply['metadata']['reply_to'] == mid
     assert any(p['type']=='artifact' for p in reply['content_parts'])
-    assert container.bridge.events.list_events(cid)
+    assert container.bridge.events.list_events(run_id)
     assert instances[0].states['pinned_context']
     r = await client.delete(f'/api/im/conversations/{cid}', headers=headers)
     assert r.status_code == 200, r.text
     runtime = container.bridge.runtime
-    assert await runtime.get_state('dm_reply', mid) is None
-    assert await runtime.redis.exists(runtime.key(f'events:scope:{cid}')) == 0
-    assert container.bridge.events.list_events(cid) == []
+    assert await runtime.get_state('dm_reply', run_id) is None
+    assert await runtime.redis.exists(runtime.event_key('scope', cid)) == 0
+    assert container.bridge.events.list_events(run_id) == []
 
 
 @pytest.mark.asyncio
@@ -139,7 +143,7 @@ async def test_group_first_event_association_and_final_reply(backend, monkeypatc
     assert any(m['sender_type']=='agent' and m['content_parts'][0]['text']=='group answer' for m in msgs)
     tasks = (await client.get(f'/api/im/rooms/{rid}/tasks')).json()['items']
     assert tasks[0]['status'] == 'finished'
-    entries = await container.bridge.runtime.redis.xrange(container.bridge.runtime.key(f'events:scope:{rid}'))
+    entries = await container.bridge.runtime.redis.xrange(container.bridge.runtime.event_key('scope', rid))
     names = [json.loads(f['event'])['name'] for _, f in entries]
     assert names.index('run.created') < names.index('workflow.started')
     assert names[-1] == 'workflow.finished'
@@ -162,20 +166,20 @@ async def test_cross_worker_dm_cancel_and_monitor(backend, monkeypatch, tmp_path
     monkeypatch.setattr(container.bridge.agents,'build_run_agent',build)
     cid = (await post(client, '/agents/default_executor/conversations',headers,{}))['conversation_id']
     mid = (await post(client,f'/conversations/{cid}/messages',headers,{'content_parts':[{'type':'text','text':'wait'}]}))['message_id']
-    await post(client,f'/conversations/{cid}/reply',headers,{'message_id':mid})
+    run_id = (await post(client,f'/conversations/{cid}/reply',headers,{'message_id':mid}))['run_id']
     await asyncio.wait_for(entered.wait(),3)
     peer = core.IMContainer()
     peer.files.storage = LocalFileStorage(tmp_path/'peer-uploads')
     await peer.bridge.runtime.start()
     monkeypatch.setattr(core,'get_container',lambda:peer)
     try:
-        assert (await container.bridge.runtime.get_state('dm_reply',mid))['status']=='running'
+        assert (await container.bridge.runtime.get_state('dm_reply',run_id))['status']=='running'
         active = (await client.get('/api/im/runs/active',headers=headers)).json()['items']
-        assert any(r['run_id']==mid for r in active)
+        assert any(r['run_id']==run_id for r in active)
         response = await client.post(f'/api/im/conversations/{cid}/messages/{mid}/cancel',headers=headers)
         assert response.status_code == 202, response.text
         assert response.json()['item']['cancel_requested'] is True
-        state = await wait_finished(container.bridge.runtime,'dm_reply',mid)
+        state = await wait_finished(container.bridge.runtime,'dm_reply',run_id)
         assert state['status']=='cancelled'
     finally:
         await peer.bridge.runtime.close()
@@ -193,10 +197,10 @@ async def test_coding_agent_deltas_and_artifacts_use_redis(backend, monkeypatch)
     agent = await post(client,'/agents',headers,{'name':'coding','metadata':{'agent_kind':'codex'}})
     cid = (await post(client,f"/agents/{agent['agent_id']}/conversations",headers,{}))['conversation_id']
     mid = (await post(client,f'/conversations/{cid}/messages',headers,{'content_parts':[{'type':'text','text':'hello'}]}))['message_id']
-    await post(client,f'/conversations/{cid}/reply',headers,{'message_id':mid})
-    state = await wait_finished(container.bridge.runtime,'dm_reply',mid)
+    run_id = (await post(client,f'/conversations/{cid}/reply',headers,{'message_id':mid}))['run_id']
+    state = await wait_finished(container.bridge.runtime,'dm_reply',run_id)
     assert state['status']=='finished',state
-    events = container.bridge.events.list_events(cid)
+    events = container.bridge.events.list_events(run_id)
     assert not any(e['name']=='agent.delta' for e in events)
     assert any(e['name']=='artifacts.document' for e in events)
     messages = (await client.get(f'/api/im/conversations/{cid}/messages')).json()['items']
@@ -242,5 +246,214 @@ async def test_file_deletion_publishes_after_threaded_io(backend):
     response = await client.delete(f'/api/im/files/{file_id}',headers=headers)
     assert response.status_code==200,response.text
     assert container.files.get(file_id)['status']=='delete'
-    records = await container.bridge.runtime.redis.xrange(container.bridge.runtime.key(f'events:scope:{cid}'))
+    records = await container.bridge.runtime.redis.xrange(container.bridge.runtime.event_key('scope', cid))
     assert any(json.loads(f['event'])['name']=='file.deleted' for _,f in records)
+
+
+@pytest.mark.asyncio
+async def test_cache_aside_db_first_no_redis_business_overlay(backend, monkeypatch):
+    container, _, _ = backend
+    state = container.bridge.runs.states
+    rt = container.bridge.runtime
+    await state.create({'run_id': 'cache', 'status': 'pending', 'plan': {}})
+    assert (await state.get('cache'))['status'] == 'pending'
+    assert await rt.redis.get(rt.cache.keys('cache')[0])
+    await rt.put_state('orchestration', 'cache', {'status': 'running', 'plan': {'wrong': True}})
+    assert (await state.get('cache'))['status'] == 'pending'
+    assert 'plan' not in await rt.get_state('orchestration', 'cache')
+    real_update = container.store.update_one
+    def fail(*args, **kwargs):
+        raise OperationFailure('simulated DB failure')
+    monkeypatch.setattr(container.store, 'update_one', fail)
+    with pytest.raises(OperationFailure):
+        await state.update('cache', {'status': 'finished'})
+    assert json.loads(await rt.redis.get(rt.cache.keys('cache')[0]))['status'] == 'pending'
+    monkeypatch.setattr(container.store, 'update_one', real_update)
+    await state.update('cache', {'status': 'finished', 'plan': {'saved': True}})
+    assert await rt.redis.get(rt.cache.keys('cache')[0]) is None
+    assert (await state.get('cache'))['plan'] == {'saved': True}
+    assert (await rt.get_state('orchestration', 'cache'))['status'] == 'running'
+
+
+@pytest.mark.asyncio
+async def test_invalidation_fences_concurrent_old_fill(runtime):
+    entered, resume = asyncio.Event(), asyncio.Event()
+    async def old_loader():
+        entered.set()
+        await resume.wait()
+        return {'status': 'pending'}
+    read = asyncio.create_task(runtime.cache.get('race', old_loader))
+    await entered.wait()
+    await runtime.cache.invalidate('race')
+    resume.set()
+    assert (await read)['status'] == 'pending'  # The already in-flight read may finish.
+    assert await runtime.redis.get(runtime.cache.keys('race')[0]) is None
+    assert await runtime.cache.get('race', lambda: {'status': 'finished'}) == {'status': 'finished'}
+
+
+@pytest.mark.asyncio
+async def test_cache_failure_retries_and_expires(runtime, monkeypatch):
+    runtime.cache.ttl = 1
+    await runtime.cache.get('ttl', lambda: {'status': 'pending'})
+    original_eval = runtime.redis.eval
+    calls = 0
+    async def broken(*args):
+        nonlocal calls
+        calls += 1
+        raise ConnectionError('cache unavailable')
+    monkeypatch.setattr(runtime.redis, 'eval', broken)
+    assert not await runtime.cache.invalidate('ttl')
+    assert calls == 3
+    monkeypatch.setattr(runtime.redis, 'eval', original_eval)
+    await asyncio.sleep(1.05)
+    assert await runtime.cache.get('ttl', lambda: {'status': 'finished'}) == {'status': 'finished'}
+    async def unavailable(*args):
+        raise ConnectionError('offline')
+    monkeypatch.setattr(runtime.redis, 'mget', unavailable)
+    assert await runtime.cache.get('ttl', lambda: {'status': 'database'}) == {'status': 'database'}
+
+
+@pytest.mark.asyncio
+async def test_summary_pagination_details_and_execution_filter(backend):
+    container, client, headers = backend
+    events = container.bridge.events
+    await container.bridge.runs.states.create({'run_id': 'details', 'scope_id': 'room', 'status': 'running'})
+    actor = SimpleNamespace(id='agent', name='Agent', states={'is_finished': True})
+    for _ in range(2):
+        async with events.execution('details', actor):
+            await events.publish('details', 'tool.called', {'agent_id': 'agent', 'arguments': {'large': 'x' * 10000}})
+            await events.publish('details', 'llm.completed', {'agent_id': 'agent', 'content': 'private body'})
+            await events.no_store_publish('details', 'llm.delta', {'delta': 'private token'})
+    archived = events.list_events('details')
+    ids = {e['execution_id'] for e in archived}
+    assert len(ids) == 2
+    execution_id = archived[0]['execution_id']
+    first = (await client.get('/api/im/runs/details/events', headers=headers,
+                             params={'view': 'summary', 'execution_id': execution_id, 'limit': 1})).json()
+    assert len(first['items']) == 1 and first['next_cursor']
+    assert 'payload' not in first['items'][0]
+    second = (await client.get('/api/im/runs/details/events', headers=headers,
+                              params={'view': 'summary', 'execution_id': execution_id, 'limit': 1,
+                                      'after': first['next_cursor']})).json()
+    assert second['next_cursor'] is None
+    assert second['items'][0]['event_id'] != first['items'][0]['event_id']
+    detail = await client.get(f"/api/im/runs/details/events/{first['items'][0]['event_id']}", headers=headers)
+    assert detail.json()['item']['payload']['arguments']['large'] == 'x' * 10000
+    scope = container.room_events.list_events('room')
+    assert len(scope) == 4
+    assert not any(e['name'].startswith(('llm.', 'tool.')) for e in scope)
+    assert all(e['execution_id'] in ids for e in scope)
+    assert (await client.get('/api/im/runs/missing/events?view=summary', headers=headers)).status_code == 404
+    # The old full-history contract still accepts a legacy DM conversation ID.
+    container.store.insert_one('events', {'run_id': 'legacy-conversation', 'event_id': 'legacy',
+                                          'name': 'agent.think', 'payload': {'think': 'old'}})
+    legacy = await client.get('/api/im/runs/legacy-conversation/events', headers=headers)
+    assert legacy.json()['items'][0]['payload']['think'] == 'old'
+
+
+@pytest.mark.asyncio
+async def test_summary_reconnect_recovers_failed_delivery_and_transforms_live(backend, monkeypatch):
+    container, _, _ = backend
+    events, rt = container.bridge.events, container.bridge.runtime
+    await container.bridge.runs.states.create({'run_id': 'replay', 'scope_id': 'scope', 'status': 'running'})
+    await events.publish('replay', 'llm.started', {})
+    stream = events.stream('replay', summary=True)
+    assert decode(await anext(stream))['name'] == 'llm.started'
+    ready = await anext(stream)
+    cursor = next(line[4:] for line in ready.splitlines() if line.startswith('id: '))
+    await stream.aclose()
+    original_append = rt.append
+    attempts = 0
+    async def fail(*args):
+        nonlocal attempts
+        attempts += 1
+        raise ConnectionError('lost delivery')
+    monkeypatch.setattr(rt, 'append', fail)
+    missed = await events.publish('replay', 'agent.think', {'think': 'must not appear in summary'})
+    assert attempts == 3
+    monkeypatch.setattr(rt, 'append', original_append)
+    stream = events.stream('replay', last_id=cursor, summary=True)
+    received = []
+    while True:
+        item = decode(await anext(stream))
+        if item['name'] == 'stream.ready':
+            break
+        received.append(item)
+    assert missed['event_id'] in {e['event_id'] for e in received}
+    assert all('payload' not in e for e in received)
+    await events.publish('replay', 'llm.completed', {'content': 'full answer'})
+    assert 'payload' not in decode(await asyncio.wait_for(anext(stream), 3))
+    await stream.aclose()
+
+
+@pytest.mark.asyncio
+async def test_regeneration_separates_attempts_and_cleanup_removes_all(backend, monkeypatch):
+    container, client, headers = backend
+    original = container.bridge.agents.build_run_agent
+    def build(agent_id):
+        agent = original(agent_id)
+        async def execute(prompt):
+            from domain.run_context import current_run_id
+            await container.bridge.events.publish(current_run_id.get(), 'agent.think', {'agent_id': agent_id, 'think': 'reason'})
+            agent.states.update(final='answer', is_finished=True)
+        agent.start_with_history = execute
+        return agent
+    monkeypatch.setattr(container.bridge.agents, 'build_run_agent', build)
+    cid = (await post(client, '/agents/default_executor/conversations', headers, {}))['conversation_id']
+    mid = (await post(client, f'/conversations/{cid}/messages', headers, {'content_parts': [{'type': 'text', 'text': 'hello'}]}))['message_id']
+    first = (await post(client, f'/conversations/{cid}/reply', headers, {'message_id': mid}))['run_id']
+    await wait_finished(container.bridge.runtime, 'dm_reply', first)
+    result = await container.im.regenerate_conversation_reply(conversation_id=cid, message_id=mid)
+    second = result['reply']['run_id']
+    assert first != second and first != cid and first != mid
+    await wait_finished(container.bridge.runtime, 'dm_reply', second)
+    # Simulate an old completion arriving after regeneration.
+    await container.bridge.runs.states.update(first, {'status': 'failed'})
+    assert container.store.find_one('im_messages', {'message_id': mid})['status'] == 'finished'
+    assert container.bridge.events.list_events(first)[0]['execution_id'] != container.bridge.events.list_events(second)[0]['execution_id']
+    deleted = await client.delete(f'/api/im/conversations/{cid}', headers=headers)
+    assert deleted.status_code == 200
+    assert deleted.json()['item']['stats']['runs'] == 2
+    for rid in (first, second):
+        assert container.store.find_one('runs', {'run_id': rid}) is None
+        assert container.bridge.events.list_events(rid) == []
+        assert await container.bridge.runtime.get_state('dm_reply', rid) is None
+        assert await container.bridge.runtime.redis.get(container.bridge.runtime.cache.keys(rid)[0]) is None
+
+
+@pytest.mark.asyncio
+async def test_plan_steps_persist_before_events_and_share_execution_links(backend):
+    from application.services.runs import ObservablePlanOrchestrator, RecordingEventBus
+    from domain.state import Plan, PlanStep
+    from domain.run_context import current_run_id
+    container, _, _ = backend
+    streams, states = container.bridge.events, container.bridge.runs.states
+    await states.create({'run_id': 'steps', 'scope_id': 'room', 'status': 'running'})
+    agent = SimpleNamespace(id='executor', name='Executor', states={})
+    async def execute(prompt):
+        record = container.store.find_one('runs', {'run_id': 'steps'})
+        assert any(s['status'] == 'in_progress' for s in record['plan']['steps'])
+        await streams.publish('steps', 'tool.called', {'agent_id': 'executor', 'arguments': {}})
+        agent.states.update(is_finished=True, final='done')
+    agent.start = execute
+    plan = Plan(steps=[PlanStep(step_id=str(i), title=f'Step {i}', executor_id='executor') for i in range(2)])
+    orchestrator = ObservablePlanOrchestrator(
+        planner=SimpleNamespace(id='planner'), executors={'executor': agent},
+        step_context_engine=SimpleNamespace(build=lambda state: 'prompt'),
+        event_bus=RecordingEventBus('steps', streams), run_id='steps', streams=streams, states=states)
+    await orchestrator._dispatch({'event_dispatch': 'plan.generated', 'playload': {'plan': plan}})
+    token = current_run_id.set('steps')
+    try:
+        await asyncio.gather(*(orchestrator._run_plan_step(step, plan) for step in plan.steps))
+    finally:
+        current_run_id.reset(token)
+    calls = streams.list_events('steps')
+    assert len(calls) == 2
+    assert len({e['execution_id'] for e in calls}) == 2
+    business = container.room_events.list_events('room')
+    for call in calls:
+        linked = [e for e in business if e['execution_id'] == call['execution_id']]
+        assert {e['name'] for e in linked} == {
+            'plan.step.started', 'agent.execution.started', 'agent.execution.finished', 'plan.step.observed'}
+    record = container.store.find_one('runs', {'run_id': 'steps'})
+    assert all(step['status'] == 'done' for step in record['plan']['steps'])

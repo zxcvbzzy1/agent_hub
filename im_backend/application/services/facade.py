@@ -69,24 +69,32 @@ class IMService:
         bridge.runtime.on_orphan = self._handle_orphan
 
     async def _handle_orphan(self, state):
+        run_id = state["run_id"]
+        record = self._store.find_one("runs", {"run_id": run_id})
+        if not record:
+            await self._bridge.runtime.delete_runtime(run_id, kind=state["kind"])
+            return
+        if record.get("status") not in {"pending", "running"}:
+            await self._bridge.runtime.put_state(state["kind"], run_id,
+                                                 {"status": record["status"], "cancel_requested": False})
+            return
         if state["kind"] == "dm_reply":
             await self.conversations._mark_reply_cancelled(
-                conversation_id=state["conversation_id"], message_id=state["target_id"],
-                agent_id=state["agent_id"], publish=True, reason="执行进程失联，运行中断")
-            for item in await self._bridge.human_confirmations.list_pending(state["conversation_id"]):
+                conversation_id=record["conversation_id"], message_id=record["message_id"],
+                agent_id=record["agent_id"], run_id=run_id,
+                publish=True, reason="执行进程失联，运行中断")
+            for item in await self._bridge.human_confirmations.list_pending(run_id):
                 await self._bridge.human_confirmations.resolve(
-                    run_id=item["run_id"], confirmation_id=item["confirmation_id"],
-                    approved=False, reason="执行进程失联")
+                    run_id=run_id, confirmation_id=item["confirmation_id"], approved=False, reason="执行进程失联")
+            await self._bridge.runs.states.finish_control(run_id)
         else:
             await self._bridge.runs.handle_orphan(state)
 
     async def overlay_message_states(self, items):
         for item in items:
-            if item.get("sender_type") != "user":
+            if item.get("sender_type") != "user" or not item.get("run_id"):
                 continue
-            kind = "orchestration" if item.get("run_id") else "dm_reply"
-            target_id = item.get("run_id") or item["message_id"]
-            state = await self._bridge.runtime.get_state(kind, target_id)
+            state = await self._bridge.runs.states.get(item["run_id"])
             if state:
                 item.update(status=state["status"], cancel_requested=state.get("cancel_requested", False))
         return items

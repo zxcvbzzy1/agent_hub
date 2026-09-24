@@ -20,7 +20,7 @@ class PlannerFinalReplyWriter:
         self._messages = messages
 
     async def handle_event(self, event: dict[str, Any]) -> None:
-        if event.get("name") != "planner.final":
+        if event.get("name") not in {"planner.final", "agent.final"}:
             return
         payload = event.get("payload") or {}
         run_id = event.get("run_id") or payload.get("run_id") or ""
@@ -38,14 +38,16 @@ class PlannerFinalReplyWriter:
         if not room_id:
             return
 
-        # 幂等：每个 run 只落一条 planner_final 回复。
+        source = "planner_final" if event["name"] == "planner.final" else "agent_final"
+        # A repeated delivery must not create another reply; distinct executions may reply.
         for message in self._store.find_many(
             "im_messages", {"run_id": run_id, "sender_type": "agent"}
         ):
-            if (message.get("metadata") or {}).get("source") == "planner_final":
+            metadata = message.get("metadata") or {}
+            if metadata.get("source_event_id") == event["event_id"]:
                 return
 
-        planner_id = payload.get("planner_id") or payload.get("agent_id") or "default_planner"
+        planner_id = payload.get("planner_id") or payload.get("agent_id") or event.get("agent_id") or "default_planner"
         await self._messages.add_message(
             room_id=room_id,
             conversation_id=user_message.get("conversation_id", ""),
@@ -55,5 +57,6 @@ class PlannerFinalReplyWriter:
             reply_to=user_message.get("message_id", ""),
             run_id=run_id,
             status="finished",
-            metadata={"source": "planner_final", "run_id": run_id},
+            metadata={"source": source, "run_id": run_id, "source_event_id": event["event_id"],
+                      "execution_id": event.get("execution_id", "")},
         )

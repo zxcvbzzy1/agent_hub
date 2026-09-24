@@ -15,6 +15,8 @@ class IMCleanupService:
         self._store.delete_many("im_conversation_files", {"conversation_id": conversation_id})
         messages = self._store.find_many("im_messages", {"conversation_id": conversation_id})
         run_ids = self._run_ids(messages)
+        run_count = sum(self._store.find_one("runs", {"run_id": rid}) is not None for rid in run_ids)
+        runtime_deleted = await self._delete_runtime_for_runs(run_ids)
         for message in messages:
             await self._remove_message_events(message)
         if self.runtime:
@@ -27,17 +29,18 @@ class IMCleanupService:
             "messages": self._store.delete_many("im_messages", {"conversation_id": conversation_id}),
             "im_events": await self._delete_scope_events(conversation_id),
             "runtime_events": self._store.delete_many("events", {"run_id": conversation_id}),
-            "runs": 0,
+            "runs": run_count,
             "message_actions": self._delete_message_actions(messages),
         }
-        stats["runtime_events"] += (await self._delete_runtime_for_runs(run_ids))
-        stats["runs"] += self._delete_runs(run_ids)
+        stats["runtime_events"] += runtime_deleted
         return stats
 
     async def delete_room(self, room_id: str) -> dict[str, int]:
         self._store.delete_many("im_conversation_files", {"room_id": room_id})
         messages = self._store.find_many("im_messages", {"room_id": room_id})
         run_ids = self._run_ids(messages)
+        run_count = sum(self._store.find_one("runs", {"run_id": rid}) is not None for rid in run_ids)
+        runtime_deleted = await self._delete_runtime_for_runs(run_ids)
         for message in messages:
             await self._remove_message_events(message)
         if self.runtime:
@@ -49,8 +52,8 @@ class IMCleanupService:
             "rooms": self._store.delete_one("im_rooms", {"room_id": room_id}),
             "messages": self._store.delete_many("im_messages", {"room_id": room_id}),
             "im_events": await self._delete_scope_events(room_id),
-            "runtime_events": await self._delete_runtime_for_runs(run_ids),
-            "runs": self._delete_runs(run_ids),
+            "runtime_events": runtime_deleted,
+            "runs": run_count,
             "message_actions": self._delete_message_actions(messages),
             # 群聊每次编排都会在 agent_flow 的 conversations/messages/runs 里建一份运行态镜像
             # （room_id 仅存在于 metadata 中），旧的 delete_room 只清 im_* 集合，会把这些运行态记录留成孤儿。
@@ -99,21 +102,16 @@ class IMCleanupService:
         return stats
 
     async def delete_message(self, message: dict[str, Any]) -> dict[str, int]:
+        ids = self._run_ids([message]) if message.get("sender_type") == "user" else []
+        runtime_deleted = await self._delete_runtime_for_runs(ids)
         await self._remove_message_events(message)
         message_id = message.get("message_id", "")
         self._store.delete_many("im_conversation_files", {"message_id": message_id})
-        run_id = message.get("run_id", "")
-        stats = {
+        return {
             "messages": self._store.delete_one("im_messages", {"message_id": message_id}),
             "message_actions": self._store.delete_many("im_message_actions", {"message_id": message_id}),
-            "im_events": 0,
-            "runtime_events": 0,
-            "runs": 0,
+            "im_events": 0, "runtime_events": runtime_deleted, "runs": len(ids),
         }
-        if run_id:
-            stats["runtime_events"] += (await self._delete_runtime_for_runs([run_id]))
-            stats["runs"] += self._delete_runs([run_id])
-        return stats
 
     async def _remove_message_events(self, message):
         scope = message.get("room_id") or message.get("conversation_id")
@@ -123,11 +121,11 @@ class IMCleanupService:
             return (payload.get("message_id") == mid or
                     (payload.get("message") or {}).get("message_id") == mid or
                     (payload.get("reply") or {}).get("message_id") == mid)
-        if self.runtime and scope:
-            await self.runtime.remove_projected(scope, matches)
         for event in self._store.find_many("im_events", {"scope_id": scope}):
             if matches(event):
                 self._store.delete_one("im_events", {"event_id": event["event_id"]})
+        if self.runtime and scope:
+            await self.runtime.remove_projected(scope, matches)
 
     def _agent_related_messages(self, room_id: str, agent_id: str) -> list[dict[str, Any]]:
         return [
@@ -137,11 +135,11 @@ class IMCleanupService:
         ]
 
     async def _delete_scope_events(self, scope_id: str) -> int:
+        count = self._store.delete_many("im_events", {"scope_id": scope_id}) + self._store.delete_many(
+            "im_events", {"room_id": scope_id})
         if self.runtime:
-            await self.runtime.redis.delete(self.runtime.key(f"events:scope:{scope_id}"))
-        return self._store.delete_many("im_events", {"scope_id": scope_id}) + self._store.delete_many(
-            "im_events", {"room_id": scope_id}
-        )
+            await self.runtime.redis.delete(self.runtime.event_key("scope", scope_id))
+        return count
 
     def _delete_agent_events(self, agent_id: str) -> int:
         deleted = 0
@@ -180,8 +178,8 @@ class IMCleanupService:
                 if run_id
             ]
             run_ids = list(dict.fromkeys(run_ids))
-            stats["runtime_events"] += (await self._delete_runtime_for_runs(run_ids))
-            stats["runtime_runs"] += sum(self._store.delete_one("runs", {"run_id": run_id}) for run_id in run_ids)
+            stats["runtime_events"] += await self._delete_runtime_for_runs(run_ids)
+            stats["runtime_runs"] += len(runtime_runs)
             stats["runtime_runs"] += self._store.delete_many("runs", {"conversation_id": conversation_id})
             stats["runtime_messages"] += self._store.delete_many("messages", {"conversation_id": conversation_id})
             stats["runtime_conversations"] += self._store.delete_one(
@@ -190,13 +188,17 @@ class IMCleanupService:
         return stats
 
     async def _delete_runtime_for_runs(self, run_ids: list[str]) -> int:
-        if self.runtime:
-            for run_id in run_ids:
-                await self.runtime.delete_runtime(run_id)
-        return sum(self._store.delete_many("events", {"run_id": run_id}) for run_id in run_ids)
-
-    def _delete_runs(self, run_ids: list[str]) -> int:
-        return sum(self._store.delete_one("runs", {"run_id": run_id}) for run_id in run_ids)
+        from application.services.run_state import RunStateService
+        count = 0
+        for run_id in set(run_ids):
+            if self.runtime:
+                result = await RunStateService(self._store, self.runtime).delete(run_id)
+                count += result["events"]
+            else:
+                count += self._store.delete_many("events", {"run_id": run_id})
+                self._store.delete_many("im_events", {"run_id": run_id})
+                self._store.delete_one("runs", {"run_id": run_id})
+        return count
 
     def _delete_message_actions(self, messages: list[dict[str, Any]]) -> int:
         return sum(
@@ -205,7 +207,12 @@ class IMCleanupService:
         )
 
     def _run_ids(self, messages: list[dict[str, Any]]) -> list[str]:
-        return [message["run_id"] for message in messages if message.get("run_id")]
+        ids = {m["run_id"] for m in messages if m.get("run_id")}
+        for message in messages:
+            if message.get("sender_type") == "user":
+                ids.update(r["run_id"] for r in self._store.find_many(
+                    "runs", {"source_message_id": message["message_id"]}))
+        return list(ids)
 
     def _add_stats(self, target: dict[str, int], source: dict[str, int]) -> None:
         for key, value in source.items():

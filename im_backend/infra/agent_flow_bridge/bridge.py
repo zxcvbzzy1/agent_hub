@@ -246,6 +246,9 @@ class AgentFlowBridge:
         message_id: str | None = None,
         auto_start: bool = True,
         pinned_context: list[str] | None = None,
+        scope_id: str | None = None,
+        im_conversation_id: str = "",
+        source_message_id: str = "",
     ) -> dict[str, Any]:
         return await self.runs.create_run(
             prompt=prompt,
@@ -259,6 +262,9 @@ class AgentFlowBridge:
             message_id=message_id,
             auto_start=auto_start,
             pinned_context=pinned_context or [],
+            scope_id=scope_id,
+            im_conversation_id=im_conversation_id,
+            source_message_id=source_message_id,
         )
 
     async def cancel_run(self, run_id: str) -> dict[str, Any]:

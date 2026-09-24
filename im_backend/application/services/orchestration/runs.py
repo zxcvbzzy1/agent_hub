@@ -132,7 +132,6 @@ class GroupRunService:
             user_id=user_id,
             conversation_id=conversation_id,
         )
-        await self._bridge.runtime.bind_scope(run["run_id"], room_id)
         result = await self._mark_dispatched(room_id, message_id, run)
         if auto_start:
             result["run"] = await self._bridge.runs.start_run(run["run_id"])
@@ -211,6 +210,9 @@ class GroupRunService:
         )
         return await self._bridge.create_run(
             prompt=prompt,
+            scope_id=room["room_id"],
+            im_conversation_id=conversation_id,
+            source_message_id=message["message_id"],
             mode=mode,
             executor_agent_id=executor_agent_id,
             planner_agent_id=planner_agent_id,
