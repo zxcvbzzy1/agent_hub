@@ -54,6 +54,8 @@ export function artifactIdentity(artifact = {}) {
 }
 
 export const sseEventNames = [
+  'agent.execution.started', 'agent.execution.finished', 'agent.execution.failed', 'agent.execution.cancelled',
+  'plan.generated', 'plan.replanned', 'task.updated', 'plan.step.started',
   'room.created',
   'room.updated',
   'message.created',
@@ -572,6 +574,16 @@ export function eventTone(name = '') {
 
 export function eventTitle(event) {
   const payload = event?.payload || {}
+  const businessNames = {
+    'agent.execution.started': '智能体开始执行', 'agent.execution.finished': '智能体执行完成',
+    'agent.execution.failed': '智能体执行失败', 'agent.execution.cancelled': '智能体执行已取消',
+    'run.created': '任务已创建', 'agent.reply.pending': '回复待执行', 'agent.reply.started': '回复开始',
+    'agent.reply.finished': '回复完成', 'plan.generated': '计划已生成', 'plan.replanned': '计划已调整',
+    'plan.step.started': '任务步骤开始', 'plan.step.observed': '任务步骤状态更新', 'plan.step.failed': '任务步骤失败',
+    'plan.wave.completed': '执行批次完成', 'wave.completed': '计划状态更新', 'task.updated': '任务状态更新',
+    'llm.started': '模型调用开始',
+  }
+  if (businessNames[event.name]) return [event.agent_name, businessNames[event.name]].filter(Boolean).join(' · ')
   if (event.name === 'llm.streaming') return '模型输出中'
   if (event.name === 'llm.completed') return '模型输出完成'
   if (event.name === 'agent.think') return '思考'

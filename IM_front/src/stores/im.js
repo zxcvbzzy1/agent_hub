@@ -202,13 +202,6 @@ export const useIMStore = defineStore('im', {
       this.conversations = response.items || []
       return this.conversations
     },
-    async fetchRunEvents(runId) {
-      // trace-card 懒加载：按 run_id 拉取该 run 的全量 runtime 事件（含 SSE 历史回放被剥离的重负载正文）。
-      // 不写入 this.events，避免污染响应式事件数组、重复触发 compactLlmEvents/时间线重算。
-      if (!runId) return []
-      const response = await imApi.runEvents(runId)
-      return response.items || []
-    },
     async fetchTasks(roomId = this.currentGroupRoom?.room_id) {
       if (!roomId) {
         this.tasks = []
@@ -702,7 +695,7 @@ export const useIMStore = defineStore('im', {
     async syncHumanConfirmations(source = this.source) {
       const ids = this.currentRoom?.type === 'group'
         ? [...new Set([...this.tasks.map(t => t.run_id), ...this.events.map(e => e.run_id)].filter(Boolean))]
-        : [this.currentConversation?.conversation_id].filter(Boolean)
+        : [...new Set([...this.messages.map(m => m.run_id), ...this.events.map(e => e.run_id)].filter(Boolean))]
       const responses = await Promise.all(ids.map(id => imApi.listRunConfirmations(id)))
       if (this.source === source) this.humanConfirmations = responses.flatMap(r => r.items || [])
     },
@@ -760,6 +753,7 @@ export const useIMStore = defineStore('im', {
       // agent_flow 层的工具人工确认（如危险 bash 命令）：弹窗审批用
       if (event.name === 'human.confirmation.requested' && event.payload?.confirmation_id) {
         const item = event.payload
+        this.syncHumanConfirmations().catch(() => {})
         if (!this.humanConfirmations.some((c) => c.confirmation_id === item.confirmation_id)) {
           this.humanConfirmations = [...this.humanConfirmations, item]
         }
@@ -793,13 +787,13 @@ export const useIMStore = defineStore('im', {
       if (event.name === 'agent.reply.started') {
         const messageId = event.payload?.message_id
         this.messages = this.messages.map((messageItem) => (
-          messageItem.message_id === messageId ? { ...messageItem, status: 'running' } : messageItem
+          messageItem.message_id === messageId ? { ...messageItem, status: 'running', run_id: event.run_id || event.payload?.run_id || messageItem.run_id } : messageItem
         ))
       }
       if (event.name === 'agent.reply.finished' || event.name === 'workflow.finished') {
         const { message_id: messageId, run_id: runId } = event.payload || {}
         this.messages = this.messages.map(item => (
-          (messageId && item.message_id === messageId) || (runId && item.run_id === runId)
+          (runId ? item.run_id === runId : messageId && item.message_id === messageId)
             ? { ...item, status: 'finished', cancel_requested: false } : item
         ))
         if (this.currentRoom?.type === 'group') this.fetchTasks().catch(() => {})
@@ -808,7 +802,7 @@ export const useIMStore = defineStore('im', {
         const runId = event.payload?.run_id
         const messageId = event.payload?.message_id
         this.messages = this.messages.map((messageItem) => (
-          messageItem.run_id === runId || messageItem.message_id === messageId
+          (runId ? messageItem.run_id === runId : messageId && messageItem.message_id === messageId)
             ? { ...messageItem, status: 'cancelled' }
             : messageItem
         ))
@@ -821,7 +815,7 @@ export const useIMStore = defineStore('im', {
         const messageId = event.payload?.message_id
         const nextStatus = event.payload?.cancelled ? 'cancelled' : 'failed'
         this.messages = this.messages.map((messageItem) => (
-          (runId && messageItem.run_id === runId) || (messageId && messageItem.message_id === messageId)
+          (runId ? messageItem.run_id === runId : messageId && messageItem.message_id === messageId)
             ? { ...messageItem, status: nextStatus, cancel_requested: false }
             : messageItem
         ))

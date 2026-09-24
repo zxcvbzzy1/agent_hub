@@ -30,6 +30,9 @@ class RunMonitorService:
         for record in await self._bridge.runs.list_runs():
             item = self._trim_orchestration_run(record)
             if record.get("status") in ACTIVE_STATUSES:
+                current = await self._bridge.runs.states.get(record["run_id"])
+                item["cancel_requested"] = bool(current and current.get("cancel_requested"))
+            if record.get("status") in ACTIVE_STATUSES:
                 active.append(item)
             elif len(recent) < recent_limit:
                 recent.append(item)
@@ -40,6 +43,9 @@ class RunMonitorService:
     async def cancel(self, target_id: str) -> dict[str, Any]:
         """通用中断：自动识别目标是编排 run 还是单聊回复，复用既有取消逻辑与事件广播。"""
         run = await self._bridge.runs.get_run(target_id)
+        if run is not None and run.get("kind") == "dm_reply":
+            return await self._conversations.cancel_conversation_reply(
+                conversation_id=run["conversation_id"], message_id=run["message_id"], run_id=target_id)
         if run is not None:
             message = self._store.find_one("im_messages", {"run_id": target_id}) or {}
             room_id = message.get("room_id", "")

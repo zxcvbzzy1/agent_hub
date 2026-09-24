@@ -53,6 +53,11 @@ import { useAuthStore } from '@/stores/auth'
 import { useIMStore } from '@/stores/im'
 import { imApi } from '@/api/im'
 import ArtifactCard from '@/components/ArtifactCard.vue'
+import ScopeTrace from '@/components/ScopeTrace.vue'
+import { TraceClient } from '@/utils/traceClient'
+import { buildScopeTraces } from '@/utils/scopeTraces'
+import { API_BASE_URL } from '@/api/http'
+import { sseEventNames, isArtifactEvent } from '@/utils/runtimeEvents'
 import ChatAttachments from '@/components/ChatAttachments.vue'
 import ChatFileCard from '@/components/ChatFileCard.vue'
 import { useChatFiles } from '@/composables/useChatFiles'
@@ -88,10 +93,14 @@ const composerExpanded = ref(false)
 const expandedComposerRef = ref(null)
 const mentions = draftField('mentions')
 const drawerPlannerId = ref('default_planner')
-const traceOpenOverrides = ref({})
-// trace-card 懒加载缓存：{ [runId]: { status: 'loading'|'loaded'|'error', byId: Map<event_id, fullEvent> } }
-// 折叠态只显示事件数量；展开某条 trace 时才按 run_id 拉全量正文，按 event_id 换入渲染。
-const runEventsCache = ref({})
+const traceRevision = ref(0)
+const traceClient = new TraceClient({
+  api: imApi, eventNames: sseEventNames,
+  openStream: runId => new EventSource(`${API_BASE_URL}/api/im/runs/${runId}/events/stream`),
+  changed: () => { traceRevision.value++ },
+})
+watch(draftKey, () => traceClient.close())
+onUnmounted(() => traceClient.close())
 const sidebarCollapsed = ref(false)
 // 侧栏分栏（Agents / Agent 群 / 对话列表）折叠状态，持久化到 localStorage。
 function loadSidebarBool(key, defaultVal = true) {
@@ -285,47 +294,22 @@ const canInterrupt = computed(() => {
 })
 
 const chatItems = computed(() => {
-  if (im.currentRoom?.type === 'group') {
-    // SSE 是房间级的，im.events 含本房间全部 run 的 runtime events；
-    // 用当前对话消息上的 run_id 集合过滤，避免把其它对话的编排轨迹串进当前视图。
-    const convRunIds = new Set(im.messages.map((message) => message.run_id).filter(Boolean))
-    const groupEvents = displayEvents.value.filter(
-      (event) => runtimeEventNames.has(event.name) && convRunIds.has(eventRunScope(event)),
-    )
-    return buildGroupTimelineItems({
-      messages: im.messages,
-      events: groupEvents,
-    })
-  }
-  const traces = buildConversationTraces({
-    messages: im.messages,
-    events: displayEvents.value.filter((event) => runtimeEventNames.has(event.name)),
-    conversationId: im.currentConversation?.conversation_id || '',
-    agentId: im.currentConversation?.agent_id || im.currentAgentId,
-  })
-  const traceItems = traces.map((trace) => ({
-    key: `trace-${trace.key}`,
-    kind: 'trace',
-    created_at: trace.insert_before_message_id
-      ? (im.messages.find((message) => message.message_id === trace.insert_before_message_id)?.created_at || trace.created_at) - 0.0001
-      : trace.created_at,
-    trace,
-  }))
-  const messageItems = im.messages.map((message) => ({
-    key: `message-${message.message_id}`,
-    kind: 'message',
-    created_at: message.created_at || 0,
-    message,
-  }))
-  const eventItems = displayEvents.value
-    .filter((event) => runtimeEventNames.has(event.name) && isPrimaryOutputEvent(event, 'dm'))
-    .map((event) => ({
-      key: `event-${event.event_id || `${event.name}-${event.created_at}`}`,
-      kind: 'event',
-      created_at: event.created_at || 0,
-      event,
-    }))
-  return [...messageItems, ...traceItems, ...eventItems].sort((a, b) => a.created_at - b.created_at)
+  const conversationId = im.currentRoom?.type === 'group'
+    ? im.currentGroupConversation?.conversation_id : im.currentConversation?.conversation_id
+  const runIds = new Set(im.messages.map(m => m.run_id).filter(Boolean))
+  const events = im.events.filter(event => event.version === 2 && event.category === 'scope' && (
+    event.conversation_id === conversationId || (!event.conversation_id && runIds.has(event.run_id))
+  ))
+  const messages = im.messages.map(message => ({ key: `message-${message.message_id}`, kind: 'message',
+    created_at: message.created_at || 0, message }))
+  const traces = buildScopeTraces(events).map(trace => ({ key: trace.key,
+    kind: 'scope-trace', created_at: trace.created_at, trace }))
+  // DM artifacts are already persisted in the assistant reply. Group artifacts remain visible.
+  const artifacts = im.currentRoom?.type === 'group' ? events.filter(isArtifactEvent).map(event => ({
+    key: event.event_id, kind: 'artifact', created_at: event.created_at, event,
+    artifact: event.payload?.artifact || {},
+  })) : []
+  return [...messages, ...traces, ...artifacts].sort((a, b) => a.created_at - b.created_at)
 })
 
 const chatScrollSignature = computed(() => {
@@ -337,6 +321,10 @@ const chatScrollSignature = computed(() => {
           .map((part) => part.text || part.diff || part.title || part.description || part.name || part.url || part.type || '')
           .join('').length
         return `m:${messageItem.message_id}:${messageItem.status}:${messageItem.created_at}:${contentSize}`
+      }
+      if (entry.kind === 'scope-trace') {
+        const trace = entry.trace
+        return `s:${trace.key}:${trace.event_count}:${trace.updated_at}`
       }
       if (entry.kind === 'trace') {
         const trace = entry.trace
@@ -423,95 +411,30 @@ function latestMessageText(item) {
   return part?.text || part?.diff || part?.title || part?.name || item.prompt || item.final || '暂无内容'
 }
 
-function isTraceOpen(trace) {
-  if (Object.prototype.hasOwnProperty.call(traceOpenOverrides.value, trace.key)) {
-    return traceOpenOverrides.value[trace.key]
-  }
-  return !trace.resolved
+function scopeTask(event) {
+  return im.currentRoom?.type === 'group'
+    ? im.tasks.find(task => task.run_id === event.run_id)
+    : im.messages.find(item => item.sender_type === 'user' && item.run_id === event.run_id)
 }
 
-function toggleTrace(trace) {
-  const willOpen = !isTraceOpen(trace)
-  traceOpenOverrides.value = {
-    ...traceOpenOverrides.value,
-    [trace.key]: willOpen,
-  }
-  if (willOpen) ensureTraceEvents(trace)
+function canStopScope(event) {
+  const task = scopeTask(event)
+  return Boolean(event.run_id && task && ['pending', 'running', 'sent'].includes(task.status) && !task.cancel_requested)
 }
 
-// 该 trace 是否含被历史回放剥离正文的事件（后端标记 truncated=true）。
-function traceHasTruncated(trace) {
-  return (trace?.events || []).some((event) => event?.truncated)
-}
-
-// 展开时按 run_id 拉取全量事件并缓存（幂等：loading/loaded 不重复拉）。scope 即 run_id。
-async function ensureTraceEvents(trace) {
-  const runId = trace?.scope
-  if (!runId || runId === 'scope') return
-  if (!traceHasTruncated(trace)) return
-  const cached = runEventsCache.value[runId]
-  if (cached && (cached.status === 'loading' || cached.status === 'loaded')) return
-  runEventsCache.value = { ...runEventsCache.value, [runId]: { status: 'loading', byId: cached?.byId || null } }
-  try {
-    const items = await im.fetchRunEvents(runId)
-    const byId = new Map()
-    for (const event of items) {
-      if (event?.event_id) byId.set(event.event_id, event)
-    }
-    runEventsCache.value = { ...runEventsCache.value, [runId]: { status: 'loaded', byId } }
-  } catch {
-    runEventsCache.value = { ...runEventsCache.value, [runId]: { status: 'error', byId: null } }
-  }
-}
-
-// 渲染用事件：已拉到全量则按 event_id 把被剥离的事件换成完整正文，否则用轻量事件。
-function traceEvents(trace) {
-  const cached = runEventsCache.value[trace?.scope]
-  if (!cached || cached.status !== 'loaded' || !cached.byId) return trace?.events || []
-  return (trace?.events || []).map((event) => (event?.event_id && cached.byId.get(event.event_id)) || event)
-}
-
-function traceEventsLoading(trace) {
-  return runEventsCache.value[trace?.scope]?.status === 'loading'
-}
-
-// 默认展开（运行中）或用户展开后仍含 truncated 事件的 trace，自动补拉一次全量。
-// 用稳定字符串做依赖键，避免每来一个事件就触发（缓存保证拉取幂等）。
-watch(
-  () =>
-    chatItems.value
-      .filter((entry) => entry.kind === 'trace' && isTraceOpen(entry.trace) && traceHasTruncated(entry.trace))
-      .map((entry) => entry.trace.scope)
-      .join(','),
-  () => {
-    for (const entry of chatItems.value) {
-      if (entry.kind === 'trace' && isTraceOpen(entry.trace) && traceHasTruncated(entry.trace)) {
-        ensureTraceEvents(entry.trace)
-      }
-    }
-  },
-  { immediate: true },
-)
-
-function traceActorName(trace) {
-  if (trace.actor_id === 'workflow') return '系统流程'
-  if (trace.actor_id === 'system') return '运行过程'
-  if (trace.actor_id === 'planner') return agentName(im.currentRoom?.metadata?.planner_agent_id || 'default_planner')
-  return agentName(trace.actor_id)
-}
-
-function traceTitle(trace) {
-  return trace.title || eventTitle(trace.latest_event || {})
-}
-
-function traceStatusText(trace) {
-  return trace.resolved ? `已完成 · ${traceDuration(trace)}` : `运行中 · ${traceDuration(trace)}`
-}
-
-function traceCanStop(trace) {
-  if (trace.resolved) return false
-  if (im.currentRoom?.type === 'group') return Boolean(trace.scope && trace.scope !== 'scope')
-  return Boolean(runningConversationMessage.value)
+function confirmInterruptScope(event) {
+  if (!canStopScope(event)) return
+  const task = scopeTask(event)
+  Modal.confirm({
+    title: '中断该运行？',
+    content: '中断后将停止本次执行。',
+    okText: '中断', cancelText: '继续等待', okType: 'danger',
+    async onOk() {
+      if (im.currentRoom?.type === 'group') await im.cancelActiveRun(event.run_id)
+      else await im.cancelActiveReply(task.message_id)
+      message.warning('已发送中断请求')
+    },
+  })
 }
 
 function confirmInterruptActive() {
@@ -536,25 +459,6 @@ function confirmInterruptActive() {
   })
 }
 
-function confirmInterruptTrace(trace) {
-  if (!traceCanStop(trace)) return
-  const isGroup = im.currentRoom?.type === 'group'
-  Modal.confirm({
-    title: isGroup ? '中断该运行轨迹对应的 run？' : '中断该回复？',
-    content: '中断后后续输出会停止写入，当前消息会标记为 cancelled。',
-    okText: '中断',
-    okType: 'danger',
-    cancelText: '取消',
-    async onOk() {
-      if (isGroup) {
-        await im.cancelActiveRun(trace.scope)
-      } else {
-        await im.cancelActiveReply(runningConversationMessage.value?.message_id)
-      }
-      message.warning('已发送中断请求')
-    },
-  })
-}
 
 function sideItemTitle(item) {
   // 群聊与单聊侧栏都渲染对话对象，统一以对话标题为主。
@@ -1913,60 +1817,10 @@ onUnmounted(() => {
             </div>
           </article>
 
-          <article v-else-if="entry.kind === 'trace'" class="trace-card" :class="{ open: isTraceOpen(entry.trace) }">
-            <button class="trace-summary" @click="toggleTrace(entry.trace)">
-              <span class="trace-rail"></span>
-              <a-avatar class="trace-avatar" :src="traceAvatar(entry.trace)">{{ avatarText(traceActorName(entry.trace)) }}</a-avatar>
-              <div class="trace-main">
-                <strong>{{ traceActorName(entry.trace) }}</strong>
-                <span>{{ traceTitle(entry.trace) }}</span>
-              </div>
-              <div class="trace-stats">
-                <a-tag :color="eventColor(entry.trace.latest_event?.name)" size="small">
-                  {{ entry.trace.event_count || entry.trace.events.length }} events
-                </a-tag>
-                <small>{{ traceStatusText(entry.trace) }}</small>
-              </div>
-              <a-button
-                v-if="traceCanStop(entry.trace)"
-                class="trace-stop"
-                danger
-                type="text"
-                size="small"
-                @click.stop="confirmInterruptTrace(entry.trace)"
-              >
-                <template #icon><StopOutlined /></template>
-              </a-button>
-              <RightOutlined class="trace-chevron" />
-            </button>
-
-            <div v-if="isTraceOpen(entry.trace)" class="trace-expanded">
-              <div v-if="entry.trace.step?.result_observation" class="trace-observation">
-                {{ entry.trace.step.result_observation }}
-              </div>
-              <div v-if="traceEventsLoading(entry.trace)" class="trace-loading">
-                <LoadingOutlined spin /> 正在加载事件详情…
-              </div>
-              <div class="trace-timeline">
-                <div
-                  v-for="event in traceEvents(entry.trace)"
-                  :key="event.event_id || `${event.name}-${event.created_at}`"
-                  class="trace-node"
-                  :class="eventTone(event.name)"
-                >
-                  <span class="trace-dot"></span>
-                  <div class="trace-node-body">
-                    <div class="trace-node-head">
-                      <strong>{{ eventTitle(event) }}</strong>
-                      <a-tag :color="eventColor(event.name)" size="small">{{ event.name }}</a-tag>
-                      <span>{{ formatTime(event.created_at) }}</span>
-                    </div>
-                    <pre>{{ eventContent(event, agentName) }}</pre>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </article>
+          <ScopeTrace v-else-if="entry.kind === 'scope-trace'"
+            :trace="entry.trace" :client="traceClient" :revision="traceRevision"
+            :agent-name="agentName" :agent-avatar="agentAvatar" :can-stop="canStopScope(entry.trace)"
+            @stop="confirmInterruptScope(entry.trace)" />
 
           <article v-else-if="entry.kind === 'artifact'" class="message-row artifact-row">
             <a-avatar class="message-avatar" :src="eventAvatar(entry.event)">{{ avatarText(eventActor(entry.event, agentName)) }}</a-avatar>
@@ -2027,73 +1881,76 @@ onUnmounted(() => {
             </div>
           </article>
         </template>
+        <div class="message-bottom-space" aria-hidden="true"></div>
       </div>
 
       </div>
 
       <footer class="composer">
-        <ChatAttachments :items="currentDraft.items" :target-key="draftKey" :disabled="sending || (!im.currentAgentId && !im.currentRoom)"
-          @upload="chatFiles.uploadFiles" @reuse="chatFiles.addExisting" @remove="chatFiles.removeItem" @retry="chatFiles.retry" />
-        <div v-if="selectionEditTarget" class="composer-refs">
-          <div class="composer-ref">
-            <EditOutlined />
-            <span class="composer-ref-label">针对选区修改 {{ selectionEditTarget.file_path || selectionEditTarget.title || '当前文档' }}：</span>
-            <span class="composer-ref-text">{{ (selectionEditTarget.selection?.text || '').slice(0, 80) }}</span>
-            <a-button type="text" size="small" @click="clearSelectionEditTarget">
-              <template #icon><CloseOutlined /></template>
+        
+          <ChatAttachments :items="currentDraft.items" :target-key="draftKey" :disabled="sending || (!im.currentAgentId && !im.currentRoom)"
+            @upload="chatFiles.uploadFiles" @reuse="chatFiles.addExisting" @remove="chatFiles.removeItem" @retry="chatFiles.retry" />
+          <div v-if="selectionEditTarget" class="composer-refs">
+            <div class="composer-ref">
+              <EditOutlined />
+              <span class="composer-ref-label">针对选区修改 {{ selectionEditTarget.file_path || selectionEditTarget.title || '当前文档' }}：</span>
+              <span class="composer-ref-text">{{ (selectionEditTarget.selection?.text || '').slice(0, 80) }}</span>
+              <a-button type="text" size="small" @click="clearSelectionEditTarget">
+                <template #icon><CloseOutlined /></template>
+              </a-button>
+            </div>
+          </div>
+          <div v-if="replyTarget || quoteTarget" class="composer-refs">
+            <div v-if="replyTarget" class="composer-ref">
+              <MessageOutlined />
+              <span class="composer-ref-label">回复 @{{ messageTitle(replyTarget) }}：</span>
+              <span class="composer-ref-text">{{ quoteRefSummary(replyTarget) }}</span>
+              <a-button type="text" size="small" @click="clearReplyTarget">
+                <template #icon><CloseOutlined /></template>
+              </a-button>
+            </div>
+            <div v-if="quoteTarget" class="composer-ref">
+              <BranchesOutlined />
+              <span class="composer-ref-label">引用 @{{ messageTitle(quoteTarget) }}：</span>
+              <span class="composer-ref-text">{{ quoteRefSummary(quoteTarget) }}</span>
+              <a-button type="text" size="small" @click="clearQuoteTarget">
+                <template #icon><CloseOutlined /></template>
+              </a-button>
+            </div>
+          </div>
+          <div class="mention-wrap">
+            <div v-if="mentionCandidates.length" class="mention-popover">
+              <button v-for="agent in mentionCandidates" :key="agent.agent_id" @click="insertMention(agent)">
+                <a-avatar :size="24" :src="agentAvatar(agent.agent_id)">{{ avatarText(agent.name) }}</a-avatar>
+                <span>{{ agent.name }}</span>
+                <small>{{ agentKind(agent.agent_id) }}</small>
+              </button>
+            </div>
+            <a-textarea
+              ref="composerRef"
+              :disabled="sending"
+              :value="composer"
+              :auto-size="{ minRows: 2, maxRows: 6 }"
+              :placeholder="im.currentRoom?.type === 'group' ? '输入消息。输入 @ 可选择群内 agent' : '输入消息，当前会话历史会注入给这个 agent'"
+              @input="handleInput"
+              @pressEnter.ctrl.prevent="send"
+            />
+            <a-tooltip title="展开输入" placement="topRight">
+              <a-button class="composer-expand-btn" type="text" size="small" @click="composerExpanded = true">
+                <template #icon><ExpandAltOutlined /></template>
+              </a-button>
+            </a-tooltip>
+          </div>
+          <div class="composer-actions">
+            <a-space v-if="im.currentRoom?.type === 'group'">
+              <a-input-number v-model:value="dispatchOptions.max_replan_rounds" :min="0" :max="10" />
+            </a-space>
+            <a-button type="primary" :loading="sending" :disabled="chatFiles.busy.value" @click="send">
+              <template #icon><SendOutlined /></template>
+              发送
             </a-button>
           </div>
-        </div>
-        <div v-if="replyTarget || quoteTarget" class="composer-refs">
-          <div v-if="replyTarget" class="composer-ref">
-            <MessageOutlined />
-            <span class="composer-ref-label">回复 @{{ messageTitle(replyTarget) }}：</span>
-            <span class="composer-ref-text">{{ quoteRefSummary(replyTarget) }}</span>
-            <a-button type="text" size="small" @click="clearReplyTarget">
-              <template #icon><CloseOutlined /></template>
-            </a-button>
-          </div>
-          <div v-if="quoteTarget" class="composer-ref">
-            <BranchesOutlined />
-            <span class="composer-ref-label">引用 @{{ messageTitle(quoteTarget) }}：</span>
-            <span class="composer-ref-text">{{ quoteRefSummary(quoteTarget) }}</span>
-            <a-button type="text" size="small" @click="clearQuoteTarget">
-              <template #icon><CloseOutlined /></template>
-            </a-button>
-          </div>
-        </div>
-        <div class="mention-wrap">
-          <div v-if="mentionCandidates.length" class="mention-popover">
-            <button v-for="agent in mentionCandidates" :key="agent.agent_id" @click="insertMention(agent)">
-              <a-avatar :size="24" :src="agentAvatar(agent.agent_id)">{{ avatarText(agent.name) }}</a-avatar>
-              <span>{{ agent.name }}</span>
-              <small>{{ agentKind(agent.agent_id) }}</small>
-            </button>
-          </div>
-          <a-textarea
-            ref="composerRef"
-            :disabled="sending"
-            :value="composer"
-            :auto-size="{ minRows: 2, maxRows: 6 }"
-            :placeholder="im.currentRoom?.type === 'group' ? '输入消息。输入 @ 可选择群内 agent' : '输入消息，当前会话历史会注入给这个 agent'"
-            @input="handleInput"
-            @pressEnter.ctrl.prevent="send"
-          />
-          <a-tooltip title="展开输入" placement="topRight">
-            <a-button class="composer-expand-btn" type="text" size="small" @click="composerExpanded = true">
-              <template #icon><ExpandAltOutlined /></template>
-            </a-button>
-          </a-tooltip>
-        </div>
-        <div class="composer-actions">
-          <a-space v-if="im.currentRoom?.type === 'group'">
-            <a-input-number v-model:value="dispatchOptions.max_replan_rounds" :min="0" :max="10" />
-          </a-space>
-          <a-button type="primary" :loading="sending" :disabled="chatFiles.busy.value" @click="send">
-            <template #icon><SendOutlined /></template>
-            发送
-          </a-button>
-        </div>
+       
       </footer>
 
     </section>
@@ -2634,4 +2491,11 @@ onUnmounted(() => {
   color: #9ca3af;
   font-size: 12px;
 }
+
+.composer{
+ max-width: 55vw;  
+ margin: auto;
+}
+
+
 </style>

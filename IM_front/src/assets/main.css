@@ -580,6 +580,11 @@
   padding: 104px 6px 150px;
 }
 
+.message-bottom-space {
+  height: 96px;
+  pointer-events: none;
+}
+
 .preview-head {
   display: flex;
   align-items: center;
@@ -998,7 +1003,8 @@
   border-radius: 999px;
 }
 
-.trace-card.open .trace-chevron {
+.trace-card.open > .trace-summary .trace-chevron,
+.trace-card.open > .trace-summary-wrap > .trace-summary .trace-chevron {
   transform: rotate(90deg);
 }
 

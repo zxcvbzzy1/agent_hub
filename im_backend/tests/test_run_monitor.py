@@ -29,6 +29,7 @@ async def test_orchestration_run_visible_and_cancellable(backend):
             await asyncio.Event().wait()
         finally:
             await container.bridge.runs._mark_run_cancelled(record, '用户中断', True)
+            await container.bridge.runs.states.finish_control(record['run_id'])
     task = asyncio.create_task(execute())
     runtime.track('orchestration', record['run_id'], task)
     listed = (await client.get('/api/im/runs/active', headers=headers)).json()
@@ -54,9 +55,11 @@ async def test_lost_owner_marks_only_its_records_cancelled(backend):
     await runtime.put_state('orchestration', 'lost-run', {
         'run_id':'lost-run','status':'running','owner_worker':'dead-worker'})
     container.store.insert_one('im_messages', {
-        'message_id':'lost-message','conversation_id':'conv','sender_type':'user','status':'running'})
-    await runtime.put_state('dm_reply','lost-message', {
-        'run_id':'lost-message','status':'running','owner_worker':'dead-worker',
+        'message_id':'lost-message','conversation_id':'conv','sender_type':'user','status':'running','run_id':'lost-reply'})
+    container.store.insert_one('runs', {'run_id':'lost-reply', 'kind':'dm_reply', 'status':'running',
+                                      'conversation_id':'conv', 'message_id':'lost-message', 'agent_id':'agent'})
+    await runtime.put_state('dm_reply','lost-reply', {
+        'run_id':'lost-reply','status':'running','owner_worker':'dead-worker',
         'conversation_id':'conv','agent_id':'agent'})
     await runtime.reap_orphans()
     assert container.store.find_one('runs',{'run_id':'lost-run'})['status']=='cancelled'

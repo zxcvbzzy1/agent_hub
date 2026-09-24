@@ -98,6 +98,15 @@ export const imApi = {
   runEvents(runId) {
     return http.get(`/api/im/runs/${runId}/events`)
   },
+  runSummaries(runId, params = {}) {
+    return http.get(`/api/im/runs/${runId}/events`, { params: { view: 'summary', ...params } })
+  },
+  runEvent(runId, eventId) {
+    return http.get(`/api/im/runs/${runId}/events/${eventId}`)
+  },
+  scopeEvent(scopeId, eventId) {
+    return http.get(`/api/im/scopes/${scopeId}/events/${eventId}`)
+  },
   artifacts() {
     return http.get('/api/im/artifacts')
   },

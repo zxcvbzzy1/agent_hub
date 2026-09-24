@@ -252,12 +252,7 @@ async def stream_room_events(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return StreamingResponse(
-        events.stream_merged(
-            room_id,
-            runtime_events=service._bridge.events,
-            last_id=last_event_id,
-            runtime_ids_provider=lambda: service.list_room_run_ids(room_id),
-        ),
+        events.stream(room_id, last_id=last_event_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )

@@ -30,6 +30,9 @@ class Archive:
         self.rows.setdefault(collection, []).append(dict(event))
         return event
 
+    def find_one(self, collection, query):
+        return next(iter(self.find_many(collection, query)), None)
+
     def find_many(self, collection, query=None, **kwargs):
         return [dict(e) for e in self.rows.get(collection, [])
                 if all(e.get(k) == v for k, v in (query or {}).items())]
@@ -77,16 +80,18 @@ async def test_idle_stream_heartbeats_then_delivers_new_event(runtime):
 
 
 @pytest.mark.asyncio
-async def test_history_handoff_resume_and_projection(runtime):
+async def test_history_handoff_resume_and_separate_channels(runtime):
     archive = Archive()
     events = EventStreamService(archive, runtime)
     im = RoomEventStreamService(archive, runtime)
-    archive.insert_one('events', dict(event_id='legacy', run_id='run', name='tool.called',
-                                     payload={'arguments': 'heavy'}, created_at=1))
-    await runtime.bind_scope('run', 'room')
+    archive.insert_one('runs', {'run_id': 'run', 'scope_id': 'room'})
+    # Old events stay archived, but are not part of the v2 scope UI.
+    archive.insert_one('im_events', dict(event_id='legacy', scope_id='room', name='tool.called',
+                                       payload={'arguments': 'heavy'}, created_at=1))
     first = await events.publish('run', 'workflow.started', {'run_id': 'run'})
     await events.no_store_publish('run', 'llm.delta', {'delta': 'one'})
-    stream = im.stream_merged('room', runtime_events=events, runtime_ids_provider=lambda: ['run'])
+    await events.publish('run', 'tool.called', {'arguments': 'heavy'})
+    stream = im.stream('room')
     received = []
     while True:
         raw = await anext(stream)
@@ -94,34 +99,28 @@ async def test_history_handoff_resume_and_projection(runtime):
             checkpoint = cursor(raw)
             break
         received.append(decode(raw))
-    assert [e['name'] for e in received] == ['tool.called', 'workflow.started', 'llm.delta']
-    assert received[0]['truncated']
-    assert len({e['event_id'] for e in received}) == 3
+    assert [e['name'] for e in received] == ['workflow.started']
+    assert received[0]['event_id'] == first['event_id']
     await stream.aclose()
-    await events.no_store_publish('run', 'llm.delta', {'delta': 'two'})
     await events.publish('run', 'workflow.finished', {'final': 'onetwo'})
-    other = RedisRuntime(url=runtime.url, prefix=runtime.prefix)
-    resumed = other.stream('scope', 'room', lambda: [], last_id=checkpoint)
+    resumed = runtime.stream('scope', 'room', lambda: [], last_id=checkpoint)
     try:
         assert decode(await anext(resumed))['name'] == 'stream.ready'
-        assert decode(await anext(resumed))['payload']['delta'] == 'two'
         assert decode(await anext(resumed))['name'] == 'workflow.finished'
     finally:
         await resumed.aclose()
-        await other.redis.aclose()
-    assert all(e['name'] != 'llm.delta' for e in events.list_events('run'))
-    assert await runtime.redis.xlen(runtime.key('events:scope:other-room')) == 0
-    assert first['event_id'] in {e['event_id'] for e in received}
+    assert [e['name'] for e in events.list_events('run')] == ['tool.called']
+    assert await runtime.redis.xlen(runtime.event_key('scope', 'other-room')) == 0
 
 
 @pytest.mark.asyncio
 async def test_expired_cursor_resets_to_archive(runtime):
     events = EventStreamService(Archive(), runtime)
-    await events.publish('run', 'workflow.started', {})
+    await events.publish('run', 'llm.started', {})
     rt_stream = events.stream('run', last_id='1-0')
     try:
         assert decode(await anext(rt_stream))['name'] == 'stream.reset'
-        assert decode(await anext(rt_stream))['name'] == 'workflow.started'
+        assert decode(await anext(rt_stream))['name'] == 'llm.started'
         assert decode(await anext(rt_stream))['name'] == 'stream.ready'
     finally:
         await rt_stream.aclose()
@@ -149,7 +148,7 @@ async def test_redis_state_claim_cancel_and_worker_start(runtime):
         await asyncio.wait_for(stopped.wait(), 3)
         assert (await peer.get_state('dm_reply', 'message'))['status'] == 'cancelled'
         assert await peer.active_states() == []
-        assert await peer.redis.ttl(peer.key('state:dm_reply:message')) > 0
+        assert await peer.redis.ttl(peer.key('control:v2:dm_reply:message')) > 0
     finally:
         await peer.close()
 
@@ -248,6 +247,7 @@ from application.services.events import EventStreamService
 from application.events.human_confirmation import HumanConfirmationService
 class Store:
     def insert_one(self, *args): pass
+    def find_one(self, *args): return None
 async def main():
     r = RedisRuntime()
     await r.start()
@@ -287,13 +287,12 @@ asyncio.run(main())
 
 
 @pytest.mark.asyncio
-async def test_delete_runtime_removes_projection(runtime):
-    await runtime.bind_scope('run', 'room')
+async def test_delete_runtime_does_not_touch_unrelated_scope_events(runtime):
     await runtime.append('run', 'run', dict(event_id='a', run_id='run', name='workflow.started', payload={}, created_at=1))
     await runtime.append('scope', 'room', dict(event_id='b', name='message.created', payload={}, created_at=2))
     await runtime.claim('orchestration', 'run', {'run_id':'run'})
     await runtime.delete_runtime('run')
     assert await runtime.get_state('orchestration','run') is None
-    remaining = await runtime.redis.xrange(runtime.key('events:scope:room'))
+    remaining = await runtime.redis.xrange(runtime.event_key('scope', 'room'))
     assert len(remaining) == 1
     assert json.loads(remaining[0][1]['event'])['event_id'] == 'b'

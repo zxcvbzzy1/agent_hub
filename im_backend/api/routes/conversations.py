@@ -190,12 +190,7 @@ async def stream_conversation_events(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return StreamingResponse(
-        events.stream_merged(
-            conversation_id,
-            runtime_events=service._bridge.events,
-            last_id=last_event_id,
-            runtime_ids_provider=lambda: [conversation_id],
-        ),
+        events.stream(conversation_id, last_id=last_event_id),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
     )
