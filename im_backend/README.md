@@ -1,6 +1,6 @@
 # IM Backend
 
-独立的 IM Agent Platform 后端。它保留 IM 房间、富消息、artifact、Claude Code / Codex 适配等产品逻辑，并通过 `infra/agent_flow_bridge/` 集中复用 `agent_flow` 的 Agent、Run、PlanOrchestrator、SSE 和 MongoDB 存储能力。
+独立的 IM Agent Platform 后端。它保留 IM 房间、富消息和 artifact 等产品逻辑，并通过 `infra/agent_flow_bridge/` 集中复用 `agent_flow` 的原生 Agent、Run、PlanOrchestrator、SSE 和 MongoDB 存储能力。
 
 ## 启动
 
@@ -60,15 +60,11 @@ IM_SSE_COOKIE_SECURE=false PYTHONPATH=. \
 - `POST /api/im/artifacts/upload`
 - `GET /api/im/artifacts/{artifact_id}`
 
-## 安全默认值
-
-Claude Code / Codex agent 第一版默认需要人工确认；未确认前只生成确认卡片，不直接启动外部 CLI。Runner 的命令构造使用只读/计划模式，不使用危险跳权参数。
-
 ## 聊天文件上传
 
 聊天附件由 `application/services/file/` 管理，实体默认保存在仓库根目录
 `upload/<file_id>/<安全文件名>`，`im_files.storage_path` 保存绝对路径。
-后端与 Native、Claude Code、Codex 需共享本机文件系统；移动仓库后需迁移数据库内的绝对路径。
+后端与 native Agent 共享本机文件系统；移动仓库后需迁移数据库内的绝对路径。
 
 - `POST /api/im/files/upload`：Bearer 登录，multipart 字段 `file`；单文件最大 20 MiB。
 - `GET /api/im/files?limit=50&before=<file_id>`：分页查询自己的已发送文件，返回
@@ -126,7 +122,7 @@ npm --prefix IM_front run build
 ### 两条事件通道
 
 - `events:v3:{数据库命名空间}:run:{run_id}:live`：模型调用、思考、工具与智能体输出。持久化在 `events`；
-  `llm.delta` / `agent.delta` 只短期保存在 Redis。
+  `llm.delta` 只短期保存在 Redis。
 - `events:v3:{数据库命名空间}:scope:{scope_id}:live`：流程、任务、智能体生命周期，以及消息、审批、产物通知。
   持久化在 `im_events`，不会自动复制 run Stream。群聊 scope 是 room，单聊是 conversation。
 - 事件带 `version=2`、run/scope/conversation/message 关联；每次智能体调用独立
@@ -156,7 +152,7 @@ npm --prefix IM_front run build
 旧 Mongo 事件保留但不在新轨迹中展示，历史聊天消息照常显示，不迁移运行中的旧任务。
 
 ```bash
-/Users/zxcvbzzy1/miniconda3/envs/MY_env/bin/python -m pytest agent_flow/api_services_test.py im_backend/tests/test_redis_runtime.py im_backend/tests/test_redis_im_integration.py im_backend/tests/test_run_monitor.py im_backend/tests/test_coding_unification_and_builder.py -v
+/Users/zxcvbzzy1/miniconda3/envs/MY_env/bin/python -m pytest agent_flow/api_services_test.py im_backend/tests/test_redis_runtime.py im_backend/tests/test_redis_im_integration.py im_backend/tests/test_run_monitor.py -v
 node --test IM_front/checks/trace_client_check.mjs
 cd IM_front
 npm run build

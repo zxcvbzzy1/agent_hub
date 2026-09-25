@@ -23,7 +23,7 @@ export class TraceClient {
       const consume = (raw) => {
         if (session.source !== source) return
         const item = JSON.parse(raw.data)
-        if (item.version === 2 && item.event_id && !['llm.delta', 'agent.delta'].includes(item.name)) {
+        if (item.version === 2 && item.event_id && item.name !== 'llm.delta') {
           session.events.set(item.event_id, item)
           this.changed()
         }

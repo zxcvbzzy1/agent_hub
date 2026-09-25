@@ -23,7 +23,7 @@ async function submit() {
     <section class="auth-copy">
       <div class="auth-logo">AI</div>
       <h1>Agent IM</h1>
-      <p>把 Claude Code、Codex 和你的业务 Agent 放进同一个协作聊天界面。</p>
+      <p>把你的业务 Agent 放进同一个协作聊天界面。</p>
       <div class="auth-highlights">
         <span>群聊编排</span>
         <span>富消息</span>

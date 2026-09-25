@@ -7,7 +7,6 @@ export const runtimeEventNames = new Set([
   'llm.completed',
   'agent.think',
   'agent.tool.reasoning',
-  'agent.delta',
   'agent.final',
   'agent.failed',
   'tool.called',
@@ -70,7 +69,6 @@ export const sseEventNames = [
   'agent.reply.pending',
   'agent.reply.started',
   'agent.reply.finished',
-  'confirmation.requested',
   'message.action',
   'workflow.started',
   'workflow.failed',
@@ -79,7 +77,6 @@ export const sseEventNames = [
   'llm.completed',
   'agent.think',
   'agent.tool.reasoning',
-  'agent.delta',
   'agent.final',
   'agent.failed',
   'tool.called',
@@ -104,15 +101,12 @@ export const sseEventNames = [
   'artifacts.deploy',
 ]
 
-// llm.delta（原生模型流式）与 agent.delta（第三方 coding agent 流式）都会逐 token/chunk 发出。
-// 这里把同一路流式的增量合并成「单个」合成事件，避免成百上千条增量撑爆 events 数组与轨迹内列表。
+// 把同一路 llm.delta 增量合并成单个合成事件，避免大量 token 撑爆事件数组和轨迹列表。
 function streamingKey(event) {
   const payload = event.payload || {}
   const run = payload.run_id || event.run_id || 'scope'
   const agent = payload.agent_id || 'agent'
-  // agent.delta / agent.final 没有 call_role，统一用 'agent' 角色段，让收尾事件能命中并清掉合成流式事件。
-  const isAgentStream = event.name === 'agent.delta' || event.name === 'agent.final'
-  const role = isAgentStream ? 'agent' : (payload.call_role || 'call')
+  const role = payload.call_role || 'call'
   return `${run}:${agent}:${role}`
 }
 
@@ -120,18 +114,16 @@ export function compactLlmEvents(events) {
   const compacted = []
   const streaming = new Map()
   for (const event of events) {
-    if (event.name === 'llm.delta' || event.name === 'agent.delta') {
+    if (event.name === 'llm.delta') {
       const payload = event.payload || {}
-      const isAgent = event.name === 'agent.delta'
       const key = streamingKey(event)
       const current = streaming.get(key) || {
         ...event,
         event_id: `streaming-${key}`,
-        name: isAgent ? 'agent.delta' : 'llm.streaming',
+        name: 'llm.streaming',
         payload: { ...payload, content: '', delta: '', token_chunks: 0, streaming: true },
       }
       current.payload.content += payload.delta || ''
-      // agent.delta 渲染读 payload.delta，llm.streaming 渲染读 payload.content；两者都同步成累计文本。
       current.payload.delta = current.payload.content
       current.payload.token_chunks = payload.sequence || current.payload.token_chunks + 1
       current.created_at = event.created_at
@@ -139,8 +131,8 @@ export function compactLlmEvents(events) {
       continue
     }
     if (event.name === 'llm.started') continue
-    if (event.name === 'llm.completed' || event.name === 'agent.final') {
-      // 收尾事件落地前，丢弃对应的合成流式事件（最终结果由 llm.completed / agent.final 自身呈现）。
+    if (event.name === 'llm.completed') {
+      // 收尾事件落地前，丢弃对应的合成流式事件。
       streaming.delete(streamingKey(event))
     }
     compacted.push(event)
@@ -181,7 +173,6 @@ export function isTraceEvent(event) {
     name === 'llm.completed' ||
     name === 'agent.think' ||
     name === 'agent.tool.reasoning' ||
-    name === 'agent.delta' ||
     name.startsWith('tool.') ||
     name === 'planner.replan.reasoning' ||
     name === 'workflow.started'
@@ -588,7 +579,6 @@ export function eventTitle(event) {
   if (event.name === 'llm.completed') return '模型输出完成'
   if (event.name === 'agent.think') return '思考'
   if (event.name === 'agent.tool.reasoning') return `工具决策${payload.tool_name ? ` · ${payload.tool_name}` : ''}`
-  if (event.name === 'agent.delta') return 'Agent 输出'
   if (event.name === 'agent.final') return '最终回复'
   if (event.name === 'planner.plan.generated') return `生成计划 · ${payload.steps?.length || 0} steps`
   if (event.name === 'planner.replan.reasoning') return '重规划'
@@ -607,7 +597,6 @@ export function eventContent(event, agentName = (value) => value) {
   if (event.name === 'llm.completed') return payload.content || '模型调用完成'
   if (event.name === 'agent.think') return payload.think || payload.content || 'Agent 正在思考'
   if (event.name === 'agent.tool.reasoning') return payload.reasoning || payload.reason || '准备调用工具'
-  if (event.name === 'agent.delta') return payload.delta || payload.content || '...'
   if (event.name === 'agent.final') return payload.final || payload.finish_reason || 'Agent 已完成'
   if (event.name === 'planner.plan.generated') return formatPlan(payload.steps || [], agentName)
   if (event.name === 'planner.replan.reasoning') return [payload.action, payload.reason].filter(Boolean).join('\n') || 'Planner 发起重规划'

@@ -1,2 +1,0 @@
-"""Coding-agent CLI adapters."""
-

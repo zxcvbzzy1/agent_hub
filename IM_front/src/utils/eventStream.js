@@ -2,7 +2,7 @@ import { EventSnapshot, snapshotKey, clearEventSnapshots } from './eventSnapshot
 import { sseEventNames } from './runtimeEvents.js'
 
 const active = new Set()
-const transient = new Set(['llm.delta', 'agent.delta'])
+const transient = new Set(['llm.delta'])
 let cookieInitialization
 
 function session() {

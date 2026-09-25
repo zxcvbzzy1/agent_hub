@@ -3,9 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from im_backend.domain.models import AgentRuntimeProfile
 from im_backend.infra.agent_flow_bridge.pathing import ensure_agent_flow_path
-from im_backend.infra.coding_agents.executor_agent import CodingExecutorAgent
 from im_backend.infra.env import load_backend_env
 
 load_backend_env()
@@ -52,7 +50,6 @@ class AgentFlowBridge:
             self.contexts,
             llm_client,
             self.events,
-            external_executor_builder=self._build_external_executor,
         )
         self.runs = RunOrchestrationService(
             self._store,
@@ -115,28 +112,6 @@ class AgentFlowBridge:
 
     def get_agent(self, agent_id: str):
         return self.agents.get_agent(agent_id)
-
-    def _build_external_executor(self, record: dict[str, Any]):
-        profile = AgentRuntimeProfile.from_agent_record(record)
-        if not profile.workdir:
-            profile.workdir = str(self._root_dir.parent)
-        # coding agent 必须使用 "coding" 上下文模版构建的 ContextEngine。新建的 coding agent
-        # 会绑定一份私有 coding context；历史遗留记录可能仍指向 default_executor 等，这里强制回退
-        # 到 default_coding，避免给 coding CLI 注入 state/tool 等噪声并丢失 artifact 协议说明。
-        context_id = record.get("context_id") or "default_coding"
-        context_record = self.contexts.get_context(context_id)
-        if not context_record or context_record.get("kind") != "coding":
-            context_id = "default_coding"
-        engine = self.contexts.get_engine(context_id)
-        return CodingExecutorAgent(
-            profile=profile,
-            name=record.get("name", profile.agent_id),
-            context_engine=engine,
-            description=(record.get("metadata") or {}).get("description", ""),
-            store=self._store,
-            streams=self.events,
-            run_id_provider=self.frontend_bridge.run_id_for_agent,
-        )
 
     def ensure_agent_exists(self, agent_id: str) -> dict[str, Any]:
         record = self.get_agent_record(agent_id)
