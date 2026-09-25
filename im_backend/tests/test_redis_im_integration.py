@@ -97,14 +97,14 @@ async def test_dm_reply_artifact_history_state_and_cleanup(backend, monkeypatch)
     reply = next(m for m in messages if m['sender_type']=='agent')
     assert reply['metadata']['reply_to'] == mid
     assert any(p['type']=='artifact' for p in reply['content_parts'])
-    assert container.bridge.events.list_events(run_id)
+    assert (await container.bridge.events.list_events(run_id))
     assert instances[0].states['pinned_context']
     r = await client.delete(f'/api/im/conversations/{cid}', headers=headers)
     assert r.status_code == 200, r.text
     runtime = container.bridge.runtime
     assert await runtime.get_state('dm_reply', run_id) is None
     assert await runtime.redis.exists(runtime.event_key('scope', cid)) == 0
-    assert container.bridge.events.list_events(run_id) == []
+    assert (await container.bridge.events.list_events(run_id)) == []
 
 
 @pytest.mark.asyncio
@@ -200,7 +200,7 @@ async def test_coding_agent_deltas_and_artifacts_use_redis(backend, monkeypatch)
     run_id = (await post(client,f'/conversations/{cid}/reply',headers,{'message_id':mid}))['run_id']
     state = await wait_finished(container.bridge.runtime,'dm_reply',run_id)
     assert state['status']=='finished',state
-    events = container.bridge.events.list_events(run_id)
+    events = (await container.bridge.events.list_events(run_id))
     assert not any(e['name']=='agent.delta' for e in events)
     assert any(e['name']=='artifacts.document' for e in events)
     messages = (await client.get(f'/api/im/conversations/{cid}/messages')).json()['items']
@@ -324,7 +324,7 @@ async def test_summary_pagination_details_and_execution_filter(backend):
             await events.publish('details', 'tool.called', {'agent_id': 'agent', 'arguments': {'large': 'x' * 10000}})
             await events.publish('details', 'llm.completed', {'agent_id': 'agent', 'content': 'private body'})
             await events.no_store_publish('details', 'llm.delta', {'delta': 'private token'})
-    archived = events.list_events('details')
+    archived = (await events.list_events('details'))
     ids = {e['execution_id'] for e in archived}
     assert len(ids) == 2
     execution_id = archived[0]['execution_id']
@@ -339,7 +339,7 @@ async def test_summary_pagination_details_and_execution_filter(backend):
     assert second['items'][0]['event_id'] != first['items'][0]['event_id']
     detail = await client.get(f"/api/im/runs/details/events/{first['items'][0]['event_id']}", headers=headers)
     assert detail.json()['item']['payload']['arguments']['large'] == 'x' * 10000
-    scope = container.room_events.list_events('room')
+    scope = (await container.room_events.list_events('room'))
     assert len(scope) == 4
     assert not any(e['name'].startswith(('llm.', 'tool.')) for e in scope)
     assert all(e['execution_id'] in ids for e in scope)
@@ -352,35 +352,34 @@ async def test_summary_pagination_details_and_execution_filter(backend):
 
 
 @pytest.mark.asyncio
-async def test_summary_reconnect_recovers_failed_delivery_and_transforms_live(backend, monkeypatch):
+async def test_summary_publish_failure_is_explicit_and_resume_transforms_live(backend, monkeypatch):
     container, _, _ = backend
     events, rt = container.bridge.events, container.bridge.runtime
     await container.bridge.runs.states.create({'run_id': 'replay', 'scope_id': 'scope', 'status': 'running'})
     await events.publish('replay', 'llm.started', {})
     stream = events.stream('replay', summary=True)
+    assert decode(await anext(stream))['name'] == 'stream.reset'
     assert decode(await anext(stream))['name'] == 'llm.started'
     ready = await anext(stream)
     cursor = next(line[4:] for line in ready.splitlines() if line.startswith('id: '))
     await stream.aclose()
     original_append = rt.append
     attempts = 0
-    async def fail(*args):
+    async def fail(*args, **kwargs):
         nonlocal attempts
         attempts += 1
         raise ConnectionError('lost delivery')
     monkeypatch.setattr(rt, 'append', fail)
-    missed = await events.publish('replay', 'agent.think', {'think': 'must not appear in summary'})
+    with pytest.raises(ConnectionError):
+        await events.publish('replay', 'agent.think', {'think': 'failed event'})
     assert attempts == 3
     monkeypatch.setattr(rt, 'append', original_append)
+    missed = await events.publish('replay', 'agent.think', {'think': 'must not appear in summary'})
     stream = events.stream('replay', last_id=cursor, summary=True)
-    received = []
-    while True:
-        item = decode(await anext(stream))
-        if item['name'] == 'stream.ready':
-            break
-        received.append(item)
-    assert missed['event_id'] in {e['event_id'] for e in received}
-    assert all('payload' not in e for e in received)
+    assert decode(await anext(stream))['name'] == 'stream.ready'
+    item = decode(await asyncio.wait_for(anext(stream), 3))
+    assert item['event_id'] == missed['event_id']
+    assert 'payload' not in item
     await events.publish('replay', 'llm.completed', {'content': 'full answer'})
     assert 'payload' not in decode(await asyncio.wait_for(anext(stream), 3))
     await stream.aclose()
@@ -410,13 +409,13 @@ async def test_regeneration_separates_attempts_and_cleanup_removes_all(backend, 
     # Simulate an old completion arriving after regeneration.
     await container.bridge.runs.states.update(first, {'status': 'failed'})
     assert container.store.find_one('im_messages', {'message_id': mid})['status'] == 'finished'
-    assert container.bridge.events.list_events(first)[0]['execution_id'] != container.bridge.events.list_events(second)[0]['execution_id']
+    assert (await container.bridge.events.list_events(first))[0]['execution_id'] != (await container.bridge.events.list_events(second))[0]['execution_id']
     deleted = await client.delete(f'/api/im/conversations/{cid}', headers=headers)
     assert deleted.status_code == 200
     assert deleted.json()['item']['stats']['runs'] == 2
     for rid in (first, second):
         assert container.store.find_one('runs', {'run_id': rid}) is None
-        assert container.bridge.events.list_events(rid) == []
+        assert (await container.bridge.events.list_events(rid)) == []
         assert await container.bridge.runtime.get_state('dm_reply', rid) is None
         assert await container.bridge.runtime.redis.get(container.bridge.runtime.cache.keys(rid)[0]) is None
 
@@ -447,13 +446,45 @@ async def test_plan_steps_persist_before_events_and_share_execution_links(backen
         await asyncio.gather(*(orchestrator._run_plan_step(step, plan) for step in plan.steps))
     finally:
         current_run_id.reset(token)
-    calls = streams.list_events('steps')
+    calls = (await streams.list_events('steps'))
     assert len(calls) == 2
     assert len({e['execution_id'] for e in calls}) == 2
-    business = container.room_events.list_events('room')
+    business = (await container.room_events.list_events('room'))
     for call in calls:
         linked = [e for e in business if e['execution_id'] == call['execution_id']]
         assert {e['name'] for e in linked} == {
             'plan.step.started', 'agent.execution.started', 'agent.execution.finished', 'plan.step.observed'}
     record = container.store.find_one('runs', {'run_id': 'steps'})
     assert all(step['status'] == 'done' for step in record['plan']['steps'])
+
+
+@pytest.mark.asyncio
+async def test_im_sse_auth_user_identity_and_cursor_precedence(backend, monkeypatch):
+    container, client, headers = backend
+    cid = (await post(client, '/agents/default_executor/conversations', headers, {}))['conversation_id']
+    room = (await post(client, '/rooms', headers, {'member_agent_ids': ['default_executor']}))['room_id']
+    await container.bridge.runs.states.create({'run_id': 'sse-auth', 'scope_id': room, 'status': 'pending'})
+    calls = []
+    async def finite(scope, last_id=None, **kwargs):
+        calls.append((scope, last_id, kwargs))
+        yield 'event: stream.ready\ndata: {"name":"stream.ready"}\n\n'
+    monkeypatch.setattr(container.room_events, 'stream', finite)
+    monkeypatch.setattr(container.bridge.events, 'stream', finite)
+    me = (await client.get('/api/im/auth/me', headers=headers)).json()['item']
+    for path in (f'/api/im/conversations/{cid}/events', f'/api/im/rooms/{room}/events',
+                 '/api/im/runs/sse-auth/events/stream'):
+        assert (await client.get(path)).status_code == 401
+        response = await client.get(path, headers=headers, params={'last_id': 'query/1-0', 'user_id': 'forged'})
+        assert response.status_code == 200
+        assert calls[-1][1] == 'query/1-0'
+        assert calls[-1][2]['user_id'] == me['user_id']
+        response = await client.get(path, headers={**headers, 'Last-Event-ID': 'header/2-0'},
+                                    params={'last_id': 'query/1-0'})
+        assert response.status_code == 200
+        assert calls[-1][1] == 'header/2-0'
+        cookie = 'im_sse_session=' + headers['Authorization'].split(' ', 1)[1]
+        response = await client.get(path, headers={'Cookie': cookie}, params={'last_id': 'cookie/3-0'})
+        assert response.status_code == 200
+        assert calls[-1][1] == 'cookie/3-0'
+        assert calls[-1][2]['user_id'] == me['user_id']
+        assert (await client.get(path, headers={'Cookie': cookie, 'Authorization': 'Bearer invalid'})).status_code == 401

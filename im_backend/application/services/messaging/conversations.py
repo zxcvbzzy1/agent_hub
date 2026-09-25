@@ -483,7 +483,7 @@ class ConversationService:
             final = agent.states.get("final", "") or agent.states.get("finish_reason", "")
             parts = [{"type": "text", "text": final or "Agent 已完成回复"}]
             parts.extend(collect_inline_artifact_parts(
-                self._bridge.list_run_events(run_id), since=started_at, run_id=run_id))
+                await self._bridge.list_run_events(run_id), since=started_at, run_id=run_id))
             reply = await self.add_conversation_message(
                 conversation_id=conversation_id, sender_type="agent", sender_id=agent_id,
                 content_parts=parts, status="finished", run_id=run_id,

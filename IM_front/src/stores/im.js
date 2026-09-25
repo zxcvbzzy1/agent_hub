@@ -1,4 +1,6 @@
 import { defineStore } from 'pinia'
+import { markRaw } from 'vue'
+import { EventStream } from '@/utils/eventStream'
 import { message as toast } from 'ant-design-vue'
 import { API_BASE_URL } from '@/api/http'
 import { imApi } from '@/api/im'
@@ -54,6 +56,7 @@ export const useIMStore = defineStore('im', {
     events: [],
     loading: false,
     source: null,
+    streamPath: '',
     streamStatus: 'closed',
     tools: [],
     // 待处理的人工确认（危险命令）：{confirmation_id, run_id, tool_name, arguments, ...}
@@ -655,18 +658,26 @@ export const useIMStore = defineStore('im', {
     connectConversation(conversationId) {
       this.connectStream(`/api/im/conversations/${conversationId}/events`)
     },
+    retryStream() {
+      if (this.streamPath) this.connectStream(this.streamPath)
+    },
     connectStream(path) {
       this.closeStream()
-      const source = new EventSource(`${API_BASE_URL}${path}`)
+      this.streamPath = path
+      const source = markRaw(new EventStream(`${API_BASE_URL}${path}`))
       this.streamStatus = 'connecting'
-      let syncing = true
+      let syncing = false
       const consume = (event) => {
         if (this.source !== source) return
         const item = JSON.parse(event.data)
-        // Reconcile approvals from shared state after history replay.
-        if (syncing && item.name.startsWith('human.confirmation.')) return
-        this.consumeEvent(item)
+        this.consumeEvent(item, { replay: syncing })
       }
+      source.addEventListener('stream.restore', (event) => {
+        if (this.source !== source) return
+        resetEventStreamState()
+        this.events = JSON.parse(event.data)
+        seenEventIds = new Set(this.events.map(item => item.event_id))
+      })
       source.onmessage = consume
       for (const name of sseEventNames) {
         source.addEventListener(name, consume)
@@ -688,8 +699,9 @@ export const useIMStore = defineStore('im', {
         await this.syncHumanConfirmations(source).catch(() => {})
       })
       source.onopen = () => { if (this.source === source) this.streamStatus = 'connected' }
-      // Keep the EventSource alive: the browser reconnects with Last-Event-ID.
-      source.onerror = () => { if (this.source === source) this.streamStatus = 'reconnecting' }
+      source.onerror = event => {
+        if (this.source === source) this.streamStatus = event.terminal ? 'error' : 'reconnecting'
+      }
       this.source = source
     },
     async syncHumanConfirmations(source = this.source) {
@@ -714,7 +726,7 @@ export const useIMStore = defineStore('im', {
       // 安全网：后台标签页里 rAF 会暂停，用 timeout 兜底，避免缓冲无限增长。
       timeoutHandle = setTimeout(flush, 200)
     },
-    consumeEvent(event) {
+    consumeEvent(event, { replay = false } = {}) {
       if (!event?.event_id || seenEventIds.has(event.event_id)) return
       seenEventIds.add(event.event_id)
 
@@ -730,6 +742,8 @@ export const useIMStore = defineStore('im', {
       // 再 push 自身并执行副作用。
       this.flushPendingEvents()
       this.events.push(event)
+      // Historical display data must not replay notifications or approvals.
+      if (replay) return
       if (event.name === 'message.created') {
         const messageItem = event.payload?.message
         if (this.currentRoom?.type === 'group') {

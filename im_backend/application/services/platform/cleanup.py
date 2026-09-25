@@ -28,7 +28,8 @@ class IMCleanupService:
             "conversations": self._store.delete_one("im_conversations", {"conversation_id": conversation_id}),
             "messages": self._store.delete_many("im_messages", {"conversation_id": conversation_id}),
             "im_events": await self._delete_scope_events(conversation_id),
-            "runtime_events": self._store.delete_many("events", {"run_id": conversation_id}),
+            "runtime_events": (await self.runtime.journal.delete("run", conversation_id)) if self.runtime else
+                self._store.delete_many("events", {"run_id": conversation_id}),
             "runs": run_count,
             "message_actions": self._delete_message_actions(messages),
         }
@@ -98,7 +99,7 @@ class IMCleanupService:
             for message in self._agent_related_messages(room["room_id"], agent_id):
                 self._add_stats(stats, (await self.delete_message(message)))
 
-        stats["im_events"] += self._delete_agent_events(agent_id)
+        stats["im_events"] += await self._delete_agent_events(agent_id)
         return stats
 
     async def delete_message(self, message: dict[str, Any]) -> dict[str, int]:
@@ -121,11 +122,12 @@ class IMCleanupService:
             return (payload.get("message_id") == mid or
                     (payload.get("message") or {}).get("message_id") == mid or
                     (payload.get("reply") or {}).get("message_id") == mid)
-        for event in self._store.find_many("im_events", {"scope_id": scope}):
-            if matches(event):
-                self._store.delete_one("im_events", {"event_id": event["event_id"]})
         if self.runtime and scope:
             await self.runtime.remove_projected(scope, matches)
+        else:
+            for event in self._store.find_many("im_events", {"scope_id": scope}):
+                if matches(event):
+                    self._store.delete_one("im_events", {"event_id": event["event_id"]})
 
     def _agent_related_messages(self, room_id: str, agent_id: str) -> list[dict[str, Any]]:
         return [
@@ -135,18 +137,24 @@ class IMCleanupService:
         ]
 
     async def _delete_scope_events(self, scope_id: str) -> int:
-        count = self._store.delete_many("im_events", {"scope_id": scope_id}) + self._store.delete_many(
-            "im_events", {"room_id": scope_id})
         if self.runtime:
-            await self.runtime.redis.delete(self.runtime.event_key("scope", scope_id))
-        return count
+            count = await self.runtime.journal.delete('scope', scope_id)
+            # Legacy records can lack scope_id/version and are not in v3 snapshots.
+            return count + self._store.delete_many('im_events', {'room_id': scope_id})
+        return self._store.delete_many('im_events', {'scope_id': scope_id}) + self._store.delete_many(
+            'im_events', {'room_id': scope_id})
 
-    def _delete_agent_events(self, agent_id: str) -> int:
-        deleted = 0
-        for event in self._store.find_many("im_events"):
-            if self._event_mentions_agent(event, agent_id):
-                deleted += self._store.delete_one("im_events", {"event_id": event.get("event_id", "")})
-        return deleted
+    async def _delete_agent_events(self, agent_id: str) -> int:
+        records = self._store.find_many('im_events')
+        scopes = {e.get('scope_id') for e in records if e.get('scope_id')}
+        if self.runtime:
+            scopes.update(await self.runtime.redis.smembers(self.runtime.journal.key('scope:scopes')))
+            count = 0
+            for scope in scopes:
+                count += await self.runtime.remove_projected(scope, lambda e: self._event_mentions_agent(e, agent_id))
+            return count
+        return sum(self._store.delete_one('im_events', {'event_id': e['event_id']})
+                   for e in records if self._event_mentions_agent(e, agent_id))
 
     def _event_mentions_agent(self, event: dict[str, Any], agent_id: str) -> bool:
         try:

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
+    "test:events": "node --test src/utils/eventStream.test.js checks/trace_client_check.mjs",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -21,6 +22,7 @@
   },
   "devDependencies": {
     "@vitejs/plugin-vue": "^6.0.6",
+    "fake-indexeddb": "^6.2.5",
     "vite": "^8.0.8",
     "vite-plugin-vue-devtools": "^8.1.1"
   },

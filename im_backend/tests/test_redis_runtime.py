@@ -30,6 +30,12 @@ class Archive:
         self.rows.setdefault(collection, []).append(dict(event))
         return event
 
+    def upsert_events(self, collection, events):
+        for event in events:
+            if not self.find_one(collection, {'event_id': event['event_id']}):
+                self.insert_one(collection, event)
+        return {e['event_id'] for e in events}
+
     def find_one(self, collection, query):
         return next(iter(self.find_many(collection, query)), None)
 
@@ -65,6 +71,7 @@ def cursor(raw):
 async def test_idle_stream_heartbeats_then_delivers_new_event(runtime):
     stream = runtime.stream('scope', 'idle-room', lambda: [])
     try:
+        assert decode(await anext(stream))['name'] == 'stream.reset'
         assert decode(await anext(stream))['name'] == 'stream.ready'
         # Exercise a real 15-second blocking read. An immediate event would hide
         # a client socket timeout shorter than the server's blocking interval.
@@ -98,7 +105,8 @@ async def test_history_handoff_resume_and_separate_channels(runtime):
         if decode(raw)['name'] == 'stream.ready':
             checkpoint = cursor(raw)
             break
-        received.append(decode(raw))
+        if decode(raw)['name'] != 'stream.reset':
+            received.append(decode(raw))
     assert [e['name'] for e in received] == ['workflow.started']
     assert received[0]['event_id'] == first['event_id']
     await stream.aclose()
@@ -109,7 +117,7 @@ async def test_history_handoff_resume_and_separate_channels(runtime):
         assert decode(await anext(resumed))['name'] == 'workflow.finished'
     finally:
         await resumed.aclose()
-    assert [e['name'] for e in events.list_events('run')] == ['tool.called']
+    assert [e['name'] for e in (await events.list_events('run'))] == ['tool.called']
     assert await runtime.redis.xlen(runtime.event_key('scope', 'other-room')) == 0
 
 
@@ -216,6 +224,7 @@ async def main():
     r = RedisRuntime()
     s = r.stream('scope', 'room', lambda: [])
     try:
+        await anext(s)  # initial reset
         print(await anext(s), flush=True)
         print('READY', flush=True)
         print(json.dumps(await anext(s)), flush=True)
@@ -296,3 +305,31 @@ async def test_delete_runtime_does_not_touch_unrelated_scope_events(runtime):
     remaining = await runtime.redis.xrange(runtime.event_key('scope', 'room'))
     assert len(remaining) == 1
     assert json.loads(remaining[0][1]['event'])['event_id'] == 'b'
+
+
+@pytest.mark.asyncio
+async def test_native_bootstrap_resets_id_and_filtered_events_dispatch_checkpoints(runtime):
+    calls = 0
+    def history():
+        nonlocal calls
+        calls += 1
+        return []
+    stream = runtime.stream('scope', 'native', history, transform=lambda event: None, user_id='native-user')
+    try:
+        reset = await anext(stream)
+        assert reset.startswith('id: \nevent: stream.reset\n')
+        assert decode(reset)['payload']['reason'] == 'initial'
+        ready = await anext(stream)
+        assert decode(ready)['name'] == 'stream.ready'
+        await runtime.append('scope', 'native', dict(event_id='filtered', name='hidden', payload={}, created_at=1))
+        checkpoint = await asyncio.wait_for(anext(stream), 5)
+        assert decode(checkpoint) == {'name': 'stream.checkpoint', 'payload': {}}
+        assert cursor(checkpoint) != cursor(ready)
+    finally:
+        await stream.aclose()
+    resumed = runtime.stream('scope', 'native', history, last_id=cursor(checkpoint), user_id='native-user')
+    try:
+        assert decode(await anext(resumed))['name'] == 'stream.ready'
+        assert calls == 1
+    finally:
+        await resumed.aclose()

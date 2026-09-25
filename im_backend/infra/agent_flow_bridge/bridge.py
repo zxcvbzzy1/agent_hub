@@ -270,8 +270,8 @@ class AgentFlowBridge:
     async def cancel_run(self, run_id: str) -> dict[str, Any]:
         return await self.runs.cancel_run(run_id)
 
-    def list_run_events(self, run_id: str) -> list[dict[str, Any]]:
-        return self.events.list_events(run_id)
+    async def list_run_events(self, run_id: str) -> list[dict[str, Any]]:
+        return await self.events.list_events(run_id)
 
     def register_agent_runtime_scope(self, agent_id: str, scope_id: str) -> None:
         self.frontend_bridge.register_agent_run(agent_id, scope_id)

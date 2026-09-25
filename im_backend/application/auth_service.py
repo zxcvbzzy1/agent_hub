@@ -81,6 +81,12 @@ class AuthService:
         self._store.update_one("im_sessions", {"token": token}, {"revoked": True})
         return {"logged_out": True}
 
+    def session_remaining_seconds(self, token: str) -> int:
+        session = self._store.find_one("im_sessions", {"token": token})
+        if session is None or session.get("revoked"):
+            return 0
+        return max(0, int(float(session.get("expires_at", 0)) - time.time()))
+
     def _validate_credentials(self, *, username: str, email: str, password: str) -> None:
         if len(username) < 2:
             raise ValueError("用户名至少 2 个字符")

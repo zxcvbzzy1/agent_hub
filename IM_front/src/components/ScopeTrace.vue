@@ -71,6 +71,7 @@ onUnmounted(() => { if (activeQuery) props.client.collapse(activeQuery) })
 
     <div v-if="open" class="trace-expanded">
       <div v-if="state.loading" class="trace-loading" role="status"><LoadingOutlined spin /> 正在加载事件名称…</div>
+      <a-button v-if="state.streamError" type="link" size="small" @click="client.retryStream(view.query)">实时连接已断开，重新连接</a-button>
       <a-button v-if="state.error" type="link" size="small" @click="client.load(view.query)">加载失败，重试</a-button>
       <div class="trace-timeline">
         <div v-for="row in rows" :key="row.key" class="trace-node" :class="eventTone(row.event?.name)">

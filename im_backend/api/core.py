@@ -4,7 +4,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from im_backend.infra.env import load_backend_env
@@ -109,6 +109,32 @@ def get_artifact_storage() -> ArtifactStorage:
 
 
 bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def get_sse_user(request: Request, auth: AuthService = Depends(get_auth_service)) -> dict:
+    # An explicitly supplied Authorization header always takes precedence,
+    # including malformed headers; never silently fall back to another identity.
+    authorization = request.headers.get("authorization")
+    if authorization is not None:
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() != "bearer" or not token.strip():
+            raise HTTPException(status_code=401, detail="未登录")
+        token = token.strip()
+    else:
+        # Cookies are only accepted on same-origin SSE routes. Non-browser
+        # clients can continue using Bearer with the existing CORS contract.
+        origin = request.headers.get("origin")
+        foreign_origin = origin and origin != str(request.base_url).rstrip("/")
+        foreign_site = request.headers.get("sec-fetch-site") in {"cross-site", "same-site"}
+        if foreign_origin or foreign_site:
+            raise HTTPException(status_code=403, detail="SSE 仅允许同源 Cookie 访问")
+        token = request.cookies.get("im_sse_session", "")
+        if not token:
+            raise HTTPException(status_code=401, detail="未登录")
+    try:
+        return auth.current_user(token)
+    except AuthError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
 
 
 def get_current_user(

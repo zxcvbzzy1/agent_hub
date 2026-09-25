@@ -28,16 +28,40 @@ export class TraceClient {
           this.changed()
         }
       }
+      source.addEventListener('stream.restore', raw => {
+        if (session.source !== source) return
+        for (const item of JSON.parse(raw.data)) session.events.set(item.event_id, item)
+        this.changed()
+      })
       source.onmessage = consume
       for (const name of this.eventNames) source.addEventListener(name, consume)
       source.addEventListener('stream.reset', () => {
-        // Archive replay follows reset; merge by ID so an open body remains stable.
-        if (session.source === source) this.changed()
+        if (session.source !== source) return
+        this.epoch++
+        session.events.clear()
+        this.details.clear()
+        for (const run of this.runs.values()) for (const view of run.views.values()) {
+          if (view.loading) { view.loading = false; view.cursor = undefined }
+        }
+        for (const view of session.views.values()) view.cursor = undefined
+        this.changed()
       })
-      source.onerror = () => { if (session.source === source) this.changed() }
+      session.streamError = false
+      source.onerror = raw => {
+        if (session.source === source) {
+          session.streamError = Boolean(raw.terminal)
+          this.changed()
+        }
+      }
     }
     if (view.cursor === undefined || view.error) await this.load(event)
     this.changed()
+  }
+  retryStream(event) {
+    const session = this.session(event.run_id)
+    session.source?.close()
+    session.source = null
+    return this.expand(event)
   }
   collapse(event) {
     const session = this.runs.get(event.run_id)
@@ -76,7 +100,7 @@ export class TraceClient {
     const items = [...(session?.events.values() || [])]
       .filter(item => !event.execution_id || item.execution_id === event.execution_id)
       .sort((a, b) => a.created_at - b.created_at || a.event_id.localeCompare(b.event_id))
-    return { items: items.slice(0, view?.limit || 100), loading: view?.loading, error: view?.error,
+    return { streamError: session?.streamError, items: items.slice(0, view?.limit || 100), loading: view?.loading, error: view?.error,
       more: Boolean(view?.cursor) || items.length > (view?.limit || 100) }
   }
   async more(event) {

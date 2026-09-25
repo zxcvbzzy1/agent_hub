@@ -55,6 +55,7 @@ import { imApi } from '@/api/im'
 import ArtifactCard from '@/components/ArtifactCard.vue'
 import ScopeTrace from '@/components/ScopeTrace.vue'
 import { TraceClient } from '@/utils/traceClient'
+import { EventStream } from '@/utils/eventStream'
 import { buildScopeTraces } from '@/utils/scopeTraces'
 import { API_BASE_URL } from '@/api/http'
 import { sseEventNames, isArtifactEvent } from '@/utils/runtimeEvents'
@@ -96,7 +97,7 @@ const drawerPlannerId = ref('default_planner')
 const traceRevision = ref(0)
 const traceClient = new TraceClient({
   api: imApi, eventNames: sseEventNames,
-  openStream: runId => new EventSource(`${API_BASE_URL}/api/im/runs/${runId}/events/stream`),
+  openStream: runId => new EventStream(`${API_BASE_URL}/api/im/runs/${runId}/events/stream`),
   changed: () => { traceRevision.value++ },
 })
 watch(draftKey, () => traceClient.close())
@@ -1622,6 +1623,9 @@ onUnmounted(() => {
     </aside>
 
     <section class="chat-main">
+      <a-alert v-if="im.streamStatus === 'error'" type="error" show-icon message="实时连接已断开">
+        <template #action><a-button size="small" @click="im.retryStream()">重新连接</a-button></template>
+      </a-alert>
       <div v-if="sidebarCollapsed" class="chat-sticky-tools">
         <a-tooltip title="展开侧栏" placement="right">
           <a-button class="sidebar-expand" shape="circle" @click="sidebarCollapsed = false">
