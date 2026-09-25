@@ -6,6 +6,12 @@ import vueDevTools from 'vite-plugin-vue-devtools'
 
 // https://vite.dev/config/
 export default defineConfig({
+  server: {
+    proxy: { '/api': { target: process.env.IM_API_PROXY_TARGET || 'http://127.0.0.1:8010', changeOrigin: false } },
+  },
+  preview: {
+    proxy: { '/api': { target: process.env.IM_API_PROXY_TARGET || 'http://127.0.0.1:8010', changeOrigin: false } },
+  },
   plugins: [
     vue(),
     vueDevTools(),

@@ -24,7 +24,9 @@ AgentHub 是一个以 IM 聊天为交互入口的多 Agent 协作平台。用户
 
 | 变量 | 说明 | 默认值 |
 | ---- | ---- | ------ |
-| `VITE_IM_API_BASE_URL` | 前端连接的 IM 后端地址 | `http://127.0.0.1:8010` |
+| `VITE_IM_API_BASE_URL` | 同源 API 地址；网页 SSE 不支持跨源地址 | 空（同源） |
+| `IM_API_PROXY_TARGET` | Vite 开发/预览代理的后端地址 | `http://127.0.0.1:8010` |
+| `IM_SSE_COOKIE_SECURE` | SSE Cookie 是否仅通过 HTTPS 发送 | `true`（本地 HTTP 显式设为 `false`） |
 | `IM_MONGO_URL` | IM 后端 MongoDB 地址 | `mongodb://localhost:27017/` |
 | `IM_MONGO_DB` | IM 后端数据库名 | `im_backend` |
 | `IM_ARTIFACT_ROOT` | IM artifact 文件目录 | `im_backend/storage/artifacts` |
@@ -42,7 +44,7 @@ AgentHub 是一个以 IM 聊天为交互入口的多 Agent 协作平台。用户
 从仓库根目录执行：
 
 ```bash
-python -m uvicorn im_backend.api.index:app --host 127.0.0.1 --port 8010
+IM_SSE_COOKIE_SECURE=false python -m uvicorn im_backend.api.index:app --host 127.0.0.1 --port 8010
 ```
 
 健康检查：
@@ -65,11 +67,13 @@ npm run dev
 http://127.0.0.1:5173
 ```
 
-如果后端地址不是 `8010`，在 `IM_front/.env` 中配置：
+网页使用同源 `/api`，Vite 默认代理到 `http://127.0.0.1:8010`。后端地址不同时启动前端：
 
-```text
-VITE_IM_API_BASE_URL=http://127.0.0.1:8010
+```bash
+IM_API_PROXY_TARGET=http://127.0.0.1:8011 npm run dev
 ```
+
+移除旧的跨源 `VITE_IM_API_BASE_URL` 配置。生产 HTTPS 反向代理示例见 [deploy/nginx.im.conf.example](deploy/nginx.im.conf.example)，后端设置 `IM_SSE_COOKIE_SECURE=true`。
 
 健康检查：
 

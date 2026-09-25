@@ -3,7 +3,7 @@ from __future__ import annotations
 from fastapi import Header, APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 
-from im_backend.api.core import get_current_user, get_im_service, get_room_events
+from im_backend.api.core import get_sse_user, get_current_user, get_im_service, get_room_events
 from im_backend.api.schemas import (
     ConversationUpdateRequest,
     MessageCreateRequest,
@@ -182,6 +182,8 @@ async def delete_conversation(
 async def stream_conversation_events(
     conversation_id: str,
     last_event_id: str | None = Header(default=None),
+    last_id: str | None = None,
+    current_user: dict = Depends(get_sse_user),
     service: IMService = Depends(get_im_service),
     events: RoomEventStreamService = Depends(get_room_events),
 ):
@@ -190,7 +192,7 @@ async def stream_conversation_events(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return StreamingResponse(
-        events.stream(conversation_id, last_id=last_event_id),
+        events.stream(conversation_id, last_id=last_event_id or last_id, user_id=current_user['user_id']),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
     )

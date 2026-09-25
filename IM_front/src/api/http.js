@@ -1,7 +1,8 @@
 import axios from 'axios'
+import { clearUserEventStreams } from '@/utils/eventStream'
 import { message } from 'ant-design-vue'
 
-export const API_BASE_URL = import.meta.env.VITE_IM_API_BASE_URL || 'http://127.0.0.1:8010'
+export const API_BASE_URL = import.meta.env.VITE_IM_API_BASE_URL || ''
 
 const http = axios.create({
   baseURL: API_BASE_URL,
@@ -28,6 +29,10 @@ http.interceptors.response.use(
     }
     const detail = error?.response?.data?.detail || error?.message || '请求失败'
     if (error?.response?.status === 401) {
+      try {
+        const userId = JSON.parse(localStorage.getItem('agent-im-auth') || 'null')?.user?.user_id
+        if (userId) await clearUserEventStreams(userId)
+      } catch { /* Expired session may already be cleared. */ }
       localStorage.removeItem('agent-im-auth')
       if (!window.location.pathname.startsWith('/login')) {
         window.location.href = `/login?redirect=${encodeURIComponent(window.location.pathname)}`

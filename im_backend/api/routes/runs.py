@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from im_backend.api.core import get_current_user, get_im_service
+from im_backend.api.core import get_sse_user, get_current_user, get_im_service
 from im_backend.application.services.facade import IMService
 
 
@@ -93,10 +93,10 @@ async def list_run_events(
     if view == "summary":
         require_run(service, run_id)
         try:
-            return service._bridge.events.summaries(run_id, execution_id=execution_id, after=after, limit=limit)
+            return await service._bridge.events.summaries(run_id, execution_id=execution_id, after=after, limit=limit, user_id=current_user['user_id'])
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-    return {"items": service._bridge.events.list_events(run_id)}
+    return {"items": await service._bridge.events.list_events(run_id, user_id=current_user['user_id'])}
 
 
 @router.get("/runs/{run_id}/events/stream")
@@ -104,12 +104,14 @@ async def stream_run_summaries(
     run_id: str,
     execution_id: str | None = None,
     last_event_id: str | None = Header(default=None),
+    last_id: str | None = None,
+    current_user: dict = Depends(get_sse_user),
     service: IMService = Depends(get_im_service),
 ):
     require_run(service, run_id)
     return StreamingResponse(
-        service._bridge.events.stream(run_id, last_id=last_event_id, summary=True, execution_id=execution_id),
-        media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive"})
+        service._bridge.events.stream(run_id, last_id=last_event_id or last_id, summary=True, execution_id=execution_id, user_id=current_user['user_id']),
+        media_type="text/event-stream", headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"})
 
 
 @router.get("/runs/{run_id}/events/{event_id}")
@@ -119,7 +121,7 @@ async def get_run_event(
     current_user: dict = Depends(get_current_user),
 ):
     require_run(service, run_id)
-    event = service._bridge.events.get_event(run_id, event_id)
+    event = await service._bridge.events.get_event(run_id, event_id, user_id=current_user['user_id'])
     if event is None:
         raise HTTPException(status_code=404, detail="事件不存在")
     return {"item": event}
@@ -131,7 +133,7 @@ async def get_scope_event(
     service: IMService = Depends(get_im_service),
     current_user: dict = Depends(get_current_user),
 ):
-    event = service._events.get_event(scope_id, event_id)
+    event = await service._events.get_event(scope_id, event_id, user_id=current_user['user_id'])
     if event is None:
         raise HTTPException(status_code=404, detail="事件不存在")
     return {"item": event}

@@ -71,6 +71,7 @@ def create_app() -> FastAPI:
             "status": "ok",
             "mongo": "mongodb",
             "redis": "ok",
+            "event_archive": await container.bridge.runtime.journal.stats(),
             "service": "im_backend",
         }
 

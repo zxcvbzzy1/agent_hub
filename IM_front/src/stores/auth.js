@@ -1,5 +1,6 @@
 import { defineStore } from 'pinia'
 import { authApi } from '@/api/auth'
+import { clearUserEventStreams } from '@/utils/eventStream'
 
 const STORAGE_KEY = 'agent-im-auth'
 
@@ -22,14 +23,18 @@ export const useAuthStore = defineStore('auth', {
     isAuthenticated: (state) => Boolean(state.session?.token),
   },
   actions: {
-    saveSession(payload) {
+    async saveSession(payload) {
+      const previous = this.session?.user?.user_id
+      if (previous && previous !== payload.user?.user_id) await clearUserEventStreams(previous)
       this.session = {
         token: payload.token,
         user: payload.user,
       }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.session))
     },
-    clearSession() {
+    async clearSession() {
+      const userId = this.session?.user?.user_id
+      if (userId) await clearUserEventStreams(userId)
       this.session = null
       localStorage.removeItem(STORAGE_KEY)
     },
@@ -37,7 +42,7 @@ export const useAuthStore = defineStore('auth', {
       this.loading = true
       try {
         const response = await authApi.login(payload)
-        this.saveSession(response.item)
+        await this.saveSession(response.item)
         return response.item
       } finally {
         this.loading = false
@@ -47,7 +52,7 @@ export const useAuthStore = defineStore('auth', {
       this.loading = true
       try {
         const response = await authApi.register(payload)
-        this.saveSession(response.item)
+        await this.saveSession(response.item)
         return response.item
       } finally {
         this.loading = false
@@ -56,14 +61,14 @@ export const useAuthStore = defineStore('auth', {
     async refreshMe() {
       if (!this.token) return null
       const response = await authApi.me()
-      this.saveSession({ token: this.token, user: response.item })
+      await this.saveSession({ token: this.token, user: response.item })
       return response.item
     },
     async logout() {
       try {
         if (this.token) await authApi.logout()
       } finally {
-        this.clearSession()
+        await this.clearSession()
       }
     },
   },

@@ -20,17 +20,17 @@ class RoomEventStreamService:
         # Business events are durable; transient model deltas belong to run streams.
         return await self.publish(room_id, name, payload)
 
-    def list_events(self, room_id):
-        return self._store.find_many('im_events', {'scope_id': room_id, 'version': 2},
-                                     sort=[('created_at', 1), ('event_id', 1)])
+    async def list_events(self, room_id, *, user_id='service'):
+        return await self.runtime.journal.events('scope', room_id, user_id=user_id)
 
-    async def stream(self, room_id, last_id=None):
-        async for raw in self.runtime.stream('scope', room_id, lambda: self.list_events(room_id),
-                                             last_id=last_id, transform=scope_delivery, reconcile=True):
+    async def stream(self, room_id, last_id=None, *, user_id='service'):
+        async for raw in self.runtime.stream('scope', room_id,
+                lambda: self.runtime.journal.history('scope', room_id),
+                last_id=last_id, transform=scope_delivery, user_id=user_id):
             yield raw
 
-    def get_event(self, scope_id, event_id):
-        return self._store.find_one('im_events', {'scope_id': scope_id, 'event_id': event_id, 'version': 2})
+    async def get_event(self, scope_id, event_id, *, user_id='service'):
+        return next((e for e in await self.list_events(scope_id, user_id=user_id) if e['event_id'] == event_id), None)
 
     def format_sse(self, event, cursor=None):
         return self.runtime.sse(event, cursor)
