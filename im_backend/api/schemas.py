@@ -98,7 +98,6 @@ class DispatchRequest(BaseModel):
     context_id: str = "default_step"
     max_replan_rounds: int = 3
     auto_start: bool = True
-    approved: bool = False
 
 
 class ReplyRequest(BaseModel):
@@ -107,7 +106,7 @@ class ReplyRequest(BaseModel):
 
 
 class MessageActionRequest(BaseModel):
-    action_type: Literal["reply", "quote", "copy", "expand", "apply_diff", "approve", "reject"]
+    action_type: Literal["reply", "quote", "copy", "expand", "apply_diff"]
     actor_id: str = "user"
     payload: dict[str, Any] = Field(default_factory=dict)
 
@@ -154,17 +153,15 @@ class AgentBuilderMessage(BaseModel):
 class AgentBuilderDraft(BaseModel):
     """对话式创建 agent 的草稿，字段对齐前端创建表单（agentForm），而非 AgentCreateRequest。
 
-    agent_kind / description / workdir / permission_profile 在前端落到 metadata；这里整体
+    description / workdir 在前端落到 metadata；这里整体
     镜像表单，前端把草稿应用到表单后仍走原有 createAgent 流程。
     """
 
     name: str = ""
-    agent_kind: Literal["native", "claude_code", "codex"] = "native"
     agent_type: Literal["executor", "planner"] = "executor"
     description: str = ""
     role_prompt: str = ""
     workdir: str = ""
-    permission_profile: Literal["human_confirm", "plan"] = "human_confirm"
     tool_names: list[str] = Field(default_factory=list)
     tool_fields: list[str] = Field(default_factory=list)
 

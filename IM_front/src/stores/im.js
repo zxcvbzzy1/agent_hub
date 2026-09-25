@@ -9,7 +9,7 @@ import { sseEventNames } from '@/utils/runtimeEvents'
 // 高频流式增量事件：后端快速输出时每个 token/chunk 都会发一条，
 // 若每条都同步并入 reactive events 数组，会触发整条 computed 链（compactLlmEvents /
 // chatItems）全量重算 + 整列表重渲染，主线程被打满导致页面卡死。这里把它们合批。
-const HIGH_FREQUENCY_EVENTS = new Set(['llm.delta', 'agent.delta'])
+const HIGH_FREQUENCY_EVENTS = new Set(['llm.delta'])
 // 聊天记录懒加载窗口：打开对话只取最新这么多条，向上滚动再按页补拉更早记录，
 // 避免历史消息很多时一次性渲染整列造成主线程卡顿。
 const MESSAGE_PAGE_SIZE = 30
@@ -760,9 +760,6 @@ export const useIMStore = defineStore('im', {
         if (this.currentAgentId) this.fetchConversations().catch(() => {})
         // 控制频次事件：每条持久化消息刷新一次未读，活跃会话同步保持已读。
         this.fetchActivity().catch(() => {})
-      }
-      if (event.name === 'confirmation.requested' && event.payload?.confirmation) {
-        this.mergeMessage(event.payload.confirmation)
       }
       // agent_flow 层的工具人工确认（如危险 bash 命令）：弹窗审批用
       if (event.name === 'human.confirmation.requested' && event.payload?.confirmation_id) {

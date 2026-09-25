@@ -81,7 +81,6 @@ class GroupRunService:
         context_id: str = "default_step",
         max_replan_rounds: int = 3,
         auto_start: bool = True,
-        approved: bool = False,
         user_id: str = "",
     ) -> dict[str, Any]:
         room = self._rooms.ensure_group_room(room_id)
@@ -99,24 +98,14 @@ class GroupRunService:
             reference_text_of=(lambda ref: self._messages.files.context_text(ref, reference=True)) if getattr(self._messages, "files", None) else None,
         )
         target_agent_ids = self._select_target_agents(room, message)
-        profiles = [self._runtime_profile(agent_id, user_id=user_id) for agent_id in target_agent_ids]
-        external_profiles = [profile for profile in profiles if profile.agent_kind in {"claude_code", "codex"}]
-
-        if external_profiles and not approved:
-            return await self._create_confirmation(
-                room_id=room_id,
-                message_id=message_id,
-                profiles=external_profiles,
-                prompt=prompt,
-                conversation_id=conversation_id,
-            )
-
-        native_agent_ids = [
-            profile.agent_id
-            for profile in profiles
-            if profile.agent_kind in {"native", "human_proxy"}
-        ]
-        executor_agent_ids = [*native_agent_ids, *[profile.agent_id for profile in external_profiles]]
+        profiles: list[AgentRuntimeProfile] = []
+        for agent_id in target_agent_ids:
+            try:
+                profiles.append(self._runtime_profile(agent_id, user_id=user_id))
+            except KeyError:
+                # 历史房间可能仍引用已删除或旧类型 Agent；跳过不可执行成员。
+                continue
+        executor_agent_ids = [profile.agent_id for profile in profiles]
         if not executor_agent_ids:
             raise ValueError("没有可调度的 executor")
         run = await self._create_agent_flow_run(
@@ -142,7 +131,7 @@ class GroupRunService:
         messages = [
             message
             for message in self._messages.list_messages(room_id)
-            if message.get("run_id") == run_id or run_id in (message.get("metadata", {}).get("external_run_ids") or [])
+            if message.get("run_id") == run_id
         ]
         if not messages:
             raise KeyError(f"run 不属于该 room: {run_id}")
@@ -247,53 +236,3 @@ class GroupRunService:
         )
         await self._events.publish(room_id, "run.created", {"message_id": message_id, "run": run})
         return {"type": "run", "run": run}
-
-    async def _create_confirmation(
-        self,
-        *,
-        room_id: str,
-        message_id: str,
-        profiles: list[AgentRuntimeProfile],
-        prompt: str,
-        conversation_id: str = "",
-    ) -> dict[str, Any]:
-        payload = {
-            "message_id": message_id,
-            "source_message_id": message_id,
-            "agent_ids": [profile.agent_id for profile in profiles],
-            "agent_kinds": [profile.agent_kind for profile in profiles],
-            "prompt": prompt,
-            "reason": "外部 coding agent 执行前需要人工确认",
-        }
-        confirmation = await self._messages.add_message(
-            room_id=room_id,
-            conversation_id=conversation_id,
-            sender_type="system",
-            sender_id="im_backend",
-            content_parts=[
-                {
-                    "type": "deploy",
-                    "title": "需要确认外部 Agent 执行",
-                    "description": "Claude Code / Codex 可能读取项目并生成修改建议，v1 默认需要人工确认。",
-                    "metadata": payload,
-                }
-            ],
-            status="pending",
-            metadata={"confirmation": payload},
-        )
-        confirmation_payload = {
-            **payload,
-            "confirmation_message_id": confirmation["message_id"],
-        }
-        confirmation["content_parts"][0]["metadata"] = confirmation_payload
-        confirmation["metadata"] = {"confirmation": confirmation_payload}
-        confirmation = self._store.update_one(
-            "im_messages",
-            {"message_id": confirmation["message_id"]},
-            {
-                "content_parts": confirmation["content_parts"],
-                "metadata": confirmation["metadata"],
-            },
-        ) or confirmation
-        await self._events.publish(room_id, "confirmation.requested", {"confirmation": confirmation, **confirmation_payload})
-        return {"type": "confirmation", "confirmation": confirmation}

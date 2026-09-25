@@ -3,7 +3,6 @@ import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from
 import { Modal, message } from 'ant-design-vue'
 import {
   BranchesOutlined,
-  CheckOutlined,
   CloseOutlined,
   CloudUploadOutlined,
   CopyOutlined,
@@ -25,7 +24,6 @@ import {
   ReloadOutlined,
   RightOutlined,
   RobotOutlined,
-  SafetyCertificateOutlined,
   SearchOutlined,
   SendOutlined,
   StarFilled,
@@ -129,12 +127,10 @@ const roomForm = reactive({
 })
 const agentForm = reactive({
   name: '',
-  agent_kind: 'native',
   agent_type: 'executor',
   description: '',
   role_prompt: '',
   workdir: '',
-  permission_profile: 'human_confirm',
   avatar_url: '',
   tool_names: [],
   tool_fields: [],
@@ -156,15 +152,6 @@ const toolFieldLabels = {
   write_agent: '编写 Agent',
   other: '其它',
 }
-const agentKindOptions = [
-  { label: 'Native', value: 'native' },
-  { label: 'Claude Code', value: 'claude_code' },
-  { label: 'Codex', value: 'codex' },
-]
-const permissionProfileOptions = [
-  { label: '人工确认', value: 'human_confirm' },
-  { label: '只读计划', value: 'plan' },
-]
 const artifactTypeLabels = {
   message: '消息',
   image: '图片',
@@ -179,9 +166,7 @@ const dispatchOptions = reactive({
   max_replan_rounds: 3,
 })
 
-const isNativeAgentForm = computed(() => agentForm.agent_kind === 'native')
-
-const showToolPicker = computed(() => isNativeAgentForm.value && agentForm.agent_type === 'executor')
+const showToolPicker = computed(() => agentForm.agent_type === 'executor')
 
 const groupedTools = computed(() => {
   const order = ['system', 'search', 'memory', 'human', 'robot', 'other']
@@ -242,7 +227,7 @@ const activeTitle = computed(() => {
 
 const activeSubtitle = computed(() => {
   if (im.currentRoom?.type === 'group') return `${currentMembers.value.length} agents · PlanOrchestrator`
-  if (im.currentAgent) return `${agentKind(im.currentAgent.agent_id)} · ${im.currentAgent.agent_type}`
+  if (im.currentAgent) return im.currentAgent.agent_type
   return '开始一次协作'
 })
 
@@ -253,7 +238,7 @@ const heroAvatar = computed(() => {
 
 const roomAgentOptions = computed(() => {
   return im.executorAgents.map((agent) => ({
-    label: `${agent.name} · ${agent.metadata?.agent_kind || 'native'}`,
+    label: agent.name,
     value: agent.agent_id,
 }))
 })
@@ -349,10 +334,6 @@ function agentById(agentId) {
 
 function agentName(agentId) {
   return agentById(agentId)?.name || agentId || 'unknown'
-}
-
-function agentKind(agentId) {
-  return agentById(agentId)?.metadata?.agent_kind || 'native'
 }
 
 function avatarText(value = '') {
@@ -523,12 +504,10 @@ async function createRoom() {
 
 function resetAgentForm() {
   agentForm.name = ''
-  agentForm.agent_kind = 'native'
   agentForm.agent_type = 'executor'
   agentForm.description = ''
   agentForm.role_prompt = ''
   agentForm.workdir = ''
-  agentForm.permission_profile = 'human_confirm'
   agentForm.avatar_url = ''
   agentForm.tool_names = []
   agentForm.tool_fields = []
@@ -548,23 +527,19 @@ async function createAgent() {
   }
   creatingAgent.value = true
   try {
-    const agentKindValue = agentForm.agent_kind || 'native'
-    const agentTypeValue = agentKindValue === 'native' ? agentForm.agent_type : 'executor'
-    const useToolPicker = isNativeAgentForm.value && agentTypeValue === 'executor'
+    const useToolPicker = agentForm.agent_type === 'executor'
     // 后端会按模版为新 Agent 自动新建一份独立的上下文/记忆，前端不再选择或传 context_id。
     await im.createAgent({
       name: agentForm.name.trim(),
-      agent_type: agentTypeValue,
-      role_prompt: isNativeAgentForm.value ? agentForm.role_prompt : '',
+      agent_type: agentForm.agent_type,
+      role_prompt: agentForm.role_prompt,
       tool_names: useToolPicker ? [...agentForm.tool_names] : [],
       tool_fields: useToolPicker ? [...agentForm.tool_fields] : [],
       metadata: {
-        agent_kind: agentKindValue,
         description: agentForm.description,
         capabilities: agentForm.description ? [agentForm.description] : [],
         tags: [...agentForm.tags],
         workdir: agentForm.workdir,
-        permission_profile: agentForm.permission_profile || 'human_confirm',
         avatar_url: agentForm.avatar_url || '',
       },
     })
@@ -605,12 +580,10 @@ async function openEditAgent(agent) {
   const meta = agent.metadata || {}
   editingAgentId.value = agent.agent_id
   agentForm.name = agent.name || ''
-  agentForm.agent_kind = meta.agent_kind || 'native'
   agentForm.agent_type = agent.agent_type || 'executor'
   agentForm.description = meta.description || ''
   agentForm.role_prompt = agent.role_prompt || ''
   agentForm.workdir = meta.workdir || ''
-  agentForm.permission_profile = meta.permission_profile || 'human_confirm'
   agentForm.avatar_url = meta.avatar_url || ''
   agentForm.tags = [...(meta.tags || [])]
   const sel = agentToolSelection(agent)
@@ -628,11 +601,11 @@ async function saveAgentEdit() {
   }
   creatingAgent.value = true
   try {
-    const useToolPicker = isNativeAgentForm.value && agentForm.agent_type === 'executor'
-    // agent_kind / agent_type 不参与编辑（会牵动上下文重置）；metadata 由后端与旧值合并。
+    const useToolPicker = agentForm.agent_type === 'executor'
+    // agent_type 不参与编辑（会牵动上下文重置）；metadata 由后端与旧值合并。
     await im.updateAgent(editingAgentId.value, {
       name: agentForm.name.trim(),
-      role_prompt: isNativeAgentForm.value ? agentForm.role_prompt : '',
+      role_prompt: agentForm.role_prompt,
       tool_names: useToolPicker ? [...agentForm.tool_names] : [],
       tool_fields: useToolPicker ? [...agentForm.tool_fields] : [],
       metadata: {
@@ -640,7 +613,6 @@ async function saveAgentEdit() {
         capabilities: agentForm.description ? [agentForm.description] : [],
         tags: [...agentForm.tags],
         workdir: agentForm.workdir,
-        permission_profile: agentForm.permission_profile || 'human_confirm',
         avatar_url: agentForm.avatar_url || '',
       },
     })
@@ -673,12 +645,10 @@ async function sendBuilderMessage() {
 function applyDraftToForm() {
   const d = builderDraft.value || {}
   agentForm.name = d.name || ''
-  agentForm.agent_kind = d.agent_kind || 'native'
   agentForm.agent_type = d.agent_type || 'executor'
   agentForm.description = d.description || ''
   agentForm.role_prompt = d.role_prompt || ''
   agentForm.workdir = d.workdir || ''
-  agentForm.permission_profile = d.permission_profile || 'human_confirm'
   agentForm.tool_names = [...(d.tool_names || [])]
   agentForm.tool_fields = [...(d.tool_fields || [])]
   agentForm.tags = [...(d.tags || [])]
@@ -852,28 +822,6 @@ watch(composerExpanded, (open) => {
   if (!open) return
   nextTick(() => expandedComposerRef.value?.focus?.({ cursor: 'end' }))
 })
-
-async function approveConfirmation(part, confirmationMessage) {
-  const sourceMessageId = part.metadata?.source_message_id || part.metadata?.message_id
-  const confirmationMessageId = part.metadata?.confirmation_message_id || confirmationMessage?.message_id
-  if (!sourceMessageId || !confirmationMessageId) return
-  await im.recordAction(confirmationMessageId, {
-    action_type: 'approve',
-    payload: part.metadata,
-  })
-  await im.dispatch(sourceMessageId, {
-    approved: true,
-    auto_start: true,
-    planner_agent_id: im.currentRoom?.metadata?.planner_agent_id || drawerPlannerId.value || 'default_planner',
-    context_id: dispatchOptions.context_id,
-    max_replan_rounds: dispatchOptions.max_replan_rounds,
-  })
-  im.messages = im.messages.map((messageItem) => (
-    messageItem.message_id === confirmationMessageId ? { ...messageItem, status: 'finished' } : messageItem
-  ))
-  await Promise.all([im.refreshMessages(), im.fetchTasks()])
-  message.success('已批准并启动外部 Agent')
-}
 
 function onFileDeleted(fileId) {
   im.markFileDeleted(fileId)
@@ -1305,16 +1253,6 @@ async function handleListScroll() {
 // )
 
 watch(
-  () => agentForm.agent_kind,
-  (value) => {
-    if (value !== 'native') {
-      agentForm.agent_type = 'executor'
-      agentForm.role_prompt = ''
-    }
-  },
-)
-
-watch(
   () => im.currentRoom?.metadata?.planner_agent_id,
   (value) => {
     drawerPlannerId.value = value || 'default_planner'
@@ -1426,7 +1364,6 @@ onUnmounted(() => {
             <span class="presence"></span>
             <div>
               <strong>{{ agent.name }}</strong>
-              <small>{{ agentKind(agent.agent_id) }}</small>
               <div v-if="agent.metadata?.tags?.length" class="agent-tags">
                 <span v-for="tag in agent.metadata.tags.slice(0, 2)" :key="tag" class="agent-tag">{{ tag }}</span>
               </div>
@@ -1781,16 +1718,6 @@ onUnmounted(() => {
                     <span>{{ part.title || '操作卡片' }}</span>
                   </div>
                   <p>{{ part.description }}</p>
-                  <a-space v-if="part.metadata?.message_id">
-                    <a-button type="primary" size="small" @click="approveConfirmation(part, entry.message)">
-                      <template #icon><CheckOutlined /></template>
-                      批准
-                    </a-button>
-                    <a-tag color="orange">
-                      <SafetyCertificateOutlined />
-                      人工确认
-                    </a-tag>
-                  </a-space>
                 </div>
                 <a-tag v-else color="default">{{ part.type }}</a-tag>
               </div>
@@ -1927,7 +1854,6 @@ onUnmounted(() => {
               <button v-for="agent in mentionCandidates" :key="agent.agent_id" @click="insertMention(agent)">
                 <a-avatar :size="24" :src="agentAvatar(agent.agent_id)">{{ avatarText(agent.name) }}</a-avatar>
                 <span>{{ agent.name }}</span>
-                <small>{{ agentKind(agent.agent_id) }}</small>
               </button>
             </div>
             <a-textarea
@@ -2078,15 +2004,7 @@ onUnmounted(() => {
         <a-form-item label="名称">
           <a-input v-model:value="agentForm.name" placeholder="例如：前端组件工程师" />
         </a-form-item>
-        <a-form-item label="运行类型">
-          <a-segmented
-            v-model:value="agentForm.agent_kind"
-            :options="agentKindOptions"
-            :disabled="isEditingAgent"
-          />
-          <small v-if="isEditingAgent" class="form-lock-hint">编辑时不可更改运行类型</small>
-        </a-form-item>
-        <a-form-item v-if="isNativeAgentForm" label="类型">
+        <a-form-item label="类型">
           <a-segmented
             v-model:value="agentForm.agent_type"
             :options="[
@@ -2100,19 +2018,13 @@ onUnmounted(() => {
         <a-form-item label="工作目录">
           <a-input v-model:value="agentForm.workdir" placeholder="留空则使用后端默认工作目录" />
         </a-form-item>
-        <a-form-item v-if="!isNativeAgentForm" label="权限策略">
-          <a-select
-            v-model:value="agentForm.permission_profile"
-            :options="permissionProfileOptions"
-          />
-        </a-form-item>
         <a-form-item label="能力描述">
           <a-input v-model:value="agentForm.description" placeholder="擅长方向、可承担任务或工具范围" />
         </a-form-item>
         <a-form-item label="能力标签">
           <a-select v-model:value="agentForm.tags" mode="tags" :token-separators="[',', '，']" placeholder="1~2 个能力标签，如 前端、测试" />
         </a-form-item>
-        <a-form-item v-if="isNativeAgentForm" label="Role Prompt">
+        <a-form-item label="Role Prompt">
           <a-textarea v-model:value="agentForm.role_prompt" :auto-size="{ minRows: 4, maxRows: 8 }" />
         </a-form-item>
         <a-form-item v-if="showToolPicker" label="可用工具">
@@ -2172,7 +2084,7 @@ onUnmounted(() => {
               </div>
               <ul>
                 <li>名称：{{ builderDraft.name || '（待定）' }}</li>
-                <li>运行类型：{{ builderDraft.agent_kind }} · {{ builderDraft.agent_type }}</li>
+                <li>类型：{{ builderDraft.agent_type }}</li>
                 <li v-if="builderDraft.description">能力：{{ builderDraft.description }}</li>
                 <li v-if="builderDraft.tags?.length">标签：{{ builderDraft.tags.join('、') }}</li>
                 <li v-if="builderDraft.tool_names?.length">工具：{{ builderDraft.tool_names.join('、') }}</li>
@@ -2183,7 +2095,7 @@ onUnmounted(() => {
               <a-textarea
                 v-model:value="builderInput"
                 :auto-size="{ minRows: 1, maxRows: 4 }"
-                placeholder="例如：我想要一个会写 Python 单测的 native executor"
+                placeholder="例如：我想要一个会写 Python 单测的 executor"
                 @pressEnter.prevent="sendBuilderMessage"
               />
               <a-button type="primary" :loading="builderSending" @click="sendBuilderMessage">
@@ -2222,7 +2134,7 @@ onUnmounted(() => {
                 <template #avatar><a-avatar :src="item.metadata?.avatar_url">{{ avatarText(item.name) }}</a-avatar></template>
                 <template #title>{{ item.name }}</template>
                 <template #description>
-                  {{ item.agent_id }} · {{ item.metadata?.agent_kind || 'native' }}
+                  {{ item.agent_id }}
                 </template>
               </a-list-item-meta>
               <template v-if="canEditAgent(item)" #actions>

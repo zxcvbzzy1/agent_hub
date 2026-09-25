@@ -210,7 +210,6 @@ async def dispatch_message(
             context_id=request.context_id,
             max_replan_rounds=request.max_replan_rounds,
             auto_start=request.auto_start,
-            approved=request.approved,
             user_id=current_user["user_id"],
         )
     except KeyError as exc:

@@ -16,8 +16,8 @@ import pytest_asyncio
 
 from im_backend.api import core
 from im_backend.api.index import app
+from im_backend.application.services.messaging.agent_builder import AgentBuilderService
 from im_backend.infra.storage.files import LocalFileStorage
-from im_backend.domain.models import CodingAgentEvent
 from domain.event import Event
 from domain.state import Plan
 from domain.run_context import current_run_id
@@ -187,24 +187,55 @@ async def test_cross_worker_dm_cancel_and_monitor(backend, monkeypatch, tmp_path
 
 
 @pytest.mark.asyncio
-async def test_coding_agent_deltas_and_artifacts_use_redis(backend, monkeypatch):
-    container, client, headers = backend
-    class Runner:
-        async def run(self, **kwargs):
-            yield CodingAgentEvent(type='agent.delta',payload={'delta':'hello\n@@ARTIFACT_BEGIN@@\n{"artifact_type":"document","document":{"title":"result","content":"body"}}\n@@ARTIFACT_END@@\n'})
-            yield CodingAgentEvent(type='agent.final',payload={'final':'hello'})
-    monkeypatch.setattr('im_backend.infra.coding_agents.executor_agent.runner_for_kind',lambda _:Runner())
-    agent = await post(client,'/agents',headers,{'name':'coding','metadata':{'agent_kind':'codex'}})
-    cid = (await post(client,f"/agents/{agent['agent_id']}/conversations",headers,{}))['conversation_id']
-    mid = (await post(client,f'/conversations/{cid}/messages',headers,{'content_parts':[{'type':'text','text':'hello'}]}))['message_id']
-    run_id = (await post(client,f'/conversations/{cid}/reply',headers,{'message_id':mid}))['run_id']
-    state = await wait_finished(container.bridge.runtime,'dm_reply',run_id)
-    assert state['status']=='finished',state
-    events = (await container.bridge.events.list_events(run_id))
-    assert not any(e['name']=='agent.delta' for e in events)
-    assert any(e['name']=='artifacts.document' for e in events)
-    messages = (await client.get(f'/api/im/conversations/{cid}/messages')).json()['items']
-    assert any(p['type']=='artifact' for m in messages for p in m['content_parts'])
+async def test_only_native_agents_can_be_created_or_loaded(backend):
+    container, _, _ = backend
+    with pytest.raises(ValueError, match='仅支持 native'):
+        container.agents.create_agent(
+            name='legacy', metadata={'agent_kind': 'external'}, owner_user_id='owner'
+        )
+
+    legacy_id = 'legacy-external-agent'
+    container.store.update_one(
+        'agents',
+        {'agent_id': legacy_id},
+        {
+            'agent_id': legacy_id,
+            'name': 'legacy',
+            'agent_type': 'executor',
+            'context_id': 'default_executor',
+            'metadata': {'agent_kind': 'external'},
+        },
+        upsert=True,
+    )
+    try:
+        assert legacy_id not in {
+            item['agent_id'] for item in container.agents.list_visible_agents('owner')
+        }
+        with pytest.raises(ValueError, match='仅支持 native'):
+            container.bridge.get_agent(legacy_id)
+    finally:
+        container.store.delete_one('agents', {'agent_id': legacy_id})
+
+
+@pytest.mark.asyncio
+async def test_agent_builder_returns_native_shape(backend):
+    container, _, _ = backend
+
+    class LLM:
+        async def chat(self, _messages):
+            return (
+                '已整理。\n```json\n'
+                '{"name":"Planner","agent_type":"planner","tool_names":["bash"],"ready":true}'
+                '\n```'
+            )
+
+    result = await AgentBuilderService(agents=container.agents, llm=LLM()).chat(
+        messages=[{'role': 'user', 'content': '创建 planner'}], draft=None
+    )
+    assert result['ready'] is True
+    assert result['draft']['agent_type'] == 'planner'
+    assert result['draft']['tool_names'] == []
+    assert 'agent_kind' not in result['draft']
 
 
 @pytest.mark.asyncio

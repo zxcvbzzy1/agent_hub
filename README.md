@@ -1,11 +1,11 @@
 # AgentHub
 
-AgentHub 是一个以 IM 聊天为交互入口的多 Agent 协作平台。用户可以通过单聊、群聊、@ Agent、收藏上下文、消息回复/引用、运行轨迹和产物卡片，驱动 native Agent、Codex、Claude Code 等执行网页、文档、代码修改、部署等任务。
+AgentHub 是一个以 IM 聊天为交互入口的多 Agent 协作平台。用户可以通过单聊、群聊、@ Agent、收藏上下文、消息回复/引用、运行轨迹和产物卡片，驱动平台原生 Agent 执行网页、文档、代码修改、部署等任务。
 
 项目由三部分组成：
 
 - `IM_front/`：Vue 3 + Vite 前端，负责聊天工作台、Agent/工具/技能管理、SSE 事件消费和 Artifact 渲染。
-- `im_backend/`：FastAPI IM 产品后端，负责认证、会话、房间、消息、收藏、产物、部署、工具/技能入口和外部 coding agent 适配。
+- `im_backend/`：FastAPI IM 产品后端，负责认证、会话、房间、消息、收藏、产物、部署和工具/技能入口。
 - `agent_flow/`：Agent 核心运行系统，负责 Agent、Context、Tool、Run、PlanOrchestrator、事件总线和工具执行。
 
 ## 演示
@@ -115,7 +115,7 @@ im_backend/
 ├── api/                   # FastAPI app、auth router、/api/im 路由
 ├── application/           # 应用服务：消息、房间、run、artifact、tool、skill
 ├── domain/                # IM 领域模型：conversation、message、room、agent
-├── infra/                 # 存储、Agent Flow bridge、coding agent runner
+├── infra/                 # 存储与 Agent Flow bridge
 ├── storage/               # 本地 artifact 存储
 └── tests/                 # IM 后端测试
 ```
@@ -144,7 +144,7 @@ im_backend
   ├─ API Routes
   ├─ Application Services
   ├─ Domain Models
-  ├─ Infra: storage / coding agents / agent_flow_bridge
+  ├─ Infra: storage / agent_flow_bridge
   └─ Bridge
 agent_flow
   ├─ Application Services
@@ -159,7 +159,7 @@ agent_flow
 - `api/`：HTTP/SSE 适配层，只处理请求、响应、鉴权和路由挂载。
 - `application/`：应用用例层，编排消息发送、群聊 dispatch、run 创建、artifact 转换等流程。
 - `domain/`：领域模型层，定义 Agent、消息、房间、事件、工具、上下文、记忆等核心对象。
-- `infra/`：基础设施层，负责 MongoDB/内存存储、LLM 客户端、事件总线、工具实现、部署和外部 CLI。
+- `infra/`：基础设施层，负责 MongoDB/内存存储、LLM 客户端、事件总线、工具实现和部署。
 
 ### EDA 事件驱动底座
 
@@ -178,8 +178,7 @@ agent_flow
 
 群聊任务由 `im_backend` 接收用户消息和 @ mentions，再通过 bridge 创建 Agent Flow run：
 
-- native Agent 直接进入 Agent Flow。
-- Codex / Claude Code 等外部 coding agent 默认先生成确认卡片。
+- 所有 Agent 都由 Agent Flow 原生运行时执行。
 - `PlanOrchestrator` 负责 planner 计划拆解和 executor 调度。
 - 计划以 DAG 形式执行，入度为 0 的 ready steps 可并发运行。
 - 同一 executor 通过 lock 串行保护，减少状态污染。
@@ -230,7 +229,7 @@ LLM 相关测试应使用 mock 或测试替身，避免在单元测试中依赖�
 
 ## 安全与运行注意事项
 
-- 外部 coding agent 默认走人工确认或只读/计划模式，避免未确认时直接修改文件。
+- 高风险工具调用通过运行时人工确认机制审批。
 - 工具上传和动态工具执行需要在生产环境增加源码审查、签名校验或沙箱隔离。
 - 文件、diff、deploy artifact 需要限制路径、大小和下载行为。
 - MongoDB 不可用时会降级到内存存储，适合开发调试，但重启后数据会丢失。

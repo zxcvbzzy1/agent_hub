@@ -559,7 +559,7 @@ class ConversationService:
     def _apply_agent_workdir(self, agent, agent_id: str) -> None:
         """把 agent 的工作目录落到运行实例的 work_path（按 profile 取，含默认值）。
 
-        native / human_proxy / coding（claude_code、codex）都按各自 profile.workdir 落盘。
+        native Agent 按 profile.workdir 落盘。
         """
         profile = self._runtime_profile(agent_id)
         if not profile.workdir:

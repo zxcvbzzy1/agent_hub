@@ -19,8 +19,7 @@ ContentPartType = Literal[
     "artifact",
 ]
 MessageStatus = Literal["pending", "sent", "running", "finished", "failed", "cancelled"]
-ActionType = Literal["reply", "quote", "copy", "expand", "apply_diff", "approve", "reject"]
-AgentKind = Literal["native", "claude_code", "codex", "human_proxy"]
+ActionType = Literal["reply", "quote", "copy", "expand", "apply_diff"]
 
 
 def new_id() -> str:
@@ -29,4 +28,3 @@ def new_id() -> str:
 
 def now_ts() -> float:
     return time.time()
-

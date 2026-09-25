@@ -29,7 +29,7 @@ class MessageActionService:
             action_type=action_type,
             actor_id=actor_id,
             payload=payload or {},
-            status="approved" if action_type == "approve" else "recorded",
+            status="recorded",
         )
         record = self._store.insert_one("im_message_actions", action.to_dict())
         stream_id = message.get("room_id") or message.get("conversation_id")
