@@ -31,7 +31,7 @@ class IMService:
         self._store = store
         self._bridge = bridge
         self._events = room_events
-        self.cleanup = IMCleanupService(store, bridge.runtime)
+        self.cleanup = IMCleanupService(store, bridge.runtime, long_memory=getattr(bridge, "long_memory", None))
         self.favorites = FavoriteService(store=store, events=room_events)
         self.agents = IMAgentService(bridge=bridge, cleanup=self.cleanup)
         self.rooms = RoomService(store=store, bridge=bridge, events=room_events, cleanup=self.cleanup, agents=self.agents)
@@ -75,8 +75,7 @@ class IMService:
             await self._bridge.runtime.delete_runtime(run_id, kind=state["kind"])
             return
         if record.get("status") not in {"pending", "running"}:
-            await self._bridge.runtime.put_state(state["kind"], run_id,
-                                                 {"status": record["status"], "cancel_requested": False})
+            await self._bridge.runs.states.finish_control(run_id)
             return
         if state["kind"] == "dm_reply":
             await self.conversations._mark_reply_cancelled(

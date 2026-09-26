@@ -15,6 +15,7 @@ from im_backend.application.services._shared.prompting import compose_prompt_wit
 from im_backend.application.services.messaging.rooms import RoomService
 from im_backend.domain.models import AgentRuntimeProfile
 from im_backend.infra.agent_flow_bridge.bridge import AgentFlowBridge
+from domain.memory.long.models import MemoryScope
 
 
 class GroupRunService:
@@ -209,6 +210,8 @@ class GroupRunService:
         )
         return await self._bridge.create_run(
             prompt=prompt,
+            user_question=self._messages.message_text(message),
+            memory_scope=MemoryScope(user_id, room["room_id"], conversation_id or runtime_conversation["conversation_id"]) if user_id else None,
             scope_id=room["room_id"],
             im_conversation_id=conversation_id,
             source_message_id=message["message_id"],

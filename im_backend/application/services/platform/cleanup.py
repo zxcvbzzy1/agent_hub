@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -7,9 +8,10 @@ from typing import Any
 class IMCleanupService:
     """Centralized hard-delete helpers for IM-owned records."""
 
-    def __init__(self, store, runtime=None) -> None:
+    def __init__(self, store, runtime=None, *, long_memory=None) -> None:
         self._store = store
         self.runtime = runtime
+        self.long_memory = long_memory
 
     async def delete_conversation(self, conversation_id: str) -> dict[str, int]:
         self._store.delete_many("im_conversation_files", {"conversation_id": conversation_id})
@@ -17,6 +19,8 @@ class IMCleanupService:
         run_ids = self._run_ids(messages)
         run_count = sum(self._store.find_one("runs", {"run_id": rid}) is not None for rid in run_ids)
         runtime_deleted = await self._delete_runtime_for_runs(run_ids)
+        if self.long_memory is not None:
+            await asyncio.to_thread(self.long_memory.delete_sources, conversation_id=conversation_id)
         for message in messages:
             await self._remove_message_events(message)
         if self.runtime:
@@ -42,6 +46,8 @@ class IMCleanupService:
         run_ids = self._run_ids(messages)
         run_count = sum(self._store.find_one("runs", {"run_id": rid}) is not None for rid in run_ids)
         runtime_deleted = await self._delete_runtime_for_runs(run_ids)
+        if self.long_memory is not None:
+            await asyncio.to_thread(self.long_memory.delete_sources, room_id=room_id)
         for message in messages:
             await self._remove_message_events(message)
         if self.runtime:
@@ -105,6 +111,10 @@ class IMCleanupService:
     async def delete_message(self, message: dict[str, Any]) -> dict[str, int]:
         ids = self._run_ids([message]) if message.get("sender_type") == "user" else []
         runtime_deleted = await self._delete_runtime_for_runs(ids)
+        if self.long_memory is not None:
+            await asyncio.to_thread(self.long_memory.delete_sources, message_id=message["message_id"])
+            if message.get("run_id"):
+                await asyncio.to_thread(self.long_memory.delete_sources, run_id=message["run_id"])
         await self._remove_message_events(message)
         message_id = message.get("message_id", "")
         self._store.delete_many("im_conversation_files", {"message_id": message_id})
@@ -200,9 +210,11 @@ class IMCleanupService:
         count = 0
         for run_id in set(run_ids):
             if self.runtime:
-                result = await RunStateService(self._store, self.runtime).delete(run_id)
+                result = await RunStateService(self._store, self.runtime, long_memory=self.long_memory).delete(run_id)
                 count += result["events"]
             else:
+                if self.long_memory is not None:
+                    await asyncio.to_thread(self.long_memory.delete_sources, run_id=run_id)
                 count += self._store.delete_many("events", {"run_id": run_id})
                 self._store.delete_many("im_events", {"run_id": run_id})
                 self._store.delete_one("runs", {"run_id": run_id})

@@ -19,6 +19,7 @@ from im_backend.application.services._shared.inline_artifacts import collect_inl
 from im_backend.application.services._shared.prompting import compose_prompt_with_references
 from im_backend.domain.models import AgentRuntimeProfile, ContentPart, Conversation, Message, now_ts
 from im_backend.infra.agent_flow_bridge.bridge import AgentFlowBridge
+from domain.memory.long.models import MemoryScope
 
 
 class ConversationService:
@@ -45,7 +46,7 @@ class ConversationService:
         self._default_workdir = str(Path(default_workdir).expanduser().resolve())
         self._reply_tasks: dict[str, asyncio.Task] = {}
         self.runtime = bridge.runtime
-        self._cleanup = cleanup or IMCleanupService(store, bridge.runtime)
+        self._cleanup = cleanup or IMCleanupService(store, bridge.runtime, long_memory=getattr(bridge, "long_memory", None))
 
     def get_conversation(self, conversation_id: str) -> dict[str, Any]:
         conversation = self._store.find_one("im_conversations", {"conversation_id": conversation_id})
@@ -148,6 +149,7 @@ class ConversationService:
         conversation_id: str,
         message_id: str,
         auto_start: bool = True,
+        user_id: str = "",
     ) -> dict[str, Any]:
         self.get_conversation(conversation_id)
         message = self._get_message(message_id)
@@ -194,6 +196,7 @@ class ConversationService:
             conversation_id=conversation_id,
             message_id=message_id,
             auto_start=auto_start,
+            user_id=user_id,
         )
         return {"type": "dm_regenerated", "message_id": message_id, "removed": removed, "reply": result}
 
@@ -371,6 +374,7 @@ class ConversationService:
         conversation_id: str,
         message_id: str,
         auto_start: bool = True,
+        user_id: str = "",
     ) -> dict[str, Any]:
         conversation = self.get_conversation(conversation_id)
         message = self._get_message(message_id)
@@ -395,6 +399,8 @@ class ConversationService:
         run_id = str(uuid.uuid4())
         fields = {
             "run_id": run_id, "kind": "dm_reply", "version": 2, "status": "pending",
+            "memory_scope": MemoryScope(user_id, "direct", conversation_id).to_dict() if user_id else None,
+            "user_question": message_text(message),
             "message_id": message_id, "source_message_id": message_id, "agent_id": agent_id,
             "agent_ids": [agent_id], "conversation_id": conversation_id,
             "conversation_title": conversation.get("title", ""), "room_id": "",
@@ -466,6 +472,9 @@ class ConversationService:
         token = current_run_id.set(run_id)
         try:
             agent = self._bridge.agents.build_run_agent(agent_id)
+            record = self._store.find_one("runs", {"run_id": run_id})
+            memory = await self._bridge.runs.memory_coordinator.prepare(record)
+            await self._bridge.runs.memory_coordinator.inject(agent, memory, run_id)
             message = self._get_message(message_id)
             self._rebuild_agent_history(agent, conversation_id=conversation_id, before_message_id=message_id)
             prompt = self._compose_prompt(message)

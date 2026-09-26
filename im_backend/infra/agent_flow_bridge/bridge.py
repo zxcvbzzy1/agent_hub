@@ -23,6 +23,8 @@ from domain.runtime_hooks import (  # type: ignore  # noqa: E402
     register_tool_event_observer,
 )
 from infra.config import factory, llm_client  # type: ignore  # noqa: E402
+from infra.memory.config import build_long_memory
+from domain.memory.long.models import MemoryScope
 
 
 class AgentFlowBridge:
@@ -51,15 +53,17 @@ class AgentFlowBridge:
             llm_client,
             self.events,
         )
+        self.long_memory = build_long_memory(self._store, self._root_dir / "agent_flow" / "store")
         self.runs = RunOrchestrationService(
             self._store,
             self.agents,
             self.contexts,
             self.events,
             self.frontend_bridge,
+            long_memory=self.long_memory,
         )
         # agent_flow 侧的 runtime 会话服务，与 im_backend 的 ConversationService 同名，用别名区分。
-        self.conversations = RuntimeConversationService(self._store, self.runtime)
+        self.conversations = RuntimeConversationService(self._store, self.runtime, long_memory=self.long_memory)
 
     @property
     def store(self):
@@ -224,6 +228,8 @@ class AgentFlowBridge:
         scope_id: str | None = None,
         im_conversation_id: str = "",
         source_message_id: str = "",
+        memory_scope: MemoryScope | None = None,
+        user_question: str | None = None,
     ) -> dict[str, Any]:
         return await self.runs.create_run(
             prompt=prompt,
@@ -240,6 +246,8 @@ class AgentFlowBridge:
             scope_id=scope_id,
             im_conversation_id=im_conversation_id,
             source_message_id=source_message_id,
+            memory_scope=memory_scope,
+            user_question=user_question,
         )
 
     async def cancel_run(self, run_id: str) -> dict[str, Any]:

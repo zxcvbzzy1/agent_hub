@@ -91,6 +91,7 @@ async def reply_to_conversation_message(
     try:
         item = await service.reply_to_conversation_message(
             conversation_id=conversation_id,
+            user_id=current_user["user_id"],
             message_id=request.message_id,
             auto_start=request.auto_start,
         )
@@ -155,6 +156,7 @@ async def regenerate_conversation_message(
     try:
         item = await service.regenerate_conversation_reply(
             conversation_id=conversation_id,
+            user_id=current_user["user_id"],
             message_id=message_id,
             auto_start=request.auto_start,
         )
