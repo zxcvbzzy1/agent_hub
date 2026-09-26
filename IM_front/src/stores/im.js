@@ -1,10 +1,11 @@
 import { defineStore } from 'pinia'
 import { markRaw } from 'vue'
-import { EventStream } from '@/utils/eventStream'
+import { EventStream, clearEventSnapshot } from '@/utils/eventStream'
 import { message as toast } from 'ant-design-vue'
 import { API_BASE_URL } from '@/api/http'
 import { imApi } from '@/api/im'
 import { sseEventNames } from '@/utils/runtimeEvents'
+import { selectedRunIds, selectionMatches } from '@/utils/conversationScope'
 
 // 高频流式增量事件：后端快速输出时每个 token/chunk 都会发一条，
 // 若每条都同步并入 reactive events 数组，会触发整条 computed 链（compactLlmEvents /
@@ -30,6 +31,14 @@ function resetEventStreamState() {
   cancelEventFlush()
   seenEventIds = new Set()
   pendingEvents = []
+}
+
+function currentUserId() {
+  try {
+    return JSON.parse(localStorage.getItem('agent-im-auth') || 'null')?.user?.user_id || ''
+  } catch {
+    return ''
+  }
 }
 
 export const useIMStore = defineStore('im', {
@@ -58,6 +67,7 @@ export const useIMStore = defineStore('im', {
     source: null,
     streamPath: '',
     streamStatus: 'closed',
+    selectionRevision: 0,
     tools: [],
     // 待处理的人工确认（危险命令）：{confirmation_id, run_id, tool_name, arguments, ...}
     humanConfirmations: [],
@@ -201,43 +211,60 @@ export const useIMStore = defineStore('im', {
         this.conversations = []
         return []
       }
+      const revision = this.selectionRevision
       const response = await imApi.agentConversations(agentId)
-      this.conversations = response.items || []
-      return this.conversations
+      const items = response.items || []
+      if (revision === this.selectionRevision && this.currentAgentId === agentId) this.conversations = items
+      return items
     },
     async fetchTasks(roomId = this.currentGroupRoom?.room_id) {
-      if (!roomId) {
+      const revision = this.selectionRevision
+      const conversationId = this.currentGroupConversation?.conversation_id
+      if (!roomId || !conversationId) {
         this.tasks = []
         return []
       }
-      const conversationId = this.currentGroupConversation?.conversation_id
       const response = await imApi.roomTasks(roomId, conversationId)
-      this.tasks = response.items || []
-      return this.tasks
+      const items = response.items || []
+      if (selectionMatches(this, revision, roomId, conversationId)) this.tasks = items
+      return items
     },
     async fetchGroupConversations(roomId) {
+      const revision = this.selectionRevision
       const r = await imApi.roomConversations(roomId)
-      this.groupConversations = r.items || []
-      return this.groupConversations
+      const items = r.items || []
+      if (revision === this.selectionRevision && this.currentRoom?.room_id === roomId) {
+        this.groupConversations = items
+      }
+      return items
     },
     async refreshMessages() {
       // 只重拉最新窗口并与已加载的更早分页合并，避免发送/取消/重生成后把上滑加载的历史一次性丢弃。
       if (this.currentRoom?.type === 'group') {
-        if (!this.currentRoom.room_id) return this.messages
+        const revision = this.selectionRevision
+        const roomId = this.currentRoom.room_id
+        const conversationId = this.currentGroupConversation?.conversation_id
+        if (!roomId || !conversationId) return this.messages
         const response = await imApi.roomMessages(
-          this.currentRoom.room_id,
-          this.currentGroupConversation?.conversation_id,
+          roomId,
+          conversationId,
           { limit: MESSAGE_PAGE_SIZE },
         )
-        this.applyLatestWindow(response.items || [])
+        if (selectionMatches(this, revision, roomId, conversationId)) {
+          this.applyLatestWindow(response.items || [])
+        }
         return this.messages
       }
       if (this.currentConversation?.conversation_id) {
+        const revision = this.selectionRevision
+        const conversationId = this.currentConversation.conversation_id
         const response = await imApi.conversationMessages(
-          this.currentConversation.conversation_id,
+          conversationId,
           { limit: MESSAGE_PAGE_SIZE },
         )
-        this.applyLatestWindow(response.items || [])
+        if (selectionMatches(this, revision, '', conversationId)) {
+          this.applyLatestWindow(response.items || [])
+        }
         return this.messages
       }
       return []
@@ -259,6 +286,11 @@ export const useIMStore = defineStore('im', {
       const oldest = this.messages[0]
       if (!oldest?.message_id) return 0
       this.loadingOlderMessages = true
+      const revision = this.selectionRevision
+      const roomId = this.currentRoom?.type === 'group' ? this.currentRoom.room_id : ''
+      const conversationId = roomId
+        ? this.currentGroupConversation?.conversation_id
+        : this.currentConversation?.conversation_id
       try {
         let response
         if (this.currentRoom?.type === 'group') {
@@ -276,6 +308,7 @@ export const useIMStore = defineStore('im', {
         } else {
           return 0
         }
+        if (!selectionMatches(this, revision, roomId, conversationId)) return 0
         const older = response.items || []
         const existing = new Set(this.messages.map((item) => item.message_id))
         const fresh = older.filter((item) => !existing.has(item.message_id))
@@ -283,7 +316,7 @@ export const useIMStore = defineStore('im', {
         this.hasMoreMessages = Boolean(response.has_more)
         return fresh.length
       } finally {
-        this.loadingOlderMessages = false
+        if (this.selectionRevision === revision) this.loadingOlderMessages = false
       }
     },
     mergeMessage(messageItem) {
@@ -314,9 +347,10 @@ export const useIMStore = defineStore('im', {
       return response.item
     },
     async deleteRoom(roomId) {
+      this.selectionRevision += 1
       await imApi.deleteRoom(roomId)
+      await this.invalidateStreamSnapshot(`/api/im/rooms/${roomId}/events`)
       if (this.currentGroupRoom?.room_id === roomId) {
-        this.closeStream()
         this.currentGroupRoom = null
         this.currentRoom = null
         this.groupConversations = []
@@ -349,6 +383,7 @@ export const useIMStore = defineStore('im', {
       return imApi.builderChat(payload)
     },
     async deleteAgent(agentId) {
+      if (this.currentAgentId === agentId) this.selectionRevision += 1
       await imApi.deleteAgent(agentId)
       if (this.currentAgentId === agentId) {
         this.closeStream()
@@ -377,36 +412,49 @@ export const useIMStore = defineStore('im', {
       return response.item
     },
     async deleteConversation(conversationId) {
+      const groupRoomId = this.currentRoom?.type === 'group' ? this.currentRoom.room_id : ''
+      const agentId = this.currentAgentId
+      const wasCurrent = groupRoomId
+        ? this.currentGroupConversation?.conversation_id === conversationId
+        : this.currentConversation?.conversation_id === conversationId
+      this.selectionRevision += 1
       await imApi.deleteConversation(conversationId)
-      if (this.currentRoom?.type === 'group') {
-        const wasCurrent = this.currentGroupConversation?.conversation_id === conversationId
-        await this.fetchGroupConversations(this.currentRoom.room_id)
-        if (wasCurrent) {
-          const next = this.groupConversations[0]
-          if (next) {
-            await this.selectGroupConversation(next.conversation_id)
-          } else {
-            this.currentGroupConversation = null
-            this.messages = []
-            this.tasks = []
-          }
+      if (groupRoomId) {
+        await this.invalidateStreamSnapshot(`/api/im/rooms/${groupRoomId}/events`)
+        this.events = []
+        this.humanConfirmations = []
+        const conversations = await imApi.roomConversations(groupRoomId)
+        if (this.currentRoom?.room_id !== groupRoomId) return
+        this.groupConversations = conversations.items || []
+        const previousId = this.currentGroupConversation?.conversation_id
+        const nextId = this.groupConversations.some(item => item.conversation_id === previousId)
+          ? previousId
+          : this.groupConversations[0]?.conversation_id
+        if (nextId) {
+          await this.selectGroupConversation(nextId)
+        } else {
+          this.currentGroupConversation = null
+          this.messages = []
+          this.tasks = []
         }
+        if (this.currentRoom?.room_id === groupRoomId) this.connectRoom(groupRoomId)
         return
       }
-      const agentId = this.currentAgentId
-      if (this.currentConversation?.conversation_id === conversationId) {
-        this.closeStream()
+      await this.invalidateStreamSnapshot(`/api/im/conversations/${conversationId}/events`)
+      if (this.currentRoom?.type === 'group' || this.currentAgentId !== agentId) return
+      if (wasCurrent && this.currentConversation?.conversation_id === conversationId) {
         this.currentConversation = null
         this.messages = []
         this.events = []
         this.mode = agentId ? 'agent' : 'empty'
       }
       await this.fetchConversations(agentId)
-      if (this.currentAgentId && this.conversations[0]) {
+      if (wasCurrent && this.currentAgentId && this.conversations[0]) {
         await this.selectConversation(this.conversations[0].conversation_id)
       }
     },
     async selectAgent(agentId) {
+      const revision = ++this.selectionRevision
       this.currentAgentId = agentId
       this.currentConversation = null
       this.currentGroupRoom = null
@@ -420,15 +468,18 @@ export const useIMStore = defineStore('im', {
       this.mode = 'agent'
       this.closeStream()
       const conversations = await this.fetchConversations(agentId)
+      if (revision !== this.selectionRevision || this.currentAgentId !== agentId) return
       if (conversations[0]) {
         await this.selectConversation(conversations[0].conversation_id)
       }
     },
     async selectConversation(conversationId) {
+      const revision = ++this.selectionRevision
       const [conversationResponse, messageResponse] = await Promise.all([
         imApi.conversation(conversationId),
         imApi.conversationMessages(conversationId, { limit: MESSAGE_PAGE_SIZE }),
       ])
+      if (revision !== this.selectionRevision) return
       this.currentConversation = conversationResponse.item
       this.currentGroupRoom = null
       this.currentRoom = null
@@ -447,7 +498,12 @@ export const useIMStore = defineStore('im', {
       this.loadFavorites().catch(() => {})
     },
     async selectGroupRoom(roomId) {
-      const roomResponse = await imApi.room(roomId)
+      const revision = ++this.selectionRevision
+      const [roomResponse, conversationsResponse] = await Promise.all([
+        imApi.room(roomId),
+        imApi.roomConversations(roomId),
+      ])
+      if (revision !== this.selectionRevision) return
       this.currentGroupRoom = roomResponse.item
       this.currentConversation = null
       this.currentRoom = roomResponse.item
@@ -458,9 +514,7 @@ export const useIMStore = defineStore('im', {
       this.events = []
       this.conversations = []
       this.currentGroupConversation = null
-      // ROOM SSE 只在这里连接一次，切换会话不重连。
-      this.connectRoom(roomId)
-      await this.fetchGroupConversations(roomId)
+      this.groupConversations = conversationsResponse.items || []
       const first = this.groupConversations[0]
       if (first) {
         await this.selectGroupConversation(first.conversation_id)
@@ -469,16 +523,25 @@ export const useIMStore = defineStore('im', {
         this.messages = []
         this.tasks = []
       }
+      // ROOM SSE 只在这里连接一次；先确定会话，避免 ready 回调拉取整个房间的数据。
+      if (this.currentRoom?.room_id === roomId) this.connectRoom(roomId)
     },
     async selectGroupConversation(conversationId) {
+      const revision = ++this.selectionRevision
       this.currentGroupConversation = this.groupConversations.find(
         (item) => item.conversation_id === conversationId,
       ) || null
       const roomId = this.currentRoom?.room_id
+      if (!roomId || !this.currentGroupConversation) return
+      this.messages = []
+      this.tasks = []
+      this.humanConfirmations = []
+      this.loadingOlderMessages = false
       const [messageResponse, taskResponse] = await Promise.all([
         imApi.roomMessages(roomId, conversationId, { limit: MESSAGE_PAGE_SIZE }),
         imApi.roomTasks(roomId, conversationId),
       ])
+      if (!selectionMatches(this, revision, roomId, conversationId)) return
       this.messages = messageResponse.items || []
       this.hasMoreMessages = Boolean(messageResponse.has_more)
       this.messagesEpoch += 1
@@ -585,6 +648,7 @@ export const useIMStore = defineStore('im', {
     },
     async loadFavorites() {
       let scopeType, scopeId
+      const revision = this.selectionRevision
       if (this.currentRoom?.type === 'group') {
         if (!this.currentGroupConversation) {
           this.favorites = []
@@ -600,7 +664,8 @@ export const useIMStore = defineStore('im', {
         return
       }
       const r = await imApi.favorites(scopeType, scopeId)
-      this.favorites = r.items || []
+      const roomId = this.currentRoom?.type === 'group' ? this.currentRoom.room_id : ''
+      if (selectionMatches(this, revision, roomId, scopeId)) this.favorites = r.items || []
     },
     async favoriteMessage(messageId, title = '') {
       await imApi.favoriteMessage(messageId, { title })
@@ -651,6 +716,17 @@ export const useIMStore = defineStore('im', {
       // 切换/断开会话时清空去重索引与增量缓冲，避免跨会话串味或残留 rAF 把旧 batch 并入新数组。
       resetEventStreamState()
       this.streamStatus = 'closed'
+    },
+    async invalidateStreamSnapshot(path) {
+      const source = this.streamPath === path ? this.source : null
+      if (source) {
+        this.closeStream()
+        try { await source.clearSnapshot() } catch { /* IndexedDB may be unavailable. */ }
+        return
+      }
+      const userId = currentUserId()
+      if (!userId) return
+      try { await clearEventSnapshot(`${API_BASE_URL}${path}`, userId) } catch { /* Cache cleanup is best-effort. */ }
     },
     connectRoom(roomId) {
       this.connectStream(`/api/im/rooms/${roomId}/events`)
@@ -705,11 +781,16 @@ export const useIMStore = defineStore('im', {
       this.source = source
     },
     async syncHumanConfirmations(source = this.source) {
-      const ids = this.currentRoom?.type === 'group'
-        ? [...new Set([...this.tasks.map(t => t.run_id), ...this.events.map(e => e.run_id)].filter(Boolean))]
-        : [...new Set([...this.messages.map(m => m.run_id), ...this.events.map(e => e.run_id)].filter(Boolean))]
+      const revision = this.selectionRevision
+      const roomId = this.currentRoom?.type === 'group' ? this.currentRoom.room_id : ''
+      const conversationId = roomId
+        ? this.currentGroupConversation?.conversation_id
+        : this.currentConversation?.conversation_id
+      const ids = selectedRunIds(this)
       const responses = await Promise.all(ids.map(id => imApi.listRunConfirmations(id)))
-      if (this.source === source) this.humanConfirmations = responses.flatMap(r => r.items || [])
+      if (this.source === source && selectionMatches(this, revision, roomId, conversationId)) {
+        this.humanConfirmations = responses.flatMap(r => r.items || [])
+      }
     },
     flushPendingEvents() {
       cancelEventFlush()

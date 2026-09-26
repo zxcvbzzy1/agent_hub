@@ -33,8 +33,6 @@ import {
   UserAddOutlined,
 } from '@ant-design/icons-vue'
 import {
-  buildConversationTraces,
-  buildGroupTimelineItems,
   compactLlmEvents,
   eventActor,
   eventActorId,
@@ -54,9 +52,9 @@ import ArtifactCard from '@/components/ArtifactCard.vue'
 import ScopeTrace from '@/components/ScopeTrace.vue'
 import { TraceClient } from '@/utils/traceClient'
 import { EventStream } from '@/utils/eventStream'
-import { buildScopeTraces } from '@/utils/scopeTraces'
+import { buildChatItems } from '@/utils/chatItems'
 import { API_BASE_URL } from '@/api/http'
-import { sseEventNames, isArtifactEvent } from '@/utils/runtimeEvents'
+import { sseEventNames } from '@/utils/runtimeEvents'
 import ChatAttachments from '@/components/ChatAttachments.vue'
 import ChatFileCard from '@/components/ChatFileCard.vue'
 import { useChatFiles } from '@/composables/useChatFiles'
@@ -282,20 +280,12 @@ const canInterrupt = computed(() => {
 const chatItems = computed(() => {
   const conversationId = im.currentRoom?.type === 'group'
     ? im.currentGroupConversation?.conversation_id : im.currentConversation?.conversation_id
-  const runIds = new Set(im.messages.map(m => m.run_id).filter(Boolean))
-  const events = im.events.filter(event => event.version === 2 && event.category === 'scope' && (
-    event.conversation_id === conversationId || (!event.conversation_id && runIds.has(event.run_id))
-  ))
-  const messages = im.messages.map(message => ({ key: `message-${message.message_id}`, kind: 'message',
-    created_at: message.created_at || 0, message }))
-  const traces = buildScopeTraces(events).map(trace => ({ key: trace.key,
-    kind: 'scope-trace', created_at: trace.created_at, trace }))
-  // DM artifacts are already persisted in the assistant reply. Group artifacts remain visible.
-  const artifacts = im.currentRoom?.type === 'group' ? events.filter(isArtifactEvent).map(event => ({
-    key: event.event_id, kind: 'artifact', created_at: event.created_at, event,
-    artifact: event.payload?.artifact || {},
-  })) : []
-  return [...messages, ...traces, ...artifacts].sort((a, b) => a.created_at - b.created_at)
+  return buildChatItems({
+    messages: im.messages,
+    events: im.events,
+    conversationId,
+    group: im.currentRoom?.type === 'group',
+  })
 })
 
 const chatScrollSignature = computed(() => {

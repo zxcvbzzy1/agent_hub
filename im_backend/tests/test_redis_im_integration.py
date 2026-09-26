@@ -17,10 +17,16 @@ import pytest_asyncio
 from im_backend.api import core
 from im_backend.api.index import app
 from im_backend.application.services.messaging.agent_builder import AgentBuilderService
+from im_backend.application.services.orchestration.runs import GroupRunService
 from im_backend.infra.storage.files import LocalFileStorage
+from im_backend.infra.agent_flow_bridge.pathing import ensure_agent_flow_path
 from domain.event import Event
 from domain.state import Plan
 from domain.run_context import current_run_id
+
+ensure_agent_flow_path()
+
+from application.services.run_state import RunStateService
 
 
 @pytest_asyncio.fixture
@@ -143,6 +149,7 @@ async def test_group_first_event_association_and_final_reply(backend, monkeypatc
     assert any(m['sender_type']=='agent' and m['content_parts'][0]['text']=='group answer' for m in msgs)
     tasks = (await client.get(f'/api/im/rooms/{rid}/tasks')).json()['items']
     assert tasks[0]['status'] == 'finished'
+    assert [task['run_id'] for task in tasks] == [run_id]
     entries = await container.bridge.runtime.redis.xrange(container.bridge.runtime.event_key('scope', rid))
     names = [json.loads(f['event'])['name'] for _, f in entries]
     assert names.index('run.created') < names.index('workflow.started')
@@ -519,3 +526,65 @@ async def test_im_sse_auth_user_identity_and_cursor_precedence(backend, monkeypa
         assert calls[-1][1] == 'cookie/3-0'
         assert calls[-1][2]['user_id'] == me['user_id']
         assert (await client.get(path, headers={'Cookie': cookie, 'Authorization': 'Bearer invalid'})).status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_room_tasks_deduplicate_runs_and_load_unique_runs_concurrently():
+    messages = [
+        {"message_id": "agent-a", "sender_type": "agent", "run_id": "a", "created_at": 3},
+        {"message_id": "user-a", "sender_type": "user", "run_id": "a", "created_at": 1},
+        {"message_id": "user-b", "sender_type": "user", "run_id": "b", "created_at": 2},
+        {"message_id": "agent-b", "sender_type": "agent", "run_id": "b", "created_at": 4},
+    ]
+
+    class Runs:
+        def __init__(self):
+            self.calls = []
+            self.inflight = 0
+            self.max_inflight = 0
+
+        async def get_run(self, run_id):
+            self.calls.append(run_id)
+            self.inflight += 1
+            self.max_inflight = max(self.max_inflight, self.inflight)
+            await asyncio.sleep(0.01)
+            self.inflight -= 1
+            return {"run_id": run_id, "status": "finished", "prompt": f"prompt-{run_id}"}
+
+    runs = Runs()
+    service = GroupRunService(
+        store=None,
+        bridge=SimpleNamespace(runs=runs),
+        events=None,
+        rooms=SimpleNamespace(ensure_group_room=lambda _: {"type": "group"}),
+        messages=SimpleNamespace(
+            list_messages=lambda *_args, **_kwargs: messages,
+            message_text=lambda message: message["message_id"],
+        ),
+        agents=None,
+        favorites=None,
+        default_workdir=".",
+    )
+
+    tasks = await service.list_room_tasks("room", conversation_id="conversation")
+
+    assert set(runs.calls) == {"a", "b"}
+    assert runs.max_inflight == 2
+    assert {task["run_id"] for task in tasks} == {"a", "b"}
+    assert {task["message_id"] for task in tasks} == {"user-a", "user-b"}
+
+
+@pytest.mark.asyncio
+async def test_terminal_run_state_does_not_read_redis_control():
+    class Cache:
+        async def get(self, _run_id, _loader):
+            return {"run_id": "done", "status": "finished"}
+
+    class Runtime:
+        cache = Cache()
+
+        async def get_state(self, *_args):
+            raise AssertionError("terminal runs must not query live Redis control")
+
+    result = await RunStateService(SimpleNamespace(), Runtime()).get("done")
+    assert result == {"run_id": "done", "status": "finished", "cancel_requested": False}

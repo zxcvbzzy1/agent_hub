@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto'
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { EventSnapshot, snapshotKey, clearEventSnapshots } from './eventSnapshot.js'
+import { EventSnapshot, snapshotKey, clearEventSnapshot, clearEventSnapshots } from './eventSnapshot.js'
 import { EventStream, clearUserEventStreams } from './eventStream.js'
 
 const storage = {}
@@ -60,6 +60,17 @@ test('reset and logout fence late writes from old tabs', async () => {
   assert.deepEqual((await new EventSnapshot(key(user), user).load()).events, [event('new')])
   await clearEventSnapshots(user)
   await assert.rejects(first.save([event('new')], 'new/4-0'))
+})
+
+test('deleting one stream snapshot removes its events and fences an in-flight page', async () => {
+  const user = crypto.randomUUID()
+  const url = 'https://example.test/api/im/rooms/room/events'
+  const snapshot = new EventSnapshot(snapshotKey(url, user), user)
+  await snapshot.load()
+  await snapshot.save([event('deleted')], 'old/1-0')
+  await clearEventSnapshot(url, user)
+  assert.equal(await new EventSnapshot(snapshotKey(url, user), user).load(), null)
+  await assert.rejects(snapshot.save([event('late')], 'old/2-0'))
 })
 
 test('cache keys isolate users, servers and filtered views', () => {

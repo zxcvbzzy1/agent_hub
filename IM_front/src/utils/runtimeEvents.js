@@ -300,19 +300,8 @@ export function buildConversationTraces({ messages = [], events = [], conversati
   return [...traces, ...openBuckets.values()]
 }
 
-export function buildGroupTimelineItems({ messages = [], events = [] }) {
-  const items = []
+export function collectRunArtifacts(events = []) {
   const sortedEvents = [...events].sort((a, b) => (a.created_at || 0) - (b.created_at || 0))
-  // planner 的最终回复已由后端落库成房间消息（metadata.source === 'planner_final'）。
-  // 这些 run 的 planner.final 事件输出气泡需要抑制，避免与消息气泡重复；本次 run 的产物
-  // 汇总也随之挂到对应消息上。
-  const plannerFinalRunIds = new Set(
-    messages
-      .filter((message) => message?.metadata?.source === 'planner_final' && message.run_id)
-      .map((message) => message.run_id),
-  )
-  const buckets = new Map()
-  const consumedEventIds = new Set()
   const artifactsByScope = new Map()
   // scope -> Map(identity -> 该产物在数组中的下标)，用于「同身份产物保留最新」
   const artifactIndexByScope = new Map()
@@ -345,6 +334,23 @@ export function buildGroupTimelineItems({ messages = [], events = [] }) {
     }
     artifactsByScope.set(scope, artifacts)
   }
+  return artifactsByScope
+}
+
+export function buildGroupTimelineItems({ messages = [], events = [] }) {
+  const items = []
+  const sortedEvents = [...events].sort((a, b) => (a.created_at || 0) - (b.created_at || 0))
+  // planner 的最终回复已由后端落库成房间消息（metadata.source === 'planner_final'）。
+  // 这些 run 的 planner.final 事件输出气泡需要抑制，避免与消息气泡重复；本次 run 的产物
+  // 汇总也随之挂到对应消息上。
+  const plannerFinalRunIds = new Set(
+    messages
+      .filter((message) => message?.metadata?.source === 'planner_final' && message.run_id)
+      .map((message) => message.run_id),
+  )
+  const buckets = new Map()
+  const consumedEventIds = new Set()
+  const artifactsByScope = collectRunArtifacts(sortedEvents)
 
   function bucketKey(scope, actorId) {
     return `${scope}:${actorId}`

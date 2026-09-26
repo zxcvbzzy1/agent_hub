@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -42,12 +43,21 @@ class GroupRunService:
         room = self._rooms.ensure_group_room(room_id)
         if room.get("type") != "group":
             raise ValueError("只有群聊 room 才有编排任务")
-        tasks: list[dict[str, Any]] = []
+        messages_by_run: dict[str, dict[str, Any]] = {}
         for message in self._messages.list_messages(room_id, conversation_id=conversation_id):
             run_id = message.get("run_id")
             if not run_id:
                 continue
-            run = await self._bridge.runs.get_run(run_id) or {}
+            current = messages_by_run.get(run_id)
+            if current is None or (current.get("sender_type") != "user" and message.get("sender_type") == "user"):
+                messages_by_run[run_id] = message
+
+        runs = await asyncio.gather(*(
+            self._bridge.runs.get_run(run_id) for run_id in messages_by_run
+        ))
+        tasks: list[dict[str, Any]] = []
+        for (run_id, message), loaded in zip(messages_by_run.items(), runs):
+            run = loaded or {}
             tasks.append(
                 {
                     "task_id": run_id,

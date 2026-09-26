@@ -1,4 +1,4 @@
-import { EventSnapshot, snapshotKey, clearEventSnapshots } from './eventSnapshot.js'
+import { EventSnapshot, snapshotKey, clearEventSnapshot, clearEventSnapshots } from './eventSnapshot.js'
 import { sseEventNames } from './runtimeEvents.js'
 
 const active = new Set()
@@ -214,7 +214,15 @@ export class EventStream {
     this.pending.clear()
     active.delete(this)
   }
+
+  async clearSnapshot() {
+    this.close()
+    await Promise.allSettled([this.initialized, this.saving])
+    await this.snapshot.remove()
+  }
 }
+
+export { clearEventSnapshot }
 
 export async function clearUserEventStreams(userId) {
   cookieInitialization = null

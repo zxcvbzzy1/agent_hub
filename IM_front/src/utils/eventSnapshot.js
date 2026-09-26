@@ -85,6 +85,19 @@ export class EventSnapshot {
     mirror(this.key, '')
   }
 
+  async remove() {
+    const db = await openDatabase()
+    await new Promise((resolve, reject) => {
+      const tx = db.transaction(STORE, 'readwrite')
+      tx.objectStore(STORE).delete(this.key)
+      tx.oncomplete = resolve
+      tx.onerror = () => reject(tx.error)
+      tx.onabort = () => reject(tx.error || new Error('Snapshot deletion aborted'))
+    })
+    this.revision = null
+    mirror(this.key, '')
+  }
+
   async save(events, cursor) {
     const checkpoint = await this.transaction((existing, store) => {
       // A reset/logout in another tab must not be undone by an old in-flight write.
@@ -103,6 +116,10 @@ export class EventSnapshot {
   }
 
   invalidateMirror() { mirror(this.key, '') }
+}
+
+export async function clearEventSnapshot(url, userId) {
+  await new EventSnapshot(snapshotKey(url, userId), userId).remove()
 }
 
 export async function clearEventSnapshots(userId) {
