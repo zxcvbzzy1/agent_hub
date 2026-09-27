@@ -162,7 +162,7 @@ agent_flow
 - `domain/`：领域模型层，定义 Agent、消息、房间、事件、工具、上下文、记忆等核心对象。
 - `infra/`：基础设施层，负责 MongoDB 与文件存储适配器、LLM 客户端、事件总线、工具实现和部署。
 
-在 `agent_flow` 内，依赖沿 `application → infra → domain` 指向更底层；`application` 也可以直接使用 `domain`。`domain` 不依赖其他两层，`infra` 不导入 `application`。`api/` 是三层之外的 HTTP 入口。长期记忆的 [应用服务](agent_flow/application/services/long_memory.py) 同时提供 `build_long_memory()`，连接 MongoDB 与文件系统适配器；[记忆存储](agent_flow/infra/memory/)只实现存取能力。
+在 `agent_flow` 内，依赖沿 `application → infra → domain` 指向更底层；`application` 也可以直接使用 `domain`。`domain` 不依赖其他两层，`infra` 不导入 `application`。`api/` 是三层之外的 HTTP 入口。长期记忆的 [应用服务](agent_flow/application/services/long_memory.py) 同时提供 `build_long_memory()`，组装存储、模型适配器和后台处理服务，不增加 bootstrap 层。[基础设施](agent_flow/infra/memory/)负责文件系统、MongoDB、JEV SDK 和提取 LLM 的访问。
 
 IM 的个人检索设置与管理查询属于 `im_backend`。IM 桥接把设置读取函数注入 Agent 运行时，`agent_flow` 的长期记忆用例只接收运行时选项，不依赖 IM 配置模块。新增 Python 测试放在各模块的 `tests/` 目录。
 
@@ -212,7 +212,7 @@ IM 后端入口：
 - `/api/im/tools`：工具目录和配置
 - `/api/im/skills`：技能文件 CRUD
 - `/api/im/runs`：运行事件、确认请求与处理
-- `/api/im/memory`：记忆查询、个人检索配置与召回测试
+- `/api/im/memory`：记忆查询、个人检索配置与召回测试、记忆生成配置与批次管理
 
 Agent Flow 独立 API 入口：
 
@@ -221,6 +221,39 @@ Agent Flow 独立 API 入口：
 - `/api/agents`
 - `/api/runs`
 - `/api/conversations`
+
+## JEV 长期记忆生成
+
+新归档的 run 默认使用 `jev` 模式：L3 原文归档 → 按登录用户和配置版本组批 → 规则分块 → Noul 筛选 → Choice 五选一分类 → **整批全部分类完成** → 按类别批量提取和归并 → 发布 L2。成功、失败、取消的 run 都参与；无可信身份的调用跳过记忆。同账号跨房间、跨会话组批，默认每批 1 个 run，未满批时最早 run 等待 24 小时也会触发。既有记忆不转换、不回填。
+
+Noul 默认阈值 `0.7`；Choice 保留五类完整概率和整体置信度，最高概率作为唯一主类别。五类为用户偏好、项目状态、稳定用户事实、用户／系统决策和可复用实验结论，各自使用版本化提取提示词与结构校验。JEV 负责筛选和分类，现有 LLM 负责提取正文。按完整候选切分提取子批；同义信息归并证据，冲突、不同主体或条件的信息独立保留，不自动替代历史 L2。
+
+L2 `content` 是提取后的正文，BM25 和 L1 使用该正文；`evidence_refs` 保存所有原始来源及行号，**行号定位证据，不表示正文与原文逐字相等**。单来源字段兼容指向第一条证据；不为模型提取结果另写 MD。删除任一证据来源会停用整条记忆及其更新、聚合后代。
+
+API 和 IM 应用启动后台处理服务，每 30 秒扫描待办。MongoDB 保存 `long_memory_batches`、`long_memory_candidates`、个人配置 `long_memory_processing_settings` 和按用户的处理租约 `long_memory_processing_leases`。分类、提取、归并步骤保存检查点；整个批次完成前 L2 不参与有效查询或召回。模型调用最多尝试 3 次，失败批次等待用户重试，重启自动恢复未完成的批次；全部候选被拒绝也是正常完成。无凭据时显示配置错误并保留待办，不自动降级为规则模式。
+
+安装 `typesafe-sdk==0.7.1`（需要 `pydantic>=2.12,<3`）。适配器使用 [TypeSafe 官方 Python SDK](https://docs.typesafe.ai/sdk/python)，默认 `jev-latest`，保存响应中的实际模型版本。服务端环境变量：
+
+| 变量 | 用途 |
+| --- | --- |
+| `TYPESAFE_API_KEY` | JEV 必需凭据，仅在服务端配置 |
+| `MEMORY_JEV_MODEL` | 默认 `jev-latest` |
+| `MEMORY_EXTRACTION_MODEL` | 可选，默认复用 `infra/config.py` 的 LLM 模型 |
+| `MEMORY_EXTRACTION_BASE_URL` | 可选，默认复用现有 LLM 地址 |
+| `MEMORY_EXTRACTION_API_KEY` | 可选，默认复用现有 LLM 凭据 |
+| `MEMORY_EXTRACTION_INPUT_BUDGET` | 默认 12000，单次提取候选数据的估算 token 预算，服务端需为提示词和输出另留空间；超长完整候选报错保留待办，不截断证据 |
+
+`/memory` 的“记忆生成”标签页可配置模式（`jev/rules`）、每批 run 数（1–100）和 Noul 阈值（0–1），查看批次状态、各类别进度并重试失败批次。保存仅影响**之后归档**的 run；已入队数据保留原配置快照。规则模式继续直接索引原文。模型就绪状态表示凭据存在，不代表已测试服务连通性。浏览器不接收或输入密钥。
+
+| `/api/im/memory` 新接口 | 功能 |
+| --- | --- |
+| `GET /processing-settings` | 个人配置、默认值、24 小时规则和服务端模型就绪状态 |
+| `PUT /processing-settings` | 保存 `mode/run_batch_size/noul_threshold`，生成配置版本 |
+| `GET /batches` | 登录用户批次，默认每页 20 条，最多 100 条 |
+| `GET /batches/{batch_id}` | 阶段、计数、类别进度和错误；候选诊断最多 100 条 |
+| `POST /batches/{batch_id}/retry` | 仅失败批次可重试，复用已完成步骤；运行中返回 409 |
+
+以上接口均按当前登录账号隔离，外部用户的批次及来源返回 404。检索配置与生成配置独立保存；“测试召回”仍然只读，不创建 run、不增加使用次数、不保存任何配置。详见[长期记忆说明](agent_flow/domain/memory/long/README.md)。
 
 ## 测试与构建
 
@@ -236,7 +269,7 @@ LLM 相关测试应使用 mock 或测试替身，避免在单元测试中依赖�
 分层与长期记忆主干测试：
 
 ```bash
-/Users/zxcvbzzy1/miniconda3/envs/MY_env/bin/python -m pytest agent_flow/tests/test_layer_dependencies.py agent_flow/tests/test_long_memory.py im_backend/tests/test_memory_management.py -q
+/Users/zxcvbzzy1/miniconda3/envs/MY_env/bin/python -m pytest agent_flow/tests/test_layer_dependencies.py agent_flow/tests/test_long_memory.py agent_flow/tests/test_memory_processing.py agent_flow/tests/test_memory_model_adapters.py im_backend/tests/test_memory_management.py im_backend/tests/test_memory_processing_api.py -q
 ```
 
 ## 安全与运行注意事项

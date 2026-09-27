@@ -20,6 +20,7 @@ from im_backend.api.router import router as im_router
 async def lifespan(app: FastAPI):
     container = get_container()
     await container.bridge.runtime.start()
+    await container.bridge.long_memory.processing.start()
 
     async def cleanup_files():
         while True:
@@ -40,6 +41,7 @@ async def lifespan(app: FastAPI):
             with suppress(asyncio.CancelledError):
                 await task
         await container.bridge.runtime.close()
+        await container.bridge.long_memory.processing.close()
 
 
 def create_app() -> FastAPI:

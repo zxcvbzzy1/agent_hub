@@ -6,6 +6,7 @@ from im_backend.infra.agent_flow_bridge.pathing import ensure_agent_flow_path
 ensure_agent_flow_path()
 from domain.memory.long import MemoryScope, RecallOptions
 from domain.memory.long.retrieval import effective_status
+from domain.memory.long.processing import ProcessingConfig
 
 
 class MemoryManagementService:
@@ -27,12 +28,12 @@ class MemoryManagementService:
         return {"room_name": room.get("title") or {"direct": "私聊", "standalone": "独立运行"}.get(room_id, room_id),
                 "conversation_name": conversation.get("title") or conversation_id}
 
-    def _summary(self, block, source, now):
+    def _summary(self, block, source, now, *, sources=None, completed=None):
         fields = ("block_id", "memory_id", "version", "source_id", "room_id", "conversation_id", "section_kind",
                   "memory_type", "tags", "token_count", "token_count_method", "usage_count", "updated_at",
-                  "file_path", "start_line", "end_line", "run_status", "expires_at")
+                  "file_path", "start_line", "end_line", "run_status", "expires_at", "batch_id", "evidence_refs")
         return {**{key: block.get(key) for key in fields}, "summary": block["content"][:240],
-                "status": effective_status(block, source, now), **self._labels(block)}
+                "status": effective_status(block, source, now, sources=sources, completed_batches=completed), **self._labels(block)}
 
     def list_blocks(self, user_id, *, q="", status="active", room_id=None, conversation_id=None,
                     page=1, page_size=20):
@@ -40,6 +41,12 @@ class MemoryManagementService:
         sources = {s["source_id"]: s for s in self.repository.sources({"user_id": user_id})}
         deleted = [sid for sid, s in sources.items() if s.get("deleted_at") is not None]
         ready = [sid for sid, s in sources.items() if s.get("deleted_at") is None and s["index_status"] == "ready"]
+        unavailable = [sid for sid in sources if sid not in ready]
+        completed = self.repository.completed_batches(user_id)
+        not_deleted = {"source_id": {"$nin": deleted}, "evidence_source_ids": {"$nin": deleted}}
+        is_deleted = {"$or": [{"status": "deleted"}, {"source_id": {"$in": deleted}},
+                              {"evidence_source_ids": {"$in": deleted}}]}
+        published = {"$or": [{"batch_id": None}, {"batch_id": {"$in": list(completed)}}]}
         unexpired = {"$or": [{"expires_at": None}, {"expires_at": {"$gt": now}}]}
         clauses = [{"user_id": user_id}]
         if q.strip():
@@ -47,22 +54,26 @@ class MemoryManagementService:
             clauses.append({"$or": [{"content": pattern}, {"tags": pattern}]})
         for key, value in (("room_id", room_id), ("conversation_id", conversation_id)):
             if value:
-                clauses.append({key: value})
+                matching_sources = [sid for sid, source in sources.items() if source.get(key) == value]
+                clauses.append({"$or": [{key: value}, {"evidence_source_ids": {"$in": matching_sources}}]})
         if status == "deleted":
-            clauses.append({"$or": [{"status": "deleted"}, {"source_id": {"$in": deleted}}]})
+            clauses.append(is_deleted)
         elif status != "all":
-            clauses.append({"source_id": {"$nin": deleted}})
+            clauses.append(not_deleted)
             if status == "active":
-                clauses.extend([{"status": "active", "source_id": {"$in": ready}}, unexpired])
+                clauses.extend([{"status": "active", "source_id": {"$in": ready},
+                                 "evidence_source_ids": {"$nin": unavailable}}, unexpired, published])
             elif status == "expired":
                 clauses.append({"$or": [{"status": "expired"}, {"status": "active",
                     "expires_at": {"$ne": None, "$lte": now}}]})
             elif status == "unavailable":
-                clauses.extend([{"status": "active", "source_id": {"$nin": ready + deleted}}, unexpired])
+                clauses.extend([{"status": "active"}, unexpired, {"$or": [
+                    {"source_id": {"$nin": ready + deleted}}, {"evidence_source_ids": {"$in": unavailable}},
+                    {"batch_id": {"$ne": None, "$nin": list(completed)}}]}])
             else:
                 clauses.append({"status": status})
         rows, total = self.management_repository.page_blocks({"$and": clauses}, page=page, page_size=page_size)
-        return {"items": [self._summary(b, sources.get(b["source_id"]), now) for b in rows],
+        return {"items": [self._summary(b, sources.get(b["source_id"]), now, sources=sources, completed=completed) for b in rows],
                 "total": total, "page": page, "page_size": page_size}
 
     def block_detail(self, user_id, block_id):
@@ -76,8 +87,16 @@ class MemoryManagementService:
         related = self.repository.blocks({"user_id": user_id, "$or": [
             {"memory_id": block["memory_id"]}, {"block_id": {"$in": related_ids}}]})
         related_sources = {s["source_id"]: s for s in self.repository.sources({"user_id": user_id})}
-        return {"item": {**block, **self._summary(block, source, now)}, "source": source,
-                "related": [self._summary(b, related_sources.get(b["source_id"]), now) for b in related
+        completed = self.repository.completed_batches(user_id)
+        evidence = []
+        for ref in block.get("evidence_refs", []):
+            # Check every reference, including references beyond the compatibility anchor.
+            self._source(user_id, ref["source_id"])
+            evidence.append({**ref, **self._labels(ref)})
+        return {"item": {**block, **self._summary(block, source, now, sources=related_sources, completed=completed),
+                         "evidence_refs": evidence}, "source": source,
+                "related": [self._summary(b, related_sources.get(b["source_id"]), now,
+                    sources=related_sources, completed=completed) for b in related
                             if b["block_id"] != block_id and b["source_id"] in related_sources]}
 
     def source_detail(self, user_id, source_id):
@@ -113,3 +132,44 @@ class MemoryManagementService:
         for block in result["selected"]:
             block.update(self._labels(block))
         return {"item": result}
+
+    def _processing(self):
+        if not self.memory.processing:
+            raise ValueError("当前服务未启用记忆生成")
+        return self.memory.processing
+
+    def processing_settings(self, user_id):
+        processor = self._processing()
+        snapshot = processor.repository.settings(user_id)
+        return {"item": snapshot["config"], "revision": snapshot["revision"],
+                "defaults": ProcessingConfig().to_dict(), "max_wait_hours": 24,
+                "server": processor.readiness()}
+
+    def save_processing_settings(self, user_id, config):
+        self._processing().repository.save_settings(user_id, config)
+        return self.processing_settings(user_id)
+
+    def batches(self, user_id, page=1, page_size=20):
+        return self._processing().repository.page_batches(user_id, page, page_size)
+
+    def batch_detail(self, user_id, batch_id):
+        repository = self._processing().repository
+        rows = repository.batches({"user_id": user_id, "batch_id": batch_id})
+        if not rows:
+            raise KeyError(batch_id)
+        batch = {k: v for k, v in rows[0].items() if k not in {"steps", "owner"}}
+        candidates = repository.candidates(batch_id)
+        batch["candidate_count"] = len(candidates)
+        batch["classified_count"] = sum(c["status"] in {"accepted", "rejected"} for c in candidates)
+        batch["accepted_count"] = sum(c["status"] == "accepted" for c in candidates)
+        # Keep responses bounded. All per-candidate records remain in MongoDB.
+        batch["candidates"] = [{k: v for k, v in c.items() if k != "content"} | {"summary": c["content"][:240]}
+                               for c in candidates[:100]]
+        batch["candidates_truncated"] = len(candidates) > 100
+        batch["sources"] = [{k: source[k] for k in ("source_id", "run_id", "room_id", "conversation_id", "run_status")}
+                            for source in (self._source(user_id, sid) for sid in batch["source_ids"])]
+        return {"item": batch}
+
+    def retry_batch(self, user_id, batch_id):
+        self._processing().repository.retry(user_id, batch_id)
+        return self.batch_detail(user_id, batch_id)

@@ -34,6 +34,13 @@ class RecallTestRequest(BaseModel):
     config: RetrievalSettingsRequest | None = None
 
 
+class ProcessingSettingsRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    mode: Literal["jev", "rules"] = "jev"
+    run_batch_size: int = Field(default=1, ge=1, le=100, strict=True)
+    noul_threshold: float = Field(default=0.7, ge=0, le=1)
+
+
 async def invoke(method, *args, **kwargs):
     try:
         return await asyncio.to_thread(method, *args, **kwargs)
@@ -84,3 +91,35 @@ async def save_settings(request: RetrievalSettingsRequest, user: dict = Depends(
 async def recall_test(request: RecallTestRequest, user: dict = Depends(get_current_user), service=Depends(get_memory_service)):
     return await invoke(service.recall_test, user["user_id"], request.query,
                         request.config.to_config() if request.config else None)
+
+
+@router.get("/processing-settings")
+async def processing_settings(user: dict = Depends(get_current_user), service=Depends(get_memory_service)):
+    return await invoke(service.processing_settings, user["user_id"])
+
+
+@router.put("/processing-settings")
+async def save_processing_settings(request: ProcessingSettingsRequest, user: dict = Depends(get_current_user),
+                                   service=Depends(get_memory_service)):
+    return await invoke(service.save_processing_settings, user["user_id"], request.model_dump())
+
+
+@router.get("/batches")
+async def batches(page: int = Query(default=1, ge=1), page_size: int = Query(default=20, ge=1, le=100),
+                  user: dict = Depends(get_current_user), service=Depends(get_memory_service)):
+    return await invoke(service.batches, user["user_id"], page, page_size)
+
+
+@router.get("/batches/{batch_id}")
+async def batch_detail(batch_id: str, user: dict = Depends(get_current_user), service=Depends(get_memory_service)):
+    return await invoke(service.batch_detail, user["user_id"], batch_id)
+
+
+@router.post("/batches/{batch_id}/retry")
+async def retry_batch(batch_id: str, user: dict = Depends(get_current_user), service=Depends(get_memory_service)):
+    try:
+        return await asyncio.to_thread(service.retry_batch, user["user_id"], batch_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail="批次不存在") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

@@ -4,12 +4,14 @@ import { Grid, message } from 'ant-design-vue'
 import { DatabaseOutlined, SearchOutlined, ReloadOutlined, ExperimentOutlined, SettingOutlined, FileTextOutlined } from '@ant-design/icons-vue'
 import { listMemoryBlocks, getMemoryBlock, getMemorySource, getMemoryScopes, getMemorySettings, saveMemorySettings, testMemoryRecall } from '@/api/memory'
 import { renderMarkdown } from '@/utils/markdown'
+import MemoryProcessingPanel from '@/components/MemoryProcessingPanel.vue'
 
 const tab = ref('browse')
 const screens = Grid.useBreakpoint()
 const detailColumns = computed(() => screens.value.sm ? 2 : 1)
 const statusNames = { active: '有效', expired: '已过期', deleted: '已删除', merged: '已合并', superseded: '已有新版本', unavailable: '来源未就绪', all: '全部状态' }
-const kindNames = { qa: '问答', think: '历史思考', derived: '派生记忆' }
+const kindNames = { qa: '问答', think: '历史思考', derived: '派生记忆', extracted: '提取记忆' }
+const categoryNames = { user_preference: '用户偏好', project_state: '项目状态', user_fact: '稳定用户事实', decision: '用户／系统决策', reusable_conclusion: '可复用实验结论' }
 const reasonNames = { selected: '已入选', limit: '超过块数限制', token_budget: '超出 token 预算' }
 const statusOptions = Object.entries(statusNames).map(([value, label]) => ({ value, label }))
 const formatDate = (value) => value ? new Date(value * 1000).toLocaleString('zh-CN', { hour12: false }) : '—'
@@ -59,6 +61,8 @@ const selectedId = ref('')
 const source = ref(null)
 const sourceLoading = ref(false)
 const sourceError = ref(false)
+const sourceRange = ref(null)
+let sourceRequest = 0
 let detailRequest = 0
 async function openDetail(id) {
   const request = ++detailRequest
@@ -66,6 +70,8 @@ async function openDetail(id) {
   drawer.value = true
   detail.value = null
   source.value = null
+  sourceRange.value = null
+  ++sourceRequest
   sourceError.value = false
   sourceLoading.value = false
   detailError.value = false
@@ -76,15 +82,19 @@ async function openDetail(id) {
   } catch { if (request === detailRequest) detailError.value = true }
   finally { if (request === detailRequest) detailLoading.value = false }
 }
-async function loadSource() {
+async function loadSource(evidence = null) {
   const request = detailRequest
+  const sourceSequence = ++sourceRequest
+  const ref = evidence?.source_id ? evidence : (sourceRange.value || detail.value.item)
+  sourceRange.value = ref
+  source.value = null
   sourceLoading.value = true
   sourceError.value = false
   try {
-    const response = await getMemorySource(detail.value.item.source_id)
-    if (request === detailRequest) source.value = response.item
-  } catch { if (request === detailRequest) sourceError.value = true }
-  finally { if (request === detailRequest) sourceLoading.value = false }
+    const response = await getMemorySource(ref.source_id)
+    if (request === detailRequest && sourceSequence === sourceRequest) source.value = response.item
+  } catch { if (request === detailRequest && sourceSequence === sourceRequest) sourceError.value = true }
+  finally { if (request === detailRequest && sourceSequence === sourceRequest) sourceLoading.value = false }
 }
 function closeDrawer() { drawer.value = false; ++detailRequest }
 function relationship(block) {
@@ -248,6 +258,7 @@ onMounted(() => { loadList(); loadScopes(); loadSettings() })
           </div>
         </div>
       </a-tab-pane>
+      <a-tab-pane key="generate" tab="记忆生成"><MemoryProcessingPanel :active="tab === 'generate'" /></a-tab-pane>
     </a-tabs>
 
     <a-drawer :open="drawer" title="记忆详情" width="min(760px, 100vw)" @close="closeDrawer">
@@ -255,6 +266,7 @@ onMounted(() => { loadList(); loadScopes(); loadSettings() })
         <a-result v-if="detailError" status="warning" title="无法加载记忆详情"><template #extra><a-button @click="openDetail(selectedId)">重试</a-button></template></a-result>
         <template v-if="detail">
           <a-tag :color="statusColor(detail.item.status)">{{ statusNames[detail.item.status] }}</a-tag><a-tag>{{ kindNames[detail.item.section_kind] }}</a-tag><a-tag>版本 {{ detail.item.version }}</a-tag>
+          <h3 v-if="detail.item.section_kind === 'extracted'" class="detail-section">提取正文</h3>
           <div class="detail-content md-body" v-html="renderMarkdown(detail.item.content)"></div>
           <a-descriptions title="来源与元信息" size="small" bordered :column="detailColumns">
             <a-descriptions-item label="房间">{{ detail.item.room_name }}</a-descriptions-item><a-descriptions-item label="会话">{{ detail.item.conversation_name }}</a-descriptions-item>
@@ -265,10 +277,31 @@ onMounted(() => { loadList(); loadScopes(); loadSettings() })
             <a-descriptions-item label="块 ID" :span="detailColumns"><code class="break-anywhere">{{ detail.item.block_id }}</code></a-descriptions-item>
             <a-descriptions-item label="文件" :span="detailColumns"><code class="break-anywhere">{{ detail.item.file_path }}</code></a-descriptions-item>
           </a-descriptions>
+          <section v-if="detail.item.evidence_refs?.length" class="detail-section">
+            <h3>原文证据 · {{ detail.item.evidence_refs.length }} 条</h3>
+            <p class="muted">行号定位原始 run 中的证据，提取正文与原文不要求逐字相同。</p>
+            <div v-for="(ref, index) in detail.item.evidence_refs" :key="ref.candidate_id || index" class="evidence-item">
+              <strong>{{ ref.room_name }} / {{ ref.conversation_name }}</strong>
+              <p class="muted break-anywhere">{{ ref.file_path }}:{{ ref.start_line }}–{{ ref.end_line }} · {{ ref.run_status }}<span v-if="ref.section_kind === 'think'"> · 历史思考记录</span></p>
+              <p v-if="ref.event?.event_id" class="muted break-anywhere">事件 {{ ref.event.event_id }} · agent {{ ref.event.agent_id }}</p>
+              <a-button size="small" :loading="sourceLoading && sourceRange?.candidate_id === ref.candidate_id" @click="loadSource(ref)">查看此证据 MD</a-button>
+            </div>
+          </section>
+          <a-collapse v-if="detail.item.metadata?.structure || detail.item.metadata?.classifications" class="detail-section">
+            <a-collapse-panel v-if="detail.item.metadata.structure" key="structure" header="结构化提取结果"><pre class="raw-text">{{ JSON.stringify(detail.item.metadata.structure, null, 2) }}</pre></a-collapse-panel>
+            <a-collapse-panel v-if="detail.item.metadata.classifications" key="classifications" header="各证据的筛选与分类概率">
+              <div v-for="item in detail.item.metadata.classifications" :key="item.candidate_id" class="evidence-item">
+                <p class="muted break-anywhere">候选 {{ item.candidate_id }}</p><p>Noul：{{ item.noul.noul }} · 主类别：{{ categoryNames[item.choice.category] }} · Choice 置信度：{{ item.choice.confidence }}</p>
+                <p v-for="(value, category) in item.choice.probabilities" :key="category">{{ categoryNames[category] }}：{{ (value * 100).toFixed(1) }}%</p>
+                <p class="muted">{{ item.noul.model }} / {{ item.noul.prompt_version }}<br>{{ item.choice.model }} / {{ item.choice.prompt_version }}</p>
+              </div>
+            </a-collapse-panel>
+          </a-collapse>
           <section v-if="detail.related.length" class="detail-section"><h3>版本与派生关系</h3><div v-for="related in detail.related" :key="related.block_id" class="related-item"><span>{{ relationship(related) }}</span><button class="text-link" @click="openDetail(related.block_id)">{{ related.summary }}</button><a-tag>{{ statusNames[related.status] }}</a-tag></div></section>
           <section class="detail-section"><a-button :loading="sourceLoading" @click="loadSource"><template #icon><FileTextOutlined /></template>{{ source ? '刷新来源 MD' : '查看来源 MD' }}</a-button>
             <a-alert v-if="sourceError" class="notice" type="error" message="来源文件读取失败，可重新点击查看" />
-            <div v-if="source" class="source-lines"><div v-for="(line, index) in source.content.split('\n')" :key="index" class="source-line" :class="{ 'source-line--selected': index + 1 >= detail.item.start_line && index + 1 <= detail.item.end_line }"><span>{{ index + 1 }}</span><code>{{ line || ' ' }}</code></div></div>
+            <p v-if="source" class="muted break-anywhere">{{ source.file_path }} · 原文证据 {{ sourceRange.start_line }}–{{ sourceRange.end_line }} 行</p>
+            <div v-if="source" class="source-lines"><div v-for="(line, index) in source.content.split('\n')" :key="index" class="source-line" :class="{ 'source-line--selected': index + 1 >= sourceRange.start_line && index + 1 <= sourceRange.end_line }"><span>{{ index + 1 }}</span><code>{{ line || ' ' }}</code></div></div>
           </section>
         </template>
       </a-spin>
@@ -341,6 +374,7 @@ label { display: grid; gap: 7px; font-size: 12px; font-weight: 650; color: var(-
 .raw-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.8; background: #f5f7fb; border-radius: 8px; padding: 16px; }
 .detail-content { margin: 20px 0 28px; overflow-wrap: anywhere; }
 .detail-section { margin-top: 26px; }
+.evidence-item { padding: 14px 0; border-bottom: 1px solid #edf1f6; font-size: 12px; overflow-wrap: anywhere; }
 .detail-section h3 { font-size: 15px; }
 .break-anywhere { overflow-wrap: anywhere; }
 .related-item { display: flex; align-items: start; gap: 10px; margin: 12px 0; font-size: 12px; }
