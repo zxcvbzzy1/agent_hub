@@ -2,6 +2,8 @@
 
 独立的 IM Agent Platform 后端。它保留 IM 房间、富消息和 artifact 等产品逻辑，并通过 `infra/agent_flow_bridge/` 集中复用 `agent_flow` 的原生 Agent、Run、PlanOrchestrator、SSE 和 MongoDB 存储能力。
 
+长期记忆的归档、BM25 召回与 L1 注入属于 `agent_flow` 运行时。IM 的个人检索设置、分页查询和 HTTP 接口分别位于 `domain/memory_settings.py`、`infra/storage/memory.py`、`application/services/platform/memory.py` 与 `api/routes/memory.py`。桥接层把当前用户的设置作为 `settings_loader` 注入运行时；模块测试统一放在各自的 `tests/` 目录。
+
 ## 启动
 
 ```bash
@@ -152,7 +154,7 @@ npm --prefix IM_front run build
 旧 Mongo 事件保留但不在新轨迹中展示，历史聊天消息照常显示，不迁移运行中的旧任务。
 
 ```bash
-/Users/zxcvbzzy1/miniconda3/envs/MY_env/bin/python -m pytest agent_flow/api_services_test.py im_backend/tests/test_redis_runtime.py im_backend/tests/test_redis_im_integration.py im_backend/tests/test_run_monitor.py -v
+/Users/zxcvbzzy1/miniconda3/envs/MY_env/bin/python -m pytest agent_flow/tests/test_api_services.py im_backend/tests/test_redis_runtime.py im_backend/tests/test_redis_im_integration.py im_backend/tests/test_run_monitor.py -v
 node --test IM_front/checks/trace_client_check.mjs
 cd IM_front
 npm run build
@@ -194,7 +196,7 @@ history_loads、archived、archive_failures。worker 每分钟检查积压，最
 附加验证：
 
 ```bash
-/Users/zxcvbzzy1/miniconda3/envs/MY_env/bin/python -m pytest im_backend/event_journal_test.py -v
+/Users/zxcvbzzy1/miniconda3/envs/MY_env/bin/python -m pytest im_backend/tests/test_event_journal.py -v
 npm --prefix IM_front run test:events
 npm --prefix IM_front run build
 ```

@@ -1,7 +1,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
-import { LogoutOutlined, MessageOutlined, BookOutlined, ToolOutlined } from '@ant-design/icons-vue'
+import { LogoutOutlined, MessageOutlined, BookOutlined, ToolOutlined, DatabaseOutlined } from '@ant-design/icons-vue'
 import { useAuthStore } from '@/stores/auth'
 import { useIMStore } from '@/stores/im'
 
@@ -75,6 +75,10 @@ onUnmounted(() => {
           >
             <ToolOutlined class="pill-icon" />
             <span>工具</span>
+          </RouterLink>
+          <RouterLink :to="{ name: 'memory' }" class="topbar-pill-seg" :class="{ 'topbar-pill-seg--active': activeNav === 'memory' }">
+            <DatabaseOutlined class="pill-icon" />
+            <span>记忆</span>
           </RouterLink>
         </div>
       </nav>

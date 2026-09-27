@@ -15,6 +15,7 @@ from application.services.agents import AgentFactoryService  # type: ignore  # n
 from application.services.contexts import ContextService  # type: ignore  # noqa: E402
 from application.services.conversations import ConversationService as RuntimeConversationService  # type: ignore  # noqa: E402
 from application.services.events import EventStreamService  # type: ignore  # noqa: E402
+from application.services.long_memory import build_long_memory  # type: ignore  # noqa: E402
 from application.services.runs import RunOrchestrationService  # type: ignore  # noqa: E402
 from application.services.tools import ToolRegistryService  # type: ignore  # noqa: E402
 from domain.runtime_hooks import (  # type: ignore  # noqa: E402
@@ -23,8 +24,8 @@ from domain.runtime_hooks import (  # type: ignore  # noqa: E402
     register_tool_event_observer,
 )
 from infra.config import factory, llm_client  # type: ignore  # noqa: E402
-from infra.memory.config import build_long_memory
 from domain.memory.long.models import MemoryScope
+from im_backend.infra.storage.memory import MemoryManagementRepository
 
 
 class AgentFlowBridge:
@@ -53,7 +54,9 @@ class AgentFlowBridge:
             llm_client,
             self.events,
         )
-        self.long_memory = build_long_memory(self._store, self._root_dir / "agent_flow" / "store")
+        self.memory_management_repository = MemoryManagementRepository(self._store)
+        self.long_memory = build_long_memory(self._store, self._root_dir / "agent_flow" / "store",
+            settings_loader=self.memory_management_repository.get_settings)
         self.runs = RunOrchestrationService(
             self._store,
             self.agents,

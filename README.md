@@ -6,7 +6,7 @@ AgentHub 是一个以 IM 聊天为交互入口的多 Agent 协作平台。用户
 
 - `IM_front/`：Vue 3 + Vite 前端，负责聊天工作台、Agent/工具/技能管理、SSE 事件消费和 Artifact 渲染。
 - `im_backend/`：FastAPI IM 产品后端，负责认证、会话、房间、消息、收藏、产物、部署和工具/技能入口。
-- `agent_flow/`：Agent 核心运行系统，负责 Agent、Context、Tool、Run、PlanOrchestrator、事件总线和工具执行。
+- `agent_flow/`：Agent 核心运行系统，负责 Agent、Context、Tool、Run、PlanOrchestrator、长期记忆、事件总线和工具执行。
 
 ## 演示
 
@@ -18,7 +18,7 @@ AgentHub 是一个以 IM 聊天为交互入口的多 Agent 协作平台。用户
 
 - Python：依赖项 `requirements.txt`
 - Node.js：`IM_front/package.json` 要求 `^20.19.0 || >=22.12.0`
-- MongoDB：默认连接 `mongodb://localhost:27017/`，不可用时后端存储会降级到内存，适合本地调试
+- MongoDB：默认连接 `mongodb://localhost:27017/`，启动 IM 后端前需要运行
 
 常用环境变量：
 
@@ -89,7 +89,7 @@ curl http://127.0.0.1:8000/health
 ├── im_backend/            # IM 产品后端
 ├── agent_flow/            # Agent 核心运行系统
 ├── mid/                   # 中间层/实验性模块
-├── tests/                 # 根目录测试与辅助用例
+├── tests/                 # 技能演示笔记本；Python 测试位于各模块 tests/
 ├── README.md              # 当前项目说明
 └── .gitignore
 ```
@@ -115,7 +115,7 @@ im_backend/
 ├── api/                   # FastAPI app、auth router、/api/im 路由
 ├── application/           # 应用服务：消息、房间、run、artifact、tool、skill
 ├── domain/                # IM 领域模型：conversation、message、room、agent
-├── infra/                 # 存储与 Agent Flow bridge
+├── infra/                 # 存储、个人记忆配置与 Agent Flow bridge
 ├── storage/               # 本地 artifact 存储
 └── tests/                 # IM 后端测试
 ```
@@ -129,6 +129,7 @@ agent_flow/
 ├── domain/                # Agent、Tool、Event、Context、Memory 领域模型
 ├── infra/                 # EventBus、LLM、工具实现、部署、MongoDB
 ├── skills/                # Agent 技能文件
+├── tests/                 # Agent Flow 模块测试
 ├── temp/                  # 部署、MCP 等运行时临时目录
 └── README.md              # Agent Flow 子系统说明
 ```
@@ -159,7 +160,11 @@ agent_flow
 - `api/`：HTTP/SSE 适配层，只处理请求、响应、鉴权和路由挂载。
 - `application/`：应用用例层，编排消息发送、群聊 dispatch、run 创建、artifact 转换等流程。
 - `domain/`：领域模型层，定义 Agent、消息、房间、事件、工具、上下文、记忆等核心对象。
-- `infra/`：基础设施层，负责 MongoDB/内存存储、LLM 客户端、事件总线、工具实现和部署。
+- `infra/`：基础设施层，负责 MongoDB 与文件存储适配器、LLM 客户端、事件总线、工具实现和部署。
+
+在 `agent_flow` 内，依赖沿 `application → infra → domain` 指向更底层；`application` 也可以直接使用 `domain`。`domain` 不依赖其他两层，`infra` 不导入 `application`。`api/` 是三层之外的 HTTP 入口。长期记忆的 [应用服务](agent_flow/application/services/long_memory.py) 同时提供 `build_long_memory()`，连接 MongoDB 与文件系统适配器；[记忆存储](agent_flow/infra/memory/)只实现存取能力。
+
+IM 的个人检索设置与管理查询属于 `im_backend`。IM 桥接把设置读取函数注入 Agent 运行时，`agent_flow` 的长期记忆用例只接收运行时选项，不依赖 IM 配置模块。新增 Python 测试放在各模块的 `tests/` 目录。
 
 ### EDA 事件驱动底座
 
@@ -207,6 +212,7 @@ IM 后端入口：
 - `/api/im/tools`：工具目录和配置
 - `/api/im/skills`：技能文件 CRUD
 - `/api/im/runs`：运行事件、确认请求与处理
+- `/api/im/memory`：记忆查询、个人检索配置与召回测试
 
 Agent Flow 独立 API 入口：
 
@@ -227,12 +233,18 @@ npm run build
 
 LLM 相关测试应使用 mock 或测试替身，避免在单元测试中依赖真实 API key 和网络。
 
+分层与长期记忆主干测试：
+
+```bash
+/Users/zxcvbzzy1/miniconda3/envs/MY_env/bin/python -m pytest agent_flow/tests/test_layer_dependencies.py agent_flow/tests/test_long_memory.py im_backend/tests/test_memory_management.py -q
+```
+
 ## 安全与运行注意事项
 
 - 高风险工具调用通过运行时人工确认机制审批。
 - 工具上传和动态工具执行需要在生产环境增加源码审查、签名校验或沙箱隔离。
 - 文件、diff、deploy artifact 需要限制路径、大小和下载行为。
-- MongoDB 不可用时会降级到内存存储，适合开发调试，但重启后数据会丢失。
+- IM 后端依赖 MongoDB；单元测试通过显式注入内存替身隔离数据库。
 - SSE 高频事件已做前端合批和历史事件截断，长 run 场景仍建议增加分页、TTL 和容量限制。
 
 
