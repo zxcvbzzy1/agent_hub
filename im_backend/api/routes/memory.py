@@ -3,6 +3,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, ConfigDict, Field
+from redis.exceptions import RedisError
 
 from im_backend.api.core import get_current_user, get_container
 from im_backend.application.services.platform.memory import MemoryManagementService
@@ -48,6 +49,8 @@ async def invoke(method, *args, **kwargs):
         raise HTTPException(status_code=404, detail="记忆或来源文件不存在") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RedisError as exc:
+        raise HTTPException(status_code=503, detail="记忆处理状态暂时不可用，请稍后重试") from exc
     except OSError as exc:
         raise HTTPException(status_code=503, detail="记忆文件暂时无法读取，请重试") from exc
 

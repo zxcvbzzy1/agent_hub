@@ -230,14 +230,15 @@ Noul 默认阈值 `0.7`；Choice 保留五类完整概率和整体置信度，�
 
 L2 `content` 是提取后的正文，BM25 和 L1 使用该正文；`evidence_refs` 保存所有原始来源及行号，**行号定位证据，不表示正文与原文逐字相等**。单来源字段兼容指向第一条证据；不为模型提取结果另写 MD。删除任一证据来源会停用整条记忆及其更新、聚合后代。
 
-API 和 IM 应用启动后台处理服务，每 30 秒扫描待办。MongoDB 保存 `long_memory_batches`、`long_memory_candidates`、个人配置 `long_memory_processing_settings` 和按用户的处理租约 `long_memory_processing_leases`。分类、提取、归并步骤保存检查点；整个批次完成前 L2 不参与有效查询或召回。模型调用最多尝试 3 次，失败批次等待用户重试，重启自动恢复未完成的批次；全部候选被拒绝也是正常完成。无凭据时显示配置错误并保留待办，不自动降级为规则模式。
+API 和 IM 应用启动后台处理服务，每 30 秒扫描待办。Redis 保存按用户的租约、批次进度、候选分类过程和提取/归并检查点；MongoDB 的 `long_memory_batches`、`long_memory_candidates` 只保存终态批次和候选诊断，`long_memory_blocks` 保存最终记忆。个人检索与生成配置合并到 `long_memory_settings` 的 `retrieval`、`processing` 字段。结果先在 Redis 固定为待落库快照，MongoDB 确认后再清理运行态；落库中断自动重放，不重新调用模型。失败检查点保留在 Redis，供用户重试；全部候选被拒绝也是正常完成。部署 Redis 应开启 AOF，待办和检查点没有 TTL，只有租约自动过期。升级时停止旧 worker，再启动新版；旧配置和批次自动迁移，详情见[长期记忆说明](agent_flow/domain/memory/long/README.md)。无凭据时保留待办，不自动降级规则模式。
 
 安装 `typesafe-sdk==0.7.1`（需要 `pydantic>=2.12,<3`）。适配器使用 [TypeSafe 官方 Python SDK](https://docs.typesafe.ai/sdk/python)，默认 `jev-latest`，保存响应中的实际模型版本。服务端环境变量：
 
 | 变量 | 用途 |
 | --- | --- |
 | `TYPESAFE_API_KEY` | JEV 必需凭据，仅在服务端配置 |
-| `MEMORY_JEV_MODEL` | 默认 `jev-latest` |
+| `MEMORY_JEV_MODEL` | 记忆分类使用的 JEV 模型，未设置时回退到 `JEV_MODEL` |
+| `JEV_MODEL` | 通用 `infra/jev/JevClient` 默认模型，默认 `jev-latest` |
 | `MEMORY_EXTRACTION_MODEL` | 可选，默认复用 `infra/config.py` 的 LLM 模型 |
 | `MEMORY_EXTRACTION_BASE_URL` | 可选，默认复用现有 LLM 地址 |
 | `MEMORY_EXTRACTION_API_KEY` | 可选，默认复用现有 LLM 凭据 |

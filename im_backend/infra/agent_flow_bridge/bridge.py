@@ -56,7 +56,7 @@ class AgentFlowBridge:
         )
         self.memory_management_repository = MemoryManagementRepository(self._store)
         self.long_memory = build_long_memory(self._store, self._root_dir / "agent_flow" / "store",
-            settings_loader=self.memory_management_repository.get_settings)
+            settings_loader=self.memory_management_repository.get_settings, runtime=self.runtime)
         self.runs = RunOrchestrationService(
             self._store,
             self.agents,

@@ -2,7 +2,7 @@
 
 独立的 IM Agent Platform 后端。它保留 IM 房间、富消息和 artifact 等产品逻辑，并通过 `infra/agent_flow_bridge/` 集中复用 `agent_flow` 的原生 Agent、Run、PlanOrchestrator、SSE 和 MongoDB 存储能力。
 
-长期记忆的归档、JEV 批处理、BM25 召回与 L1 注入属于 `agent_flow` 运行时。IM 的个人检索设置、分页查询和 HTTP 接口分别位于 `domain/memory_settings.py`、`infra/storage/memory.py`、`application/services/platform/memory.py` 与 `api/routes/memory.py`。桥接层把当前用户的检索设置作为 `settings_loader` 注入运行时；IM lifespan 启停记忆后台处理。生成配置独立保存在 `long_memory_processing_settings`，运行时在归档时保存配置快照。`/api/im/memory/processing-settings` 和 `/batches` 系列接口提供配置、进度及失败重试，均按登录用户隔离。模块测试统一放在各自的 `tests/` 目录；详细流程见[长期记忆说明](../agent_flow/domain/memory/long/README.md)。
+长期记忆的归档、JEV 批处理、BM25 召回与 L1 注入属于 `agent_flow` 运行时。IM 的个人检索设置、分页查询和 HTTP 接口分别位于 `domain/memory_settings.py`、`infra/storage/memory.py`、`application/services/platform/memory.py` 与 `api/routes/memory.py`。桥接层把当前用户的检索设置作为 `settings_loader` 注入运行时；IM lifespan 启停记忆后台处理。检索和生成配置共用 `long_memory_settings`，分别存于 `retrieval`、`processing` 字段，归档仍保存生成配置快照及版本。Redis 保存租约、批次进度、候选和检查点；MongoDB 保存终态结果。`/api/im/memory/settings`、`/processing-settings` 和 `/batches` 接口保持兼容，进度查询合并 Redis 运行态与 MongoDB 终态，均按登录用户隔离。升级须停止旧 worker，开启 Redis AOF；详见[长期记忆说明](../agent_flow/domain/memory/long/README.md)。
 
 ## 启动
 

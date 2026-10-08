@@ -55,15 +55,20 @@ import { EventStream } from '@/utils/eventStream'
 import { buildChatItems } from '@/utils/chatItems'
 import { API_BASE_URL } from '@/api/http'
 import { sseEventNames } from '@/utils/runtimeEvents'
-import ChatAttachments from '@/components/ChatAttachments.vue'
+import ComposerExtensions from '@/components/ComposerExtensions.vue'
+import ComposerPlan from '@/components/ComposerPlan.vue'
 import ChatFileCard from '@/components/ChatFileCard.vue'
 import { useChatFiles } from '@/composables/useChatFiles'
+import { useComposerPlan } from '@/composables/useComposerPlan'
 import { renderMarkdown, looksLikeMarkdownDoc } from '@/utils/markdown'
 
 const im = useIMStore()
 const auth = useAuthStore()
 const listRef = ref(null)
 const composerRef = ref(null)
+const composerDockRef = ref(null)
+const composerDockHeight = ref(0)
+let composerDockObserver
 const creatingRoom = ref(false)
 const sending = ref(false)
 const drawerOpen = ref(false)
@@ -80,6 +85,11 @@ const draftKey = computed(() => {
   return im.currentConversation ? `conversation:${im.currentConversation.conversation_id}` : `agent:${im.currentAgentId}`
 })
 const chatFiles = useChatFiles(draftKey)
+const { plan: currentPlan, retry: retryPlan } = useComposerPlan(im)
+const composerPlan = computed(() => currentPlan.value ? {
+  ...currentPlan.value,
+  steps: currentPlan.value.steps.map(step => ({ ...step, executor_name: agentName(step.executor_id) })),
+} : null)
 const currentDraft = chatFiles.draft
 function draftField(field) {
   return computed({ get: () => currentDraft.value[field], set: value => { currentDraft.value[field] = value } })
@@ -1294,6 +1304,10 @@ watch(
 )
 
 onMounted(async () => {
+  composerDockObserver = new ResizeObserver(([entry]) => {
+    composerDockHeight.value = entry.target.getBoundingClientRect().height
+  })
+  if (composerDockRef.value) composerDockObserver.observe(composerDockRef.value)
   await im.bootstrap()
   const defaultPlanner = im.plannerAgents.find((agent) => agent.agent_id === 'default_planner') || im.plannerAgents[0]
   if (defaultPlanner && !drawerPlannerId.value) drawerPlannerId.value = defaultPlanner.agent_id
@@ -1302,6 +1316,7 @@ onMounted(async () => {
 })
 
 onUnmounted(() => {
+  composerDockObserver?.disconnect()
   im.stopActivityPolling()
   emitSidebarCollapseState(false)
 })
@@ -1595,7 +1610,8 @@ onUnmounted(() => {
       </header>
 
       <div class="chat-body">
-      <div ref="listRef" class="message-list" @scroll.passive="handleListScroll">
+      <!-- 现有底部占位 96px；加上动态 padding，为计划与输入区保留 32px 余量。 -->
+      <div ref="listRef" class="message-list" :style="{ paddingBottom: `${Math.max(150, composerDockHeight - 96 + 32)}px` }" @scroll.passive="handleListScroll">
         <div v-if="im.loadingOlderMessages" class="history-loading">
           <LoadingOutlined spin />
           <span>正在加载更早的聊天记录…</span>
@@ -1807,10 +1823,9 @@ onUnmounted(() => {
 
       </div>
 
-      <footer class="composer">
-        
-          <ChatAttachments :items="currentDraft.items" :target-key="draftKey" :disabled="sending || (!im.currentAgentId && !im.currentRoom)"
-            @upload="chatFiles.uploadFiles" @reuse="chatFiles.addExisting" @remove="chatFiles.removeItem" @retry="chatFiles.retry" />
+      <div ref="composerDockRef" class="composer-dock">
+        <ComposerPlan :plan="composerPlan" :target-key="draftKey" @retry="retryPlan" />
+        <footer class="composer">
           <div v-if="selectionEditTarget" class="composer-refs">
             <div class="composer-ref">
               <EditOutlined />
@@ -1862,16 +1877,16 @@ onUnmounted(() => {
             </a-tooltip>
           </div>
           <div class="composer-actions">
-            <a-space v-if="im.currentRoom?.type === 'group'">
-              <a-input-number v-model:value="dispatchOptions.max_replan_rounds" :min="0" :max="10" />
-            </a-space>
+            <ComposerExtensions :items="currentDraft.items" :target-key="draftKey" :active="!composerExpanded"
+              :disabled="sending || (!im.currentAgentId && !im.currentRoom)"
+              @upload="chatFiles.uploadFiles" @reuse="chatFiles.addExisting" @remove="chatFiles.removeItem" @retry="chatFiles.retry" />
             <a-button type="primary" :loading="sending" :disabled="chatFiles.busy.value" @click="send">
               <template #icon><SendOutlined /></template>
               发送
             </a-button>
           </div>
-       
-      </footer>
+        </footer>
+      </div>
 
     </section>
 
@@ -2243,43 +2258,47 @@ onUnmounted(() => {
       :footer="null"
       destroy-on-close
     >
-      <div v-if="selectionEditTarget || replyTarget || quoteTarget" class="composer-refs">
-        <div v-if="selectionEditTarget" class="composer-ref">
-          <EditOutlined />
-          <span class="composer-ref-label">针对选区修改 {{ selectionEditTarget.file_path || selectionEditTarget.title || '当前文档' }}：</span>
-          <span class="composer-ref-text">{{ (selectionEditTarget.selection?.text || '').slice(0, 80) }}</span>
-          <a-button type="text" size="small" @click="clearSelectionEditTarget">
-            <template #icon><CloseOutlined /></template>
-          </a-button>
+      <ComposerPlan :plan="composerPlan" :target-key="draftKey" @retry="retryPlan" />
+      <div class="expanded-composer-input">
+        <div v-if="selectionEditTarget || replyTarget || quoteTarget" class="composer-refs">
+          <div v-if="selectionEditTarget" class="composer-ref">
+            <EditOutlined />
+            <span class="composer-ref-label">针对选区修改 {{ selectionEditTarget.file_path || selectionEditTarget.title || '当前文档' }}：</span>
+            <span class="composer-ref-text">{{ (selectionEditTarget.selection?.text || '').slice(0, 80) }}</span>
+            <a-button type="text" size="small" @click="clearSelectionEditTarget">
+              <template #icon><CloseOutlined /></template>
+            </a-button>
+          </div>
+          <div v-if="replyTarget" class="composer-ref">
+            <MessageOutlined />
+            <span class="composer-ref-label">回复 @{{ messageTitle(replyTarget) }}：</span>
+            <span class="composer-ref-text">{{ quoteRefSummary(replyTarget) }}</span>
+            <a-button type="text" size="small" @click="clearReplyTarget">
+              <template #icon><CloseOutlined /></template>
+            </a-button>
+          </div>
+          <div v-if="quoteTarget" class="composer-ref">
+            <BranchesOutlined />
+            <span class="composer-ref-label">引用 @{{ messageTitle(quoteTarget) }}：</span>
+            <span class="composer-ref-text">{{ quoteRefSummary(quoteTarget) }}</span>
+            <a-button type="text" size="small" @click="clearQuoteTarget">
+              <template #icon><CloseOutlined /></template>
+            </a-button>
+          </div>
         </div>
-        <div v-if="replyTarget" class="composer-ref">
-          <MessageOutlined />
-          <span class="composer-ref-label">回复 @{{ messageTitle(replyTarget) }}：</span>
-          <span class="composer-ref-text">{{ quoteRefSummary(replyTarget) }}</span>
-          <a-button type="text" size="small" @click="clearReplyTarget">
-            <template #icon><CloseOutlined /></template>
-          </a-button>
-        </div>
-        <div v-if="quoteTarget" class="composer-ref">
-          <BranchesOutlined />
-          <span class="composer-ref-label">引用 @{{ messageTitle(quoteTarget) }}：</span>
-          <span class="composer-ref-text">{{ quoteRefSummary(quoteTarget) }}</span>
-          <a-button type="text" size="small" @click="clearQuoteTarget">
-            <template #icon><CloseOutlined /></template>
-          </a-button>
-        </div>
+        <a-textarea
+          ref="expandedComposerRef"
+          :disabled="sending"
+          v-model:value="composer"
+          class="composer-expand-editor"
+          :placeholder="im.currentRoom?.type === 'group' ? '输入消息。输入 @ 可选择群内 agent' : '输入消息，当前会话历史会注入给这个 agent'"
+          @keydown="handleExpandedKeydown"
+        />
       </div>
-      <a-textarea
-        ref="expandedComposerRef"
-        :disabled="sending"
-        v-model:value="composer"
-        class="composer-expand-editor"
-        :placeholder="im.currentRoom?.type === 'group' ? '输入消息。输入 @ 可选择群内 agent' : '输入消息，当前会话历史会注入给这个 agent'"
-        @keydown="handleExpandedKeydown"
-      />
-      <ChatAttachments :items="currentDraft.items" :target-key="draftKey" :disabled="sending || (!im.currentAgentId && !im.currentRoom)"
-          @upload="chatFiles.uploadFiles" @reuse="chatFiles.addExisting" @remove="chatFiles.removeItem" @retry="chatFiles.retry" />
       <div class="composer-expand-foot">
+        <ComposerExtensions :items="currentDraft.items" :target-key="draftKey" :active="composerExpanded"
+          :disabled="sending || (!im.currentAgentId && !im.currentRoom)"
+          @upload="chatFiles.uploadFiles" @reuse="chatFiles.addExisting" @remove="chatFiles.removeItem" @retry="chatFiles.retry" />
         <span class="composer-expand-hint">Ctrl / ⌘ + Enter 发送</span>
         <a-space>
           <a-button @click="composerExpanded = false">取消</a-button>
@@ -2398,9 +2417,26 @@ onUnmounted(() => {
   font-size: 12px;
 }
 
-.composer{
- max-width: 55vw;  
- margin: auto;
+.composer-dock {
+  position: absolute;
+  right: 16px;
+  bottom: 16px;
+  left: 16px;
+  z-index: 11;
+  display: grid;
+  gap: 8px;
+  max-width: 55vw;
+  margin: auto;
+}
+.composer-dock > .composer-plan { padding: 0 12px; }
+.composer { position: static; width: 100%; margin: 0; }
+.expanded-composer-input { display: flex; flex: 1 1 auto; flex-direction: column; gap: 12px; min-height: 0; }
+
+.composer-actions { flex-direction: row; align-items: center; }
+.composer-expand-foot { gap: 12px; }
+@media (max-width: 640px) {
+  .composer-dock { max-width: none; }
+  .composer-expand-hint { display: none; }
 }
 
 

@@ -157,12 +157,13 @@ class MemoryManagementService:
         rows = repository.batches({"user_id": user_id, "batch_id": batch_id})
         if not rows:
             raise KeyError(batch_id)
-        batch = {k: v for k, v in rows[0].items() if k not in {"steps", "owner"}}
+        batch = {k: v for k, v in rows[0].items()
+                 if k not in {"steps", "owner", "publication_blocks", "outcome", "extraction_groups"}}
         candidates = repository.candidates(batch_id)
         batch["candidate_count"] = len(candidates)
         batch["classified_count"] = sum(c["status"] in {"accepted", "rejected"} for c in candidates)
         batch["accepted_count"] = sum(c["status"] == "accepted" for c in candidates)
-        # Keep responses bounded. All per-candidate records remain in MongoDB.
+        # Live candidates come from Redis; terminal diagnostics come from MongoDB.
         batch["candidates"] = [{k: v for k, v in c.items() if k != "content"} | {"summary": c["content"][:240]}
                                for c in candidates[:100]]
         batch["candidates_truncated"] = len(candidates) > 100

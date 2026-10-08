@@ -14,7 +14,7 @@ const saving = ref(false)
 const dirty = computed(() => saved.value && Object.keys(defaults.value).some((key) => draft[key] !== saved.value[key]))
 const valid = computed(() => Number.isInteger(draft.run_batch_size) && draft.run_batch_size >= 1 && draft.run_batch_size <= 100
   && Number.isFinite(draft.noul_threshold) && draft.noul_threshold >= 0 && draft.noul_threshold <= 1)
-const names = { waiting: '等待组批', pending: '待处理', classifying: '分类中', extracting: '提取中', publishing: '发布中', completed: '已完成', failed: '失败' }
+const names = { waiting: '等待组批', pending: '待处理', classifying: '分类中', extracting: '提取中', publishing: '发布中', finalizing: '结果保存中', completed: '已完成', failed: '失败' }
 const categoryNames = { user_preference: '用户偏好', project_state: '项目状态', user_fact: '稳定用户事实', decision: '用户／系统决策', reusable_conclusion: '可复用实验结论' }
 const stageNames = { waiting: '等待', classification: '筛选与分类', extraction: '分类提取与归并', publication: '发布', completed: '完成' }
 const color = (status) => ({ failed: 'red', completed: 'green', waiting: 'default', pending: 'gold' }[status] || 'blue')

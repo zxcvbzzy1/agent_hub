@@ -3,8 +3,8 @@ import { ref, watch } from 'vue'
 import { CloudUploadOutlined, FileTextOutlined, CloseOutlined } from '@ant-design/icons-vue'
 import { filesApi, fileSize } from '@/api/files'
 
-const props = defineProps({ items: { type: Array, default: () => [] }, disabled: Boolean, targetKey: String })
-const emit = defineEmits(['upload', 'reuse', 'remove', 'retry'])
+const props = defineProps({ items: { type: Array, default: () => [] }, disabled: Boolean, targetKey: String, active: { type: Boolean, default: true } })
+const emit = defineEmits(['upload', 'reuse', 'remove', 'retry', 'picker-open'])
 const input = ref(null)
 const open = ref(false)
 const loading = ref(false)
@@ -12,6 +12,7 @@ const files = ref([])
 const cursor = ref('')
 const hasMore = ref(false)
 watch(() => props.targetKey, () => { open.value = false })
+watch(() => props.active, active => { if (!active) open.value = false })
 async function load(reset = false) {
   loading.value = true
   try {
@@ -21,7 +22,7 @@ async function load(reset = false) {
     hasMore.value = result.has_more
   } catch { /* HTTP interceptor displays the error. */ } finally { loading.value = false }
 }
-function pick() { open.value = true; load(true) }
+function pick() { open.value = true; emit('picker-open'); load(true) }
 function selected(event) {
   emit('upload', Array.from(event.target.files || []))
   event.target.value = ''
