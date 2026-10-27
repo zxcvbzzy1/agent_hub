@@ -1,12 +1,50 @@
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
-import { Grid, message } from 'ant-design-vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
+import { Grid, message, Modal } from 'ant-design-vue'
 import { DatabaseOutlined, SearchOutlined, ReloadOutlined, ExperimentOutlined, SettingOutlined, FileTextOutlined } from '@ant-design/icons-vue'
 import { listMemoryBlocks, getMemoryBlock, getMemorySource, getMemoryScopes, getMemorySettings, saveMemorySettings, testMemoryRecall } from '@/api/memory'
 import { renderMarkdown } from '@/utils/markdown'
 import MemoryProcessingPanel from '@/components/MemoryProcessingPanel.vue'
+import { deleteMemoryBlock, getMemoryDocument } from '@/api/memory'
 
 const tab = ref('browse')
+const memoryDocument = ref(null)
+const documentLoading = ref(false)
+const documentError = ref(false)
+const deleting = reactive(new Set())
+let documentRequest = 0
+async function loadDocument() {
+  const request = ++documentRequest
+  documentLoading.value = true
+  documentError.value = false
+  try {
+    const response = await getMemoryDocument()
+    if (request === documentRequest) memoryDocument.value = response.item
+  } catch { if (request === documentRequest) documentError.value = true }
+  finally { if (request === documentRequest) documentLoading.value = false }
+}
+function confirmDelete(item) {
+  Modal.confirm({
+    title: '删除这条记忆？',
+    content: '派生记忆及 MEMORY.md 中引用它的段落将同步移除，其他段落保持原样。',
+    okText: '删除', okType: 'danger', cancelText: '取消',
+    async onOk() {
+      deleting.add(item.block_id)
+      try {
+        await deleteMemoryBlock(item.block_id)
+        if (selectedId.value === item.block_id) closeDrawer()
+        if (items.value.length === 1 && page.value > 1) page.value--
+        await Promise.all([loadList(), loadDocument()])
+        message.success('记忆已删除')
+      } finally { deleting.delete(item.block_id) }
+    },
+  })
+}
+let documentTimer
+watch(() => tab.value, value => { if (value === 'retrieve') loadDocument() })
+onMounted(() => { documentTimer = setInterval(() => { if (tab.value === 'retrieve') loadDocument() }, 10000) })
+onUnmounted(() => clearInterval(documentTimer))
+
 const screens = Grid.useBreakpoint()
 const detailColumns = computed(() => screens.value.sm ? 2 : 1)
 const statusNames = { active: '有效', expired: '已过期', deleted: '已删除', merged: '已合并', superseded: '已有新版本', unavailable: '来源未就绪', all: '全部状态' }
@@ -164,8 +202,8 @@ onMounted(() => { loadList(); loadScopes(); loadSettings() })
   <main class="memory-workspace">
     <header class="memory-heading">
       <div class="heading-icon"><DatabaseOutlined /></div>
-      <div><span class="eyebrow">MEMORY</span><h1>长期记忆</h1><p>查看积累的记忆，调整检索方式，验证召回效果。</p></div>
-      <a-tag class="account-tag" color="blue">当前账号 · 跨房间检索</a-tag>
+      <div><span class="eyebrow">MEMORY</span><h1>长期记忆</h1><p>管理积累的记忆，预览后台增量维护的 L1 文件。</p></div>
+      <a-tag class="account-tag" color="blue">当前账号 · 跨聊天共享</a-tag>
     </header>
 
     <a-tabs v-model:activeKey="tab" class="memory-tabs">
@@ -185,14 +223,15 @@ onMounted(() => { loadList(); loadScopes(); loadSettings() })
             <a-result v-if="listError" status="warning" title="记忆加载失败" sub-title="请重试获取当前账号的记忆。"><template #extra><a-button @click="loadList()">重新加载</a-button></template></a-result>
             <a-empty v-else-if="!loading && !items.length" description="当前条件下没有记忆" class="empty-state" />
             <div v-else class="memory-grid">
-              <button v-for="item in items" :key="item.block_id" class="memory-card" @click="openDetail(item.block_id)">
+              <div v-for="item in items" :key="item.block_id" class="memory-card" role="button" tabindex="0" @click="openDetail(item.block_id)" @keydown.enter.self="openDetail(item.block_id)" @keydown.space.self.prevent="openDetail(item.block_id)">
                 <div class="card-top"><span class="kind-label"><FileTextOutlined /> {{ kindNames[item.section_kind] || item.section_kind }}</span><a-tag :color="statusColor(item.status)">{{ statusNames[item.status] || item.status }}</a-tag></div>
                 <p class="card-summary">{{ item.summary }}</p>
                 <div class="card-tags"><a-tag>{{ item.memory_type === 'unclassified' ? '未分类' : item.memory_type }}</a-tag><a-tag v-for="tag in item.tags" :key="tag" color="blue">{{ tag }}</a-tag></div>
                 <div class="card-source">{{ item.room_name }} / {{ item.conversation_name }}</div>
                 <div class="card-meta"><span>约 {{ item.token_count }} tokens</span><span>使用 {{ item.usage_count }} 次</span><span>v{{ item.version }}</span></div>
                 <div class="card-date">更新于 {{ formatDate(item.updated_at) }}<span>查看详情 →</span></div>
-              </button>
+                <a-button v-if="item.status !== 'deleted'" type="text" danger size="small" :loading="deleting.has(item.block_id)" @click.stop="confirmDelete(item)">删除</a-button>
+              </div>
             </div>
           </a-spin>
           <a-pagination v-if="total" class="memory-pagination" :current="page" :page-size="pageSize" :total="total" show-size-changer :page-size-options="['20', '50', '100']" :responsive="true" @change="changePage" />
@@ -200,11 +239,26 @@ onMounted(() => { loadList(); loadScopes(); loadSettings() })
       </a-tab-pane>
 
       <a-tab-pane key="retrieve">
-        <template #tab><span><ExperimentOutlined /> 检索配置与测试</span></template>
+        <template #tab><span><FileTextOutlined /> L1 文件预览</span></template>
+        <section class="memory-panel">
+          <div class="panel-title"><FileTextOutlined /><h2>MEMORY.md</h2><a-button :loading="documentLoading" @click="loadDocument">刷新</a-button></div>
+          <p class="muted">当前账号所有聊天共享。后台基于旧文件与新增 L2 增量整合，每次任务启动时静态注入已发布版本。</p>
+          <a-alert v-if="documentError" type="error" message="记忆文件加载失败" show-icon />
+          <template v-else-if="memoryDocument">
+            <p class="muted">版本 {{ memoryDocument.revision }} · 更新于 {{ formatDate(memoryDocument.generated_at) }} · 待整合 {{ memoryDocument.pending_count }} 条</p>
+            <a-alert v-if="memoryDocument.error" type="warning" :message="memoryDocument.error" show-icon />
+            <a-tag>{{ ({ ready: '已发布', pending: '等待增量整合', failed: '更新失败，后台将重试', empty: '尚无文件' })[memoryDocument.status] }}</a-tag>
+            <div v-if="memoryDocument.content" class="detail-content md-body" v-html="renderMarkdown(memoryDocument.content)"></div>
+            <a-empty v-else description="暂无记忆文件，本次任务将跳过记忆注入" />
+            <a-collapse ghost><a-collapse-panel key="raw" header="Markdown 原文"><pre class="raw-text">{{ memoryDocument.content }}</pre><code class="break-anywhere">{{ memoryDocument.file_path }}</code></a-collapse-panel></a-collapse>
+          </template>
+          <a-spin v-else-if="documentLoading" />
+        </section>
+        <a-collapse ghost><a-collapse-panel key="bm25" header="BM25 诊断工具（不会直接注入智能体）">
         <div class="retrieval-layout">
           <section class="memory-panel config-panel">
             <div class="panel-title"><SettingOutlined /><h2>检索配置</h2><a-tag v-if="saved" :color="dirty ? 'orange' : 'green'">{{ dirty ? '未保存草稿' : '已保存' }}</a-tag></div>
-            <p class="muted">保存后用于当前账号的下一次运行。测试始终使用当前表单参数。</p>
+            <p class="muted">仅用于记忆检索诊断，不改变 L1 文件及运行时静态注入。测试使用当前表单参数。</p>
             <a-spin :spinning="settingsLoading">
               <a-alert v-if="settingsError" type="error" show-icon message="配置加载失败"><template #action><a-button size="small" @click="loadSettings">重试</a-button></template></a-alert>
               <fieldset :disabled="!saved || settingsLoading" class="config-fields">
@@ -223,7 +277,7 @@ onMounted(() => { loadList(); loadScopes(); loadSettings() })
           <div class="test-column">
             <section class="memory-panel">
               <div class="panel-title"><ExperimentOutlined /><h2>测试召回</h2></div>
-              <p class="muted">输入一个问题，查看记忆如何进入上下文。测试不会增加使用次数。</p>
+              <p class="muted">输入一个问题测试 L2 检索。结果不会直接进入智能体上下文，也不会增加使用次数。</p>
               <label class="query-label" for="memory-query">测试问题</label>
               <a-textarea id="memory-query" v-model:value="query" placeholder="例如：之前的 Python 项目是如何配置的？" :auto-size="{ minRows: 3, maxRows: 8 }" :maxlength="20000" />
               <div class="test-actions"><span class="muted">{{ dirty ? '使用未保存草稿测试' : '使用已保存配置测试' }}</span><a-button type="primary" :loading="testing" :disabled="!query.trim() || !saved || !validConfig || settingsError" @click="testRecall">测试召回</a-button></div>
@@ -249,7 +303,7 @@ onMounted(() => { loadList(); loadScopes(); loadSettings() })
                   <div class="diagnostics-scroll"><table class="diagnostics-table"><thead><tr><th>排名</th><th>候选内容</th><th>BM25 分数</th><th>结果</th></tr></thead><tbody><tr v-for="row in result.diagnostics" :key="row.block_id"><td>{{ row.rank }}</td><td><button class="text-link" @click="openDetail(row.block_id)">{{ row.summary }}</button></td><td>{{ score(row.score) }}</td><td><a-tag :color="row.reason === 'selected' ? 'green' : 'default'">{{ reasonNames[row.reason] }}</a-tag></td></tr></tbody></table></div>
                   <a-empty v-if="!result.diagnostics.length" description="没有匹配候选" />
                 </a-collapse-panel>
-                <a-collapse-panel key="context" header="最终 L1 上下文原文">
+                <a-collapse-panel key="context" header="诊断格式化原文（非实际 L1 文件）">
                   <pre v-if="result.context" class="raw-text">{{ result.context }}</pre><a-empty v-else description="本次不注入长期记忆" />
                 </a-collapse-panel>
               </a-collapse>
@@ -257,6 +311,7 @@ onMounted(() => { loadList(); loadScopes(); loadSettings() })
             <div v-else-if="!testing" class="test-placeholder"><ExperimentOutlined /><p>运行一次测试，查看召回结果与上下文。</p></div>
           </div>
         </div>
+        </a-collapse-panel></a-collapse>
       </a-tab-pane>
       <a-tab-pane key="generate" tab="记忆生成"><MemoryProcessingPanel :active="tab === 'generate'" /></a-tab-pane>
     </a-tabs>
@@ -265,6 +320,7 @@ onMounted(() => { loadList(); loadScopes(); loadSettings() })
       <a-spin :spinning="detailLoading">
         <a-result v-if="detailError" status="warning" title="无法加载记忆详情"><template #extra><a-button @click="openDetail(selectedId)">重试</a-button></template></a-result>
         <template v-if="detail">
+          <a-button v-if="detail.item.status !== 'deleted'" class="detail-delete-button" danger :loading="deleting.has(detail.item.block_id)" @click="confirmDelete(detail.item)">删除记忆</a-button>
           <a-tag :color="statusColor(detail.item.status)">{{ statusNames[detail.item.status] }}</a-tag><a-tag>{{ kindNames[detail.item.section_kind] }}</a-tag><a-tag>版本 {{ detail.item.version }}</a-tag>
           <h3 v-if="detail.item.section_kind === 'extracted'" class="detail-section">提取正文</h3>
           <div class="detail-content md-body" v-html="renderMarkdown(detail.item.content)"></div>
@@ -373,6 +429,7 @@ label { display: grid; gap: 7px; font-size: 12px; font-weight: 650; color: var(-
 .text-link:hover { text-decoration: underline; }
 .raw-text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.8; background: #f5f7fb; border-radius: 8px; padding: 16px; }
 .detail-content { margin: 20px 0 28px; overflow-wrap: anywhere; }
+.detail-delete-button { margin-inline: 16px; }
 .detail-section { margin-top: 26px; }
 .evidence-item { padding: 14px 0; border-bottom: 1px solid #edf1f6; font-size: 12px; overflow-wrap: anywhere; }
 .detail-section h3 { font-size: 15px; }

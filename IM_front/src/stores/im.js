@@ -563,6 +563,9 @@ export const useIMStore = defineStore('im', {
       if (!roomId && !conversationId && agentId) {
         const created = await imApi.createAgentConversation(agentId, { metadata: { source: 'IM_front' } })
         conversationId = created.item.conversation_id
+        if (typeof payload.metadata?.memory_write_enabled === 'boolean') {
+          await imApi.updateConversation(conversationId, { memory_write_enabled: payload.metadata.memory_write_enabled })
+        }
         options.onConversationCreated?.(conversationId)
         if (this.mode === 'agent' && this.currentAgentId === agentId) await this.selectConversation(conversationId)
       }

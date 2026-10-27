@@ -22,6 +22,12 @@ class LLMExtractionAdapter:
         except RuntimeError:
             return False
 
+    async def consolidate(self, sections, memories, *, token_budget, compact=False):
+        from domain.memory.long.document import CONSOLIDATION_PROMPT
+        patch, _model = await self._json(CONSOLIDATION_PROMPT, {"sections": sections, "memories": memories,
+            "document_token_budget": token_budget, "compact": compact})
+        return patch
+
     async def _json(self, prompt, payload):
         from openai import AsyncOpenAI
         if not self.ready():

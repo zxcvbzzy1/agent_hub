@@ -56,6 +56,12 @@ export const imApi = {
   updateRoom(roomId, payload) {
     return http.patch(`/api/im/rooms/${roomId}`, payload)
   },
+  roomWorkspace(roomId) {
+    return http.get(`/api/im/rooms/${roomId}/workspace`)
+  },
+  importWorkspace(roomId, form, config = {}) {
+    return http.post(`/api/im/rooms/${roomId}/workspace/import`, form, config)
+  },
   deleteRoom(roomId) {
     return http.delete(`/api/im/rooms/${roomId}`)
   },

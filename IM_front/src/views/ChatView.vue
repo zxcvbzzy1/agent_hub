@@ -59,6 +59,8 @@ import ComposerExtensions from '@/components/ComposerExtensions.vue'
 import ComposerPlan from '@/components/ComposerPlan.vue'
 import ChatFileCard from '@/components/ChatFileCard.vue'
 import { useChatFiles } from '@/composables/useChatFiles'
+import { useChatRunSettings } from '@/composables/useChatRunSettings'
+import { mergeToolGroupSelection } from '@/utils/toolSelection'
 import { useComposerPlan } from '@/composables/useComposerPlan'
 import { renderMarkdown, looksLikeMarkdownDoc } from '@/utils/markdown'
 
@@ -85,6 +87,19 @@ const draftKey = computed(() => {
   return im.currentConversation ? `conversation:${im.currentConversation.conversation_id}` : `agent:${im.currentAgentId}`
 })
 const chatFiles = useChatFiles(draftKey)
+const runSettings = useChatRunSettings(im, draftKey)
+const extensionSettings = computed(() => ({
+  memoryWriteEnabled: runSettings.memoryEnabled.value, memorySaving: runSettings.memorySaving.value,
+  group: im.currentRoom?.type === 'group', workdir: runSettings.workdir.value,
+  effectiveWorkdir: runSettings.effectiveWorkdir.value, workspaceBusy: runSettings.workspaceBusy.value,
+  importProgress: runSettings.progress.value,
+}))
+const extensionEvents = {
+  'memory-change': runSettings.setMemoryEnabled,
+  'update:workdir': value => { runSettings.workdir.value = value },
+  'save-workdir': runSettings.saveWorkdir, 'import-drop': runSettings.importDrop,
+  'import-files': runSettings.importFiles, 'cancel-import': runSettings.cancelImport,
+}
 const { plan: currentPlan, retry: retryPlan } = useComposerPlan(im)
 const composerPlan = computed(() => currentPlan.value ? {
   ...currentPlan.value,
@@ -732,7 +747,7 @@ function insertMention(agent) {
 }
 
 async function send() {
-  if (sending.value) return
+  if (sending.value || runSettings.memorySaving.value || runSettings.workspaceBusy.value) return
   if (!im.currentRoom && !im.currentAgentId) {
     message.warning('请选择 agent 或群聊')
     return
@@ -744,7 +759,7 @@ async function send() {
   try {
     const userText = composer.value.trim()
     let text = userText
-    const metadata = { client: 'IM_front', client_message_id: submittedDraft.requestId }
+    const metadata = { client: 'IM_front', client_message_id: submittedDraft.requestId, memory_write_enabled: runSettings.memoryEnabled.value }
     if (selectionEditTarget.value) {
       const t = selectionEditTarget.value
       const snippet = String(t.selection?.text || '').slice(0, 2000)
@@ -1215,16 +1230,14 @@ async function handleAvatarUpload(file) {
   return false
 }
 
+function updateToolGroup(tools, selected) {
+  agentForm.tool_names = mergeToolGroupSelection(agentForm.tool_names, tools.map(tool => tool.name), selected)
+}
+
 function toggleToolField(field, tools) {
   const names = tools.map((tool) => tool.name)
   const allSelected = names.every((name) => agentForm.tool_names.includes(name))
-  if (allSelected) {
-    agentForm.tool_names = agentForm.tool_names.filter((name) => !names.includes(name))
-  } else {
-    const next = new Set(agentForm.tool_names)
-    names.forEach((name) => next.add(name))
-    agentForm.tool_names = [...next]
-  }
+  updateToolGroup(tools, allSelected ? [] : names)
 }
 
 async function scrollToBottom() {
@@ -1877,10 +1890,10 @@ onUnmounted(() => {
             </a-tooltip>
           </div>
           <div class="composer-actions">
-            <ComposerExtensions :items="currentDraft.items" :target-key="draftKey" :active="!composerExpanded"
+            <ComposerExtensions v-bind="extensionSettings" v-on="extensionEvents" :items="currentDraft.items" :target-key="draftKey" :active="!composerExpanded"
               :disabled="sending || (!im.currentAgentId && !im.currentRoom)"
               @upload="chatFiles.uploadFiles" @reuse="chatFiles.addExisting" @remove="chatFiles.removeItem" @retry="chatFiles.retry" />
-            <a-button type="primary" :loading="sending" :disabled="chatFiles.busy.value" @click="send">
+            <a-button type="primary" :loading="sending" :disabled="chatFiles.busy.value || runSettings.memorySaving.value || runSettings.workspaceBusy.value" @click="send">
               <template #icon><SendOutlined /></template>
               发送
             </a-button>
@@ -2049,7 +2062,7 @@ onUnmounted(() => {
                   全选/反选
                 </a-button>
               </template>
-              <a-checkbox-group v-model:value="agentForm.tool_names" class="tool-checkbox-group">
+              <a-checkbox-group :value="agentForm.tool_names" class="tool-checkbox-group" @update:value="updateToolGroup(group.tools, $event)">
                 <a-checkbox v-for="tool in group.tools" :key="tool.name" :value="tool.name">
                   <span class="tool-name">{{ tool.name }}</span>
                   <small v-if="tool.description" class="tool-desc">{{ tool.description }}</small>
@@ -2296,13 +2309,13 @@ onUnmounted(() => {
         />
       </div>
       <div class="composer-expand-foot">
-        <ComposerExtensions :items="currentDraft.items" :target-key="draftKey" :active="composerExpanded"
+        <ComposerExtensions v-bind="extensionSettings" v-on="extensionEvents" :items="currentDraft.items" :target-key="draftKey" :active="composerExpanded"
           :disabled="sending || (!im.currentAgentId && !im.currentRoom)"
           @upload="chatFiles.uploadFiles" @reuse="chatFiles.addExisting" @remove="chatFiles.removeItem" @retry="chatFiles.retry" />
         <span class="composer-expand-hint">Ctrl / ⌘ + Enter 发送</span>
         <a-space>
           <a-button @click="composerExpanded = false">取消</a-button>
-          <a-button type="primary" :loading="sending" :disabled="chatFiles.busy.value" @click="sendFromExpanded">
+          <a-button type="primary" :loading="sending" :disabled="chatFiles.busy.value || runSettings.memorySaving.value || runSettings.workspaceBusy.value" @click="sendFromExpanded">
             <template #icon><SendOutlined /></template>
             发送
           </a-button>

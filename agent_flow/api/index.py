@@ -30,10 +30,12 @@ async def lifespan(app: FastAPI):
     container = get_container()
     await container.runtime.start()
     await container.long_memory.processing.start()
+    await container.long_memory.documents.start()
     try:
         yield
     finally:
         await container.runtime.close()
+        await container.long_memory.documents.close()
         await container.long_memory.processing.close()
 
 

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import copy
 import uuid
-from domain.memory.long.providers import LongTermMemoryProvider
+from domain.memory.long.providers import MemoryDocumentProvider
 from typing import Any
 
 from domain.agent.plan.providers import (
@@ -272,7 +272,7 @@ class ContextService:
         # An explicit disabled entry wins; legacy configurations receive the provider.
         if record.get("kind") != "step" and not any(config.get("provider_id") == "long_term_memory"
                    for config in record.get("provider_config", [])):
-            providers.insert(1, LongTermMemoryProvider())
+            providers.insert(1, MemoryDocumentProvider())
         # 固定上下文（收藏）注入对所有 context 生效，即使旧配置未声明也自动补一个；
         # state 中没有 pinned_context 时该 provider 输出为空，无副作用。
         if not any(isinstance(provider, PinnedContextProvider) for provider in providers):
@@ -296,7 +296,7 @@ class ContextService:
 
         provider_id = config.get("provider_id")
         if provider_id == "long_term_memory":
-            return LongTermMemoryProvider()
+            return MemoryDocumentProvider()
         params = config.get("params") or {}
         if provider_id == "user_prompt":
             return UserPromptProvider()
@@ -343,7 +343,7 @@ class ContextService:
         raise ValueError(f"未知 provider: {provider_id}")
 
     def _provider_to_config(self, provider) -> dict[str, Any]:
-        if isinstance(provider, LongTermMemoryProvider):
+        if isinstance(provider, MemoryDocumentProvider):
             return {"provider_id": "long_term_memory", "enabled": provider.enabled, "params": {}}
         enabled = getattr(provider, "enabled", True)
         params: dict[str, Any] = {}

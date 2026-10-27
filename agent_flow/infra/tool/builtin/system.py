@@ -1,3 +1,4 @@
+from domain.run_context import current_agent
 from domain.event import Event
 from domain.tool import Tool, Tool_respond
 import subprocess
@@ -306,7 +307,7 @@ factory._build_and_register_list([BASH], bus)
 def exec_bash(**kwargs)->Event:
     command = kwargs["command"]
     agent_id = kwargs["agent_id"]
-    work_path = agent_dict[agent_id].work_path
+    work_path = (current_agent.get() or agent_dict[agent_id]).work_path
     tool = SystemTool(working_directory=work_path)
     respond = tool.exec_bash(command)
     if respond["returncode"] != 0:

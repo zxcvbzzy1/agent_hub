@@ -26,6 +26,7 @@ from domain.runtime_hooks import (  # type: ignore  # noqa: E402
 from infra.config import factory, llm_client  # type: ignore  # noqa: E402
 from domain.memory.long.models import MemoryScope
 from im_backend.infra.storage.memory import MemoryManagementRepository
+from im_backend.infra.agent_flow_bridge.runtime_options import IMAgentFactoryService, IMRunMemoryCoordinator
 
 
 class AgentFlowBridge:
@@ -48,7 +49,7 @@ class AgentFlowBridge:
         register_run_context_provider(self.frontend_bridge)
         self.tools = ToolRegistryService(self._store, self._root_dir / "agent_flow")
         self.contexts = ContextService(self._store)
-        self.agents = AgentFactoryService(
+        self.agents = IMAgentFactoryService(
             self._store,
             self.contexts,
             llm_client,
@@ -64,6 +65,7 @@ class AgentFlowBridge:
             self.events,
             self.frontend_bridge,
             long_memory=self.long_memory,
+            memory_coordinator=IMRunMemoryCoordinator(self.long_memory, self._store, self.events),
         )
         # agent_flow 侧的 runtime 会话服务，与 im_backend 的 ConversationService 同名，用别名区分。
         self.conversations = RuntimeConversationService(self._store, self.runtime, long_memory=self.long_memory)

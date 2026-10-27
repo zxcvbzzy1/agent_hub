@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from domain.run_context import current_agent
 from domain.event import Event
 from domain.runtime_hooks import get_run_context_provider
 from domain.tool import Tool, Tool_respond
@@ -70,7 +71,7 @@ def _agent_workdir(agent_id: str) -> str | None:
     if not agent_id:
         return None
     try:
-        agent = agent_dict.get(agent_id) if hasattr(agent_dict, "get") else agent_dict[agent_id]
+        agent = current_agent.get() or (agent_dict.get(agent_id) if hasattr(agent_dict, "get") else agent_dict[agent_id])
     except Exception:
         agent = None
     work_path = getattr(agent, "work_path", None) if agent is not None else None

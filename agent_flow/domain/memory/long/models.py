@@ -28,6 +28,9 @@ class MemorySource:
     run_id: str = ""
     message_id: str = ""
     run_status: str = ""
+    project_path: str = ""
+    started_at: float | None = None
+    finished_at: float | None = None
     index_status: str = "pending"
     deleted_at: float | None = None
     # Persist section boundaries so retries never need to parse user Markdown.

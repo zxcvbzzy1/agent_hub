@@ -49,6 +49,16 @@ _tool_event_observer: ToolEventObserverPort | None = None
 _human_approval_provider: HumanApprovalProviderPort | None = None
 _run_context_provider: RunContextProviderPort | None = None
 _skill_retriever: SkillRetrieverPort | None = None
+_memory_commands: Any = None
+
+
+def register_memory_commands(service: Any) -> None:
+    global _memory_commands
+    _memory_commands = service
+
+
+def get_memory_commands() -> Any:
+    return _memory_commands
 
 
 def register_tool_event_observer(observer: ToolEventObserverPort | None) -> None:

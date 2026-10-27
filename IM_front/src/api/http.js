@@ -24,6 +24,7 @@ http.interceptors.request.use((config) => {
 http.interceptors.response.use(
   (response) => response.data,
   async (error) => {
+    if (axios.isCancel(error)) return Promise.reject(error)
     if (error?.response?.data instanceof Blob) {
       try { error.response.data = JSON.parse(await error.response.data.text()) } catch { /* Preserve original error. */ }
     }

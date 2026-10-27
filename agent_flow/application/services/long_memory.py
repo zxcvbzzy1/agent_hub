@@ -1,4 +1,4 @@
-"""Coordinates immutable L3 files, L2 lifecycle and budgeted L1 retrieval."""
+"""Coordinates immutable L3, L2 lifecycle, diagnostic retrieval and L1 documents."""
 from __future__ import annotations
 
 import hashlib
@@ -55,6 +55,7 @@ class LongTermMemoryService:
         # The low-level service also supports rules-only hosts. The production
         # factory installs processing and defaults newly archived runs to JEV.
         self.processing = None
+        self.documents = None
 
     def _path(self, scope: MemoryScope, folder: str, name: str) -> str:
         if not scope.user_id or not scope.conversation_id:
@@ -77,6 +78,7 @@ class LongTermMemoryService:
             **scope.to_dict(), "run_id": record["run_id"], "status": record["status"],
             "started_at": record.get("started_at"), "finished_at": record.get("finished_at"),
             "error": record.get("error", ""), "cancel_reason": record.get("cancel_reason", ""),
+            "project_path": record.get("project_path", ""),
         }, ensure_ascii=False), ""]
         sections = []
 
@@ -108,6 +110,8 @@ class LongTermMemoryService:
             file_path=self._path(scope, "runs", record["run_id"]), content_hash=digest(text),
             run_id=record["run_id"], message_id=record.get("source_message_id") or record.get("message_id") or "",
             run_status=record["status"], sections=sections).to_dict()
+        source.update(project_path=record.get("project_path", ""),
+                      started_at=record.get("started_at"), finished_at=record.get("finished_at"))
         if self.processing:
             snapshot = self.processing.repository.settings(scope.user_id)
             source.update(processing_config=snapshot["config"], processing_revision=snapshot["revision"])
@@ -303,6 +307,7 @@ class LongTermMemoryService:
 
     def _invalidate(self, block_ids: list[str], status: str) -> int:
         pending, visited = list(block_ids), set()
+        users = set()
         now = time.time()
         while pending:
             block_id = pending.pop()
@@ -313,6 +318,7 @@ class LongTermMemoryService:
             if not rows:
                 continue
             block = rows[0]
+            users.add(block["user_id"])
             changes = {"status": status, "deleted_at": now} if status == "deleted" else {
                 "status": "expired", "expires_at": now}
             if block["status"] != "deleted":
@@ -321,6 +327,15 @@ class LongTermMemoryService:
             if source and source["source_kind"] != "run":
                 self.repository.update_source(source["source_id"], {"deleted_at": now})
             pending.extend(b["block_id"] for b in self.repository.blocks({"derived_from_block_ids": block_id}))
+        if self.documents:
+            for user in users:
+                # Lifecycle changes are durable even if file cleanup must retry.
+                # snapshot() validates/prunes before any subsequent injection.
+                try:
+                    self.documents.prune(user)
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception("L1 删除同步失败，将在读取或后台扫描时重试")
         return len(visited)
 
     def delete_sources(self, **scope_filters: str) -> int:
@@ -341,8 +356,18 @@ def build_long_memory(store, root: str | Path, *,
     # The processor uses digest/stable_id above; load it after this module is ready.
     from application.services.memory_processing import MemoryProcessingService
     from infra.config import llm_client
+    from application.services.memory_documents import MemoryDocumentService
+    from infra.memory.documents import MongoMemoryDocuments
+    from application.services.memory_commands import MemoryCommandService
+    from domain.runtime_hooks import register_memory_commands
 
     memory = LongTermMemoryService(MongoMemoryRepository(store), MarkdownSourceFiles(root), settings_loader=settings_loader)
     memory.processing = MemoryProcessingService(memory, MemoryProcessingRepository(store, runtime=runtime), JevClassifier(),
         LLMExtractionAdapter(llm_client), input_budget=int(os.getenv("MEMORY_EXTRACTION_INPUT_BUDGET", "12000")))
+    memory.documents = MemoryDocumentService(memory, MongoMemoryDocuments(store, memory.files),
+        LLMExtractionAdapter(llm_client), memory.processing.repository,
+        input_budget=int(os.getenv("MEMORY_DOCUMENT_INPUT_BUDGET", "12000")),
+        token_budget=int(os.getenv("MEMORY_DOCUMENT_TOKEN_BUDGET", "4000")))
+
+    register_memory_commands(MemoryCommandService(memory, store))
     return memory

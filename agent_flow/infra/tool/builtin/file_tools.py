@@ -5,7 +5,7 @@
 文件工具，让模型用干净的参数做文件操作，而不是 bash heredoc。
 
 路径处理（重要设计决策）：不限制在工作目录内 —— 与现有 bash 工具同样自由。给定 "path"：
-绝对路径直接使用；否则相对于 work_path = agent_dict[agent_id].work_path 解析。永远不会
+绝对路径直接使用；否则相对于 work_path = (current_agent.get() or agent_dict[agent_id]).work_path 解析。永远不会
 因为路径在 work_path 之外而拒绝。
 """
 
@@ -15,6 +15,7 @@ import glob as glob_module
 import os
 from pathlib import Path
 
+from domain.run_context import current_agent
 from domain.event import Event
 from domain.tool import Tool, Tool_respond
 from infra.event_bind import On_bind
@@ -149,7 +150,7 @@ FILE = Tool(
 
 def _work_path(agent_id: str) -> Path:
     """取得 agent 的工作目录；找不到则退回当前进程工作目录。"""
-    agent = agent_dict.get(agent_id) if hasattr(agent_dict, "get") else agent_dict[agent_id]
+    agent = current_agent.get() or (agent_dict.get(agent_id) if hasattr(agent_dict, "get") else agent_dict[agent_id])
     if agent is not None and getattr(agent, "work_path", None):
         return Path(agent.work_path).expanduser()
     return Path(os.getcwd())

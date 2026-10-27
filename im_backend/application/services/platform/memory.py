@@ -1,4 +1,4 @@
-"""Authenticated memory queries and settings; mutations of memory are not exposed."""
+"""Authenticated memory management, L1 previews, and diagnostic retrieval."""
 import re
 import time
 from im_backend.domain.memory_settings import RetrievalSettings
@@ -102,6 +102,14 @@ class MemoryManagementService:
     def source_detail(self, user_id, source_id):
         source = self._source(user_id, source_id)
         return {"item": {**source, **self._labels(source), "content": self.memory.files.read(source["file_path"])}}
+
+    def delete_block(self, user_id, block_id):
+        return {"deleted": self.memory.delete_memory(user_id, block_id)}
+
+    def document(self, user_id):
+        if not self.memory.documents:
+            return {"item": {"content": "", "revision": 0, "status": "empty", "pending_count": 0}}
+        return {"item": self.memory.documents.detail(user_id)}
 
     def scopes(self, user_id):
         rooms, conversations = {}, {}

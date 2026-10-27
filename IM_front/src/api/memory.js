@@ -3,6 +3,8 @@ import http from '@/api/http'
 const root = '/api/im/memory'
 export const listMemoryBlocks = (params) => http.get(`${root}/blocks`, { params })
 export const getMemoryBlock = (id) => http.get(`${root}/blocks/${encodeURIComponent(id)}`)
+export const deleteMemoryBlock = (id) => http.delete(`${root}/blocks/${encodeURIComponent(id)}`)
+export const getMemoryDocument = () => http.get(`${root}/document`)
 export const getMemorySource = (id) => http.get(`${root}/sources/${encodeURIComponent(id)}`)
 export const getMemoryScopes = () => http.get(`${root}/scopes`)
 export const getMemorySettings = () => http.get(`${root}/settings`)

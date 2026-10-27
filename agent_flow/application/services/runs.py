@@ -116,6 +116,7 @@ class RunOrchestrationService:
         streams: EventStreamService,
         frontend_bridge: FrontendEventBridge,
         long_memory=None,
+        memory_coordinator=None,
     ) -> None:
         self._store = store
         self._agents = agent_service
@@ -125,7 +126,7 @@ class RunOrchestrationService:
         self._tasks: dict[str, asyncio.Task] = {}
         self.runtime = streams.runtime
         self.long_memory = long_memory
-        self.memory_coordinator = RunMemoryCoordinator(long_memory, store, streams)
+        self.memory_coordinator = memory_coordinator or RunMemoryCoordinator(long_memory, store, streams)
         self.states = RunStateService(store, self.runtime, long_memory=long_memory,
                                       memory_coordinator=self.memory_coordinator)
         self.runtime.on_orphan = self.handle_orphan
@@ -287,7 +288,7 @@ class RunOrchestrationService:
         # 避免并发 run 下 agent_id -> run_id 全局映射 last-writer-wins 串扰。finally 中 reset。
         token = current_run_id.set(run_id)
         try:
-            record["long_term_memory"] = await self.memory_coordinator.prepare(record)
+            record["memory_snapshot"] = await self.memory_coordinator.prepare(record)
             if record.get("mode") == "react":
                 await self._execute_react_run(record)
             else:
@@ -373,7 +374,7 @@ class RunOrchestrationService:
             executors=executors,
             step_context_engine=step_context,
             event_bus=RecordingEventBus(run_id, self._streams),
-            state=OrchestratorState(long_term_memory=list(record.get("long_term_memory") or [])),
+            state=OrchestratorState(),
             max_replan_rounds=record["max_replan_rounds"],
             run_id=run_id,
             streams=self._streams,
@@ -393,7 +394,7 @@ class RunOrchestrationService:
             "finish_reason": orchestrator.state.finish_reason})
 
     async def _apply_long_memory(self, agent: AgentBase, record: dict[str, Any]) -> None:
-        await self.memory_coordinator.inject(agent, record.get("long_term_memory") or [], record["run_id"])
+        await self.memory_coordinator.inject(agent, record["memory_snapshot"], record["run_id"])
 
     def _apply_pinned_context(self, agent: AgentBase, record: dict[str, Any]) -> None:
         """将收藏上下文注入本次执行专属的 Agent。"""

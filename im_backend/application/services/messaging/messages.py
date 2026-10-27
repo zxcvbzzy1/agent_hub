@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from im_backend.application.services._shared.run_options import capture_run_options
 
 from im_backend.application.services._shared.lookup import require_im_message
 from im_backend.application.services._shared.message_text import message_text as extract_message_text
@@ -91,6 +92,10 @@ class GroupMessageService:
         for agent_id in mentions or []:
             if agent_id not in room.get("member_agent_ids", []):
                 raise ValueError(f"被 @ 的 agent 不在房间中: {agent_id}")
+
+        if sender_type == "user":
+            metadata = capture_run_options(self._store, metadata, conversation_id=conversation_id,
+                room=room, default_workdir=self._rooms.default_workdir)
 
         message = Message.create(
             room_id=room_id,

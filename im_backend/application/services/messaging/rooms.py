@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from im_backend.application.services._shared.run_options import validate_workdir
 
 from im_backend.application.services.platform.cleanup import IMCleanupService
 from im_backend.application.services.messaging.agents import IMAgentService
@@ -18,12 +19,14 @@ class RoomService:
         events: RoomEventStreamService,
         cleanup: IMCleanupService,
         agents: IMAgentService,
+        default_workdir: str = "",
     ) -> None:
         self._store = store
         self._bridge = bridge
         self._events = events
         self._cleanup = cleanup
         self._agents = agents
+        self.default_workdir = default_workdir
 
     async def create_room(
         self,
@@ -49,6 +52,11 @@ class RoomService:
             "execution_mode": "plan",
             **(metadata or {}),
         }
+        if "workdir" in room_metadata:
+            value = room_metadata["workdir"]
+            if not isinstance(value, str):
+                raise ValueError("工作目录必须是路径字符串")
+            room_metadata["workdir"] = validate_workdir(value) if value else ""
         planner_agent_id = room_metadata.get("planner_agent_id")
         if planner_agent_id:
             planner = self._agents.ensure_agent_access(planner_agent_id, created_by)
@@ -102,7 +110,14 @@ class RoomService:
                     self._bridge.ensure_agent_exists(agent_id)
             updates["member_agent_ids"] = member_agent_ids
         if metadata is not None:
+            if "workdir" in metadata and user_id and room.get("created_by") != user_id:
+                raise KeyError("群聊不存在")
             next_metadata = {**(room.get("metadata") or {}), **metadata}
+            if "workdir" in metadata:
+                value = metadata["workdir"]
+                if not isinstance(value, str):
+                    raise ValueError("工作目录必须是路径字符串")
+                next_metadata["workdir"] = validate_workdir(value) if value else ""
             planner_agent_id = next_metadata.get("planner_agent_id")
             if planner_agent_id:
                 planner = (

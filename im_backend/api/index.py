@@ -21,6 +21,7 @@ async def lifespan(app: FastAPI):
     container = get_container()
     await container.bridge.runtime.start()
     await container.bridge.long_memory.processing.start()
+    await container.bridge.long_memory.documents.start()
 
     async def cleanup_files():
         while True:
@@ -41,6 +42,7 @@ async def lifespan(app: FastAPI):
             with suppress(asyncio.CancelledError):
                 await task
         await container.bridge.runtime.close()
+        await container.bridge.long_memory.documents.close()
         await container.bridge.long_memory.processing.close()
 
 

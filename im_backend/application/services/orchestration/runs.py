@@ -4,6 +4,7 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from im_backend.application.services._shared.run_options import capture_run_options
 from im_backend.application.services.messaging.agents import IMAgentService
 from im_backend.application.services.platform.events import RoomEventStreamService
 from im_backend.application.services.messaging.favorites import FavoriteService
@@ -208,7 +209,13 @@ class GroupRunService:
             content=prompt,
             metadata={"source": "im_backend", "room_id": room["room_id"], "message_id": message["message_id"]},
         )
-        return await self._bridge.create_run(
+        options = (message.get("metadata") or {}).get("run_options")
+        if options is None:
+            options = capture_run_options(self._store, {}, conversation_id=conversation_id,
+                room=room, default_workdir=self._default_workdir)["run_options"]
+            self._store.update_one("im_messages", {"message_id": message["message_id"]},
+                {"metadata": {**message.get("metadata", {}), "run_options": options}})
+        run = await self._bridge.create_run(
             prompt=prompt,
             user_question=self._messages.message_text(message),
             memory_scope=MemoryScope(user_id, room["room_id"], conversation_id or runtime_conversation["conversation_id"]) if user_id else None,
@@ -230,6 +237,8 @@ class GroupRunService:
                 else self._favorites.context_items("room", room["room_id"])
             ),
         )
+        await self._bridge.runs.states.update(run["run_id"], {"run_options": options, "project_path": options["workdir"]})
+        return await self._bridge.runs.get_run(run["run_id"])
 
     def _room_history_before(
         self, room_id: str, message_id: str, conversation_id: str = ""

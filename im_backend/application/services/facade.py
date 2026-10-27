@@ -6,6 +6,7 @@ from typing import Any
 from im_backend.application.services.messaging.actions import MessageActionService
 from im_backend.application.services.messaging.agents import IMAgentService
 from im_backend.application.services.platform.cleanup import IMCleanupService
+from im_backend.application.services.platform.workspaces import WorkspaceService
 from im_backend.application.services.messaging.conversations import ConversationService
 from im_backend.application.services.platform.events import RoomEventStreamService
 from im_backend.application.services.messaging.favorites import FavoriteService
@@ -34,7 +35,9 @@ class IMService:
         self.cleanup = IMCleanupService(store, bridge.runtime, long_memory=getattr(bridge, "long_memory", None))
         self.favorites = FavoriteService(store=store, events=room_events)
         self.agents = IMAgentService(bridge=bridge, cleanup=self.cleanup)
-        self.rooms = RoomService(store=store, bridge=bridge, events=room_events, cleanup=self.cleanup, agents=self.agents)
+        self.rooms = RoomService(store=store, bridge=bridge, events=room_events, cleanup=self.cleanup, agents=self.agents,
+                                 default_workdir=str(Path(default_workdir).expanduser().resolve()))
+        self.workspaces = WorkspaceService(self.rooms, Path(__file__).resolve().parents[3] / "upload" / "workspaces")
         self.messages = GroupMessageService(store=store, bridge=bridge, events=room_events, rooms=self.rooms, agents=self.agents, files=files)
         self.actions = MessageActionService(store=store, events=room_events)
         self.conversations = ConversationService(

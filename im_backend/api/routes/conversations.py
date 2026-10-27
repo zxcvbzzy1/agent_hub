@@ -136,6 +136,8 @@ async def update_conversation(
             pinned=request.pinned,
             archived=request.archived,
             title=request.title,
+            memory_write_enabled=request.memory_write_enabled,
+            user_id=current_user["user_id"],
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

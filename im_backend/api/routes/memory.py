@@ -75,6 +75,16 @@ async def source_detail(source_id: str, user: dict = Depends(get_current_user), 
     return await invoke(service.source_detail, user["user_id"], source_id)
 
 
+@router.delete("/blocks/{block_id}")
+async def delete_block(block_id: str, user: dict = Depends(get_current_user), service=Depends(get_memory_service)):
+    return await invoke(service.delete_block, user["user_id"], block_id)
+
+
+@router.get("/document")
+async def document(user: dict = Depends(get_current_user), service=Depends(get_memory_service)):
+    return await invoke(service.document, user["user_id"])
+
+
 @router.get("/scopes")
 async def scopes(user: dict = Depends(get_current_user), service=Depends(get_memory_service)):
     return await invoke(service.scopes, user["user_id"])

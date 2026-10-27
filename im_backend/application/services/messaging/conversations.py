@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from im_backend.application.services._shared.run_options import capture_run_options
 from im_backend.application.services.messaging.agents import IMAgentService
 from im_backend.application.services.platform.cleanup import IMCleanupService
 from im_backend.application.services.platform.events import RoomEventStreamService
@@ -118,10 +119,16 @@ class ConversationService:
         pinned: bool | None = None,
         archived: bool | None = None,
         title: str | None = None,
+        memory_write_enabled: bool | None = None,
+        user_id: str = "",
     ) -> dict[str, Any]:
-        self.get_conversation(conversation_id)
+        conversation = self.get_conversation(conversation_id)
+        if memory_write_enabled is not None and user_id and conversation.get("created_by") != user_id:
+            raise KeyError("会话不存在")
         updates: dict[str, Any] = {}
         timestamp = now_ts()
+        if memory_write_enabled is not None:
+            updates["memory_write_enabled"] = memory_write_enabled
         if title is not None:
             cleaned = title.strip()
             if cleaned:
@@ -347,6 +354,10 @@ class ConversationService:
         parts = [ContentPart.from_dict(part) for part in content_parts]
         if not parts:
             raise ValueError("content_parts 不能为空")
+        if sender_type == "user":
+            metadata = capture_run_options(self._store, metadata, conversation_id=conversation_id,
+                default_workdir=self._default_workdir,
+                agent=self._bridge.ensure_agent_exists(conversation.get("agent_id", "")))
         message = Message.create(
             conversation_id=conversation_id,
             sender_type=sender_type,
@@ -406,6 +417,13 @@ class ConversationService:
             "conversation_title": conversation.get("title", ""), "room_id": "",
             "scope_id": conversation_id, "mode": "reply", "prompt": message_text(message)[:200],
         }
+        options = (message.get("metadata") or {}).get("run_options")
+        if options is None:
+            options = capture_run_options(self._store, {}, conversation_id=conversation_id,
+                default_workdir=self._default_workdir, agent=self._bridge.ensure_agent_exists(agent_id))["run_options"]
+            self._store.update_one("im_messages", {"message_id": message_id},
+                                   {"metadata": {**message.get("metadata", {}), "run_options": options}})
+        fields.update(run_options=options, project_path=options["workdir"])
         await self._bridge.runs.states.create(fields)
         attached = self._store.update_one("im_messages", {
             "message_id": message_id, "run_id": previous_run_id,
@@ -478,7 +496,7 @@ class ConversationService:
             message = self._get_message(message_id)
             self._rebuild_agent_history(agent, conversation_id=conversation_id, before_message_id=message_id)
             prompt = self._compose_prompt(message)
-            self._apply_agent_workdir(agent, agent_id)
+            # The per-run IM factory already applied the immutable workdir snapshot.
             self._apply_pinned_context(agent, conversation_id)
             await self._events.publish(conversation_id, "workflow.started", {
                 "scope_id": conversation_id, "conversation_id": conversation_id, "run_id": run_id,

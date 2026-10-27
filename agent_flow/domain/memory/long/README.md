@@ -4,13 +4,13 @@
 
 - **L3**：`agent_flow/store/{user_id}/{room_id}/{conversation_id}/runs/{run_id}.md`，不可变 UTF-8 原文。更新、聚合写入同级 `derived/{source_id}.md`。私聊房间标识为 `direct`。
 - **L2**：MongoDB `long_memory_sources` 和 `long_memory_blocks`；结构见 `models.py`。文件路径相对 store；行号从 1 开始，首尾均包含。规则块正文等于文件对应完整行；JEV 提取块正文是提取结果，行号仅定位原文证据，不要求逐字相等。
-- **L1**：`LongTermMemoryProvider` 格式化 `state["long_term_memory"]`，不查询数据库、不调用模型、不修改使用次数。
+- **L1**：每用户一份逻辑 `MEMORY.md`，后台按新增 L2 增量整合。`MemoryDocumentProvider` 在运行开始绑定已发布文件快照，不按当前问题动态召回。旧 `LongTermMemoryProvider` 仅用于 BM25 诊断格式化。
 
 领域模块定义模型、运行时选项、模型接口和版本化提示词，`infra/memory/` 实现 MongoDB、文件系统、JEV SDK 和提取 LLM 适配器，`application/services/long_memory.py` 提供归档、生命周期、运行时召回及 `build_long_memory()` 组装函数；`memory_processing.py` 编排后台批次。`infra` 不导入 `application`，不新增 bootstrap。IM 个人检索配置与管理分页位于 `im_backend`，通过 `settings_loader` 将检索设置传给下一次运行。API 与 IM lifespan 启停记忆处理服务；`/memory` 提供记忆查询、检索测试和记忆生成管理。
 
 IM 群聊派发、私聊回复和重新生成均以**登录用户**构造 `MemoryScope`。旧调用未提供可信身份时跳过长期记忆，不使用公共默认用户。内部 `create_run` 可传 `memory_scope` 和 `user_question`；后者是完整用户原问题，独立于执行用的拼接 prompt。
 
-ReAct、Plan、私聊在运行前召回一次。Plan 的 planner 和 executors 共用结果，默认 step prompt 不重复附加长期记忆。上下文中声明 `{"provider_id": "long_term_memory", "enabled": false, "params": {}}` 可禁用注入。仅启用的 Provider 注入计入使用次数，每块每 run 一次。
+ReAct、Plan、私聊在运行前读取一次 L1 文件。Plan 的 planner 和 executors 共用文件版本，默认 step prompt 不重复附加长期记忆。上下文中声明 `{"provider_id": "long_term_memory", "enabled": false, "params": {}}` 可禁用注入。仅启用的 Provider 注入计入使用次数，每块每 run 一次。
 
 终态归档位于 `RunStateService.finish_control`，在释放运行控制之前执行，覆盖成功、失败、取消与失联收尾。它从事件历史接口收集当前 run 的 `agent.think`，保留事件、执行和智能体 ID；不归档其他 reasoning 或流式增量事件。归档失败保留 run 结果，将 `memory_status=failed` 和 `memory_error` 写入 run；无身份写 `memory_status=skipped`。
 
@@ -55,7 +55,7 @@ await bridge.runs.states.finish_control(run_id)
 
 ## 记忆管理页面与接口
 
-顶部导航“记忆”分为“记忆查询”“检索配置与测试”和“记忆生成”。记忆列表支持关键词（正文/标签字面匹配）、状态、房间和会话筛选，多来源记忆可按任一证据的房间或会话筛选；详情区分提取正文、结构、分类概率、所有原文证据和版本关系。过期时间到达后，页面直接显示已过期，无需后台扫描更新状态。页面不提供编辑、删除、合并或重新索引功能。
+顶部导航“记忆”分为“记忆查询”“L1 文件预览”和“记忆生成”。文件预览包含版本、更新时间、待整合数量、错误及 Markdown 原文；BM25 诊断工具折叠展示，不控制运行时注入。记忆列表支持关键词（正文/标签字面匹配）、状态、房间和会话筛选，多来源记忆可按任一证据的房间或会话筛选；详情区分提取正文、结构、分类概率、所有原文证据和版本关系。过期时间到达后，页面直接显示已过期，无需后台扫描更新状态。列表与详情支持软删除，级联失效派生记忆，并按来源映射移除 L1 段落；不调用模型重建文件。
 
 下列接口均需登录，作用域由服务端认证确定，不能通过请求指定其他用户。无法访问的块或来源返回 404。
 
@@ -63,6 +63,8 @@ await bridge.runs.states.finish_control(run_id)
 | --- | --- |
 | `GET /blocks` | 参数 `q/status/room_id/conversation_id/page/page_size`，默认有效状态、每页 20 条，最多 100 条 |
 | `GET /blocks/{block_id}` | 正文、来源摘要及版本/派生关联 |
+| `DELETE /blocks/{block_id}` | 删除自己的记忆、失效派生项并清理 L1 引用段落 |
+| `GET /document` | 当前账号已发布的 L1 文件、版本及后台更新状态 |
 | `GET /sources/{source_id}` | 只读来源文件，路径来自已授权来源记录 |
 | `GET /scopes` | 当前用户记忆涉及的房间与会话选项 |
 | `GET /settings` | 当前配置 `item` 与系统默认值 `defaults` |
@@ -76,11 +78,23 @@ await bridge.runs.states.finish_control(run_id)
 
 检索与生成配置共用 MongoDB `long_memory_settings`，`user_id` 唯一；检索参数存于 `retrieval`，生成参数与版本存于 `processing.config`、`processing.revision`。两个接口分别原子更新自己的字段，不会覆盖另一类配置。默认检索参数 `limit=6`、`token_budget=4000`、`k1=1.5`、`b=0.75`；可设置范围分别为 1–50、128–32000、(0,5]、[0,1]。未配置用户读取系统默认值，不创建空配置。
 
-保存从当前用户**下一次 run**开始生效，已运行的任务继续使用启动时选中的记忆。ReAct、Plan 和私聊共用配置。页面的“恢复默认”只改变草稿，“测试召回”使用草稿，“保存配置”才影响实际运行。查询页筛选不会改变召回范围，同账号仍跨房间召回。
+检索配置只影响 BM25 诊断与显式记忆查询，不改变运行时静态文件注入。已运行任务继续使用启动快照。查询页筛选不改变用户级共享范围。
 
 `recall_result(scope, query, config=...)` 接受运行时 `RecallOptions` 并返回 `RecallResult`，与 `recall(...)` 共用排序、预算选择和 Provider。IM 后端先校验 `RetrievalSettings`，再转换为运行时选项。结果包含有效语料数、匹配数、选中块、前 100 条候选诊断、最终 L1 文本及 token 估算；超出 100 条有截断标识，所有已选块仍完整返回。诊断区分 `selected`、`limit`、`token_budget`；空结果区分 `no_memory`、`no_match`、`token_budget`。BM25 分数不是概率。
 
 测试是只读操作：不会生成 run、增加使用次数、保存配置或更新记忆。每次默认检索按本次配置创建独立 BM25 实例，不修改共享参数。自定义检索器可通过 `retriever_factory(config)` 扩展，原有显式 `retriever` 注入仍兼容。
+
+## L1 文件与增量整合
+
+后台每 30 秒扫描有效 L2。首次把既有有效 L2 视为待处理输入，以后仅整合新增或修改的块。输入包含旧段落、本批变化、UTC 时间、项目工作路径、全部原文证据 `path#Lstart-Lend` 和来源运行状态；无法可靠确定的历史项目标为未知。模型返回增量段落修改，服务端验证来源 ID 并渲染完整 Markdown，无关段落保持不变。检查点持久化于 MongoDB `long_memory_documents.processed`；失败保留旧文件与待处理输入，后台重试。
+
+每次发布写入不可变的 `{user}/l1/{revision}-{uuid}/MEMORY.md`，MongoDB 文档中的 `file_path` 是当前逻辑文件的原子发布指针。不会覆盖 L3 原文。Redis 用户级 L1 租约、MongoDB 写入者标识与 revision CAS 共同防止旧任务覆盖新版本。删除、失效和过期仅按来源映射移除段落，混合来源段落整体移除；读取前再次验证，清理失败时跳过注入，已启动任务保持原快照。
+
+L1 模型复用现有 `MEMORY_EXTRACTION_*` 连接。`MEMORY_DOCUMENT_INPUT_BUDGET` 默认 12000，`MEMORY_DOCUMENT_TOKEN_BUDGET` 默认 4000（估算 token）。输入按完整块分批，单块或输出超限时保留待处理项并报告错误，不截断内容；可通过配置增加预算。
+
+`manage_memory` 工具提供 search / remember / correct / forget。修改必须引用当前用户明确要求修改记忆的原话，身份取自当前 run 的可信 scope。明确操作建立独立证据源和 L2，不需要开启整段对话自动归档；L1 更新失败时工具明确返回待处理状态。
+
+IM 自动归档默认关闭，由 `im_backend` 的记忆协调器决定，关闭仍读取 L1。独立 agent_flow API 保留原默认归档策略。群工作路径和开关均由 IM 在消息提交时固定快照，延迟启动、重试及重新生成沿用，不修改智能体个人配置。
 
 ## JEV 分类和批量提取
 

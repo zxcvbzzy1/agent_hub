@@ -121,6 +121,7 @@ class ConversationUpdateRequest(BaseModel):
     pinned: bool | None = None
     archived: bool | None = None
     title: str | None = None
+    memory_write_enabled: bool | None = Field(default=None, strict=True)
 
 
 class RegenerateRequest(BaseModel):

@@ -200,3 +200,14 @@ history_loads、archived、archive_failures。worker 每分钟检查积压，最
 npm --prefix IM_front run test:events
 npm --prefix IM_front run build
 ```
+
+
+## 聊天运行设置与群工作目录
+
+聊天的 `memory_write_enabled` 默认 false，可通过 `PATCH /api/im/conversations/{id}` 保存。用户消息提交时将开关和服务端解析的工作路径存入 `metadata.run_options`，run 沿用该快照。关闭仅停止自动归档，仍读取用户级 L1；明确的记忆修改工具不受自动归档开关限制。
+
+群的工作目录保存于 `room.metadata.workdir`，留空使用 `IM_AGENT_WORKDIR`；非空值必须为后端已存在、可读写的绝对目录。每次群任务的 planner 和所有 executor 共享该路径。原有 `PATCH /rooms/{id}` 可更新路径；`GET /rooms/{id}/workspace` 返回配置值、有效路径和导入限制。
+
+`POST /rooms/{id}/workspace/import` 接受 multipart `manifest`（JSON，包含相对路径数组 `paths` 和 `directories`）及按 paths 顺序上传的 `files`。目录上传到独立暂存位置，成功后切换群路径；失败不改变原目录，不覆盖历史导入。目录导入与聊天附件互相独立。配置：`IM_WORKSPACE_ROOT` 默认仓库 upload/workspaces，`IM_WORKSPACE_FILE_BYTES` 默认 20 MiB，`IM_WORKSPACE_TOTAL_BYTES` 默认 200 MiB，`IM_WORKSPACE_MAX_FILES` 默认 5000。支持空目录，拒绝重复或越界路径。目录设置与导入要求群创建者身份。
+
+记忆页面通过 `GET /memory/document` 读取已发布的用户 L1 文件，通过 `DELETE /memory/blocks/{id}` 删除自己的记忆。删除仅清理相关段落，不调用模型重建。详见 agent_flow 的长期记忆说明。

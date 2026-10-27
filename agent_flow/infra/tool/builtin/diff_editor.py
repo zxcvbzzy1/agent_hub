@@ -33,6 +33,7 @@ from infra.config import agent_dict, bus, factory
 from infra.event_bind import On_bind
 from infra.tool.builtin.artifacts import InlineArtifactTool
 from infra.tool.builtin.file_tools import _resolve, _work_path, _rel_display
+from domain.run_context import current_agent
 
 
 HISTORY_DIRNAME = ".diff_editor_history"
@@ -147,7 +148,7 @@ def _resolve_work_path_strict(agent_id: str) -> Path | None:
     且无缓存（如进程重启或伪造的 agent_id），返回 None 让上层拒绝，而不是把 cwd 当成工作区根，
     否则路径包含检查会被锚定到任意 cwd 上，等于失去边界。
     """
-    agent = agent_dict.get(agent_id) if hasattr(agent_dict, "get") else None
+    agent = current_agent.get() or (agent_dict.get(agent_id) if hasattr(agent_dict, "get") else None)
     if agent is not None and getattr(agent, "work_path", None):
         wp = str(Path(agent.work_path).expanduser())
         _WORK_PATHS[agent_id] = wp
