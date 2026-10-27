@@ -1,9 +1,10 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import { message } from 'ant-design-vue'
-import { getMemoryProcessingSettings, saveMemoryProcessingSettings, listMemoryBatches, getMemoryBatch, retryMemoryBatch } from '@/api/memory'
+import { message, Modal } from 'ant-design-vue'
+import { getMemoryProcessingSettings, saveMemoryProcessingSettings, listMemoryBatches, getMemoryBatch, retryMemoryBatch, deleteMemoryBatch } from '@/api/memory'
 
 const props = defineProps({ active: Boolean })
+const emit = defineEmits(['deleted'])
 const defaults = ref({ mode: 'jev', run_batch_size: 1, noul_threshold: 0.7 })
 const draft = reactive({ ...defaults.value })
 const saved = ref(null)
@@ -14,10 +15,10 @@ const saving = ref(false)
 const dirty = computed(() => saved.value && Object.keys(defaults.value).some((key) => draft[key] !== saved.value[key]))
 const valid = computed(() => Number.isInteger(draft.run_batch_size) && draft.run_batch_size >= 1 && draft.run_batch_size <= 100
   && Number.isFinite(draft.noul_threshold) && draft.noul_threshold >= 0 && draft.noul_threshold <= 1)
-const names = { waiting: '等待组批', pending: '待处理', classifying: '分类中', extracting: '提取中', publishing: '发布中', finalizing: '结果保存中', completed: '已完成', failed: '失败' }
+const names = { waiting: '等待组批', pending: '待处理', classifying: '分类中', extracting: '提取中', publishing: '发布中', finalizing: '结果保存中', completed: '已完成', failed: '失败', deleted: '已删除，等待清理' }
 const categoryNames = { user_preference: '用户偏好', project_state: '项目状态', user_fact: '稳定用户事实', decision: '用户／系统决策', reusable_conclusion: '可复用实验结论' }
 const stageNames = { waiting: '等待', classification: '筛选与分类', extraction: '分类提取与归并', publication: '发布', completed: '完成' }
-const color = (status) => ({ failed: 'red', completed: 'green', waiting: 'default', pending: 'gold' }[status] || 'blue')
+const color = (status) => ({ failed: 'red', completed: 'green', waiting: 'default', pending: 'gold', deleted: 'default' }[status] || 'blue')
 const date = (value) => value ? new Date(value * 1000).toLocaleString('zh-CN', { hour12: false }) : '—'
 async function loadSettings() {
   loading.value = true; settingsError.value = false
@@ -49,6 +50,10 @@ async function loadBatches(silent = false) {
   try {
     const data = await listMemoryBatches({ page: page.value, page_size: 20 })
     if (sequence !== listSequence) return
+    if (!data.items.length && page.value > Math.max(1, Math.ceil(data.total / 20))) {
+      page.value = Math.max(1, Math.ceil(data.total / 20))
+      return await loadBatches(silent)
+    }
     items.value = data.items; total.value = data.total; listError.value = false
   } catch { if (sequence === listSequence) listError.value = true }
   finally { if (sequence === listSequence) listLoading.value = false }
@@ -59,6 +64,7 @@ const detail = ref(null)
 const detailLoading = ref(false)
 const detailError = ref(false)
 const retrying = ref('')
+const deleting = reactive(new Set())
 let detailSequence = 0
 async function loadDetail(id, silent = false) {
   const sequence = ++detailSequence
@@ -72,7 +78,7 @@ async function loadDetail(id, silent = false) {
 }
 function close() { open.value = false; ++detailSequence }
 async function retry(id) {
-  if (retrying.value) return
+  if (retrying.value || deleting.has(id)) return
   retrying.value = id
   try {
     const data = await retryMemoryBatch(id)
@@ -81,6 +87,25 @@ async function retry(id) {
     await loadBatches()
   } catch { /* Shared interceptor reports errors. */ }
   finally { retrying.value = '' }
+}
+function confirmDelete(batch) {
+  Modal.confirm({
+    title: '删除整个处理批次？',
+    content: '该批次将立即标记为删除，停止后续生成和重试。关联记忆、派生记忆及 L1 中引用它们的段落将移除，后台随后清理批次与候选记录。此操作无法撤销。',
+    okText: '删除批次', okType: 'danger', cancelText: '取消',
+    async onOk() {
+      const id = batch.batch_id
+      if (deleting.has(id)) return
+      deleting.add(id)
+      try {
+        await deleteMemoryBatch(id)
+        if (selected.value === id) close()
+        emit('deleted')
+        message.success('批次已标记删除，后台将自动完成清理')
+        await loadBatches()
+      } finally { deleting.delete(id) }
+    },
+  })
 }
 function changePage(value) { page.value = value; loadBatches() }
 let timer
@@ -125,7 +150,7 @@ onBeforeUnmount(() => { clearInterval(timer); ++listSequence; ++detailSequence }
           <div class="panel-title"><a-tag :color="color(batch.status)">{{ names[batch.status] }}</a-tag><time>{{ date(batch.created_at) }}</time></div>
           <div class="batch-counts"><span><b>{{ batch.run_count }}</b> run</span><span><b>{{ batch.candidate_count }}</b> 候选</span><span><b>{{ batch.accepted_count }}</b> 收录</span><span><b>{{ batch.output_count }}</b> 输出</span></div>
           <p v-if="batch.error" class="error-text">{{ batch.error }}</p>
-          <div class="actions"><a-button type="link" @click="loadDetail(batch.batch_id)">查看批次详情</a-button><a-button v-if="batch.status === 'failed'" :loading="retrying === batch.batch_id" :disabled="Boolean(retrying)" @click="retry(batch.batch_id)">重试批次</a-button></div>
+          <div class="actions"><a-button type="link" @click="loadDetail(batch.batch_id)">查看批次详情</a-button><a-space wrap><a-button v-if="batch.status === 'failed'" :loading="retrying === batch.batch_id" :disabled="Boolean(retrying) || deleting.has(batch.batch_id)" @click="retry(batch.batch_id)">重试批次</a-button><a-button danger :loading="deleting.has(batch.batch_id)" :disabled="batch.status === 'deleted' || retrying === batch.batch_id" @click="confirmDelete(batch)">删除批次</a-button></a-space></div>
         </article>
       </a-spin>
       <a-pagination v-if="total" class="pagination" :current="page" :total="total" :page-size="20" :show-size-changer="false" @change="changePage" />
@@ -137,8 +162,10 @@ onBeforeUnmount(() => { clearInterval(timer); ++listSequence; ++detailSequence }
       <template v-if="detail">
         <a-tag :color="color(detail.status)">{{ names[detail.status] }}</a-tag><a-tag>{{ stageNames[detail.stage] }}</a-tag>
         <p class="identifier">{{ detail.batch_id }}</p>
+        <a-alert v-if="detail.status === 'deleted'" type="info" show-icon message="该批次已删除，不会再生成记忆或允许重试；后台将自动完成清理。" />
+        <a-button v-else danger :loading="deleting.has(detail.batch_id)" :disabled="retrying === detail.batch_id" @click="confirmDelete(detail)">删除批次</a-button>
         <a-alert v-if="detail.error" type="error" :message="`${stageNames[detail.failed_stage] || detail.failed_stage}失败`" :description="detail.error" />
-        <a-button v-if="detail.status === 'failed'" class="retry" :loading="retrying === detail.batch_id" @click="retry(detail.batch_id)">重试批次（保留完成步骤）</a-button>
+        <a-button v-if="detail.status === 'failed'" class="retry" :loading="retrying === detail.batch_id" :disabled="deleting.has(detail.batch_id)" @click="retry(detail.batch_id)">重试批次（保留完成步骤）</a-button>
         <p class="muted">配置快照：{{ detail.config.mode }} · 每批 {{ detail.config.run_batch_size }} run · Noul ≥ {{ detail.config.noul_threshold }}</p>
         <h3>筛选与分类</h3><p>{{ detail.classified_count }} / {{ detail.candidate_count }} 个候选完成，{{ detail.accepted_count }} 个收录</p>
         <h3>各类别提取进度</h3>

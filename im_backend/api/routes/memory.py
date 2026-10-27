@@ -8,6 +8,7 @@ from redis.exceptions import RedisError
 from im_backend.api.core import get_current_user, get_container
 from im_backend.application.services.platform.memory import MemoryManagementService
 from im_backend.domain.memory_settings import RetrievalSettings
+from domain.memory.long.processing import ProcessingLeaseLost
 
 router = APIRouter(prefix="/memory", tags=["memory"])
 
@@ -134,5 +135,10 @@ async def retry_batch(batch_id: str, user: dict = Depends(get_current_user), ser
         return await asyncio.to_thread(service.retry_batch, user["user_id"], batch_id)
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="批次不存在") from exc
-    except ValueError as exc:
+    except (ValueError, ProcessingLeaseLost) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+@router.delete("/batches/{batch_id}")
+async def delete_batch(batch_id: str, user: dict = Depends(get_current_user), service=Depends(get_memory_service)):
+    return await invoke(service.delete_batch, user["user_id"], batch_id)

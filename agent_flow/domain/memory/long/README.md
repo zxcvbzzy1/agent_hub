@@ -75,6 +75,7 @@ await bridge.runs.states.finish_control(run_id)
 | `GET /batches` | 当前账号的批次分页，默认 20、最多 100 条 |
 | `GET /batches/{batch_id}` | 阶段、计数、失败原因、各类别进度和前 100 条候选诊断 |
 | `POST /batches/{batch_id}/retry` | 仅重试自己的失败批次，保留检查点；非失败状态返回 409，外部用户返回 404 |
+| `DELETE /batches/{batch_id}` | 将自己的整个批次标记为 deleted，停用关联记忆并增量清理 L1；后台物理清理批次、候选和关联 L2，重复删除幂等 |
 
 检索与生成配置共用 MongoDB `long_memory_settings`，`user_id` 唯一；检索参数存于 `retrieval`，生成参数与版本存于 `processing.config`、`processing.revision`。两个接口分别原子更新自己的字段，不会覆盖另一类配置。默认检索参数 `limit=6`、`token_budget=4000`、`k1=1.5`、`b=0.75`；可设置范围分别为 1–50、128–32000、(0,5]、[0,1]。未配置用户读取系统默认值，不创建空配置。
 
@@ -127,6 +128,10 @@ L3 归档不等待模型。新来源以 `index_status=queued` 持久化；后台
 Redis key 前缀为 `REDIS_KEY_PREFIX:memory:{数据库命名空间}`，复用运行时的 Redis URL/prefix；命名空间与 MongoDB 部署及数据库绑定。`lease:<用户哈希>` 带 TTL，`batches` 和 `candidates:<batch_id>` 不自动过期。部署应启用 Redis AOF，未落库任务和失败重试检查点不能作为可随意清空的缓存。
 
 模型处理结束后，在 Redis 将结果冻结为 `finalizing`。此时不再修改检查点或重新提取，只重放固定结果：写入最终候选诊断与 L2 块 → 写入 MongoDB 终态批次标记 → 标记来源 ready → 确认后删除成功批次的 Redis 运行态。MongoDB 中断时保留待落库快照，后台自动续写；批次完成标记之前的 L2 块不可召回。失败批次保存终态诊断，但保留 Redis 检查点直到成功重试；显式重试增加 attempt，旧 worker 的迟到写入不能覆盖较新终态。
+
+批次状态转移由领域层校验：正常流转为 waiting → pending → classifying → extracting → finalizing → completed/failed；恢复提取任务允许回到分类并复用检查点，failed 仅允许显式重试进入 pending。任意状态均可删除，deleted 不允许转移为其他状态。删除先写入 MongoDB `long_memory_batch_deletions` 持久标记和批次 deleted 状态，标记优先于 Redis 的旧检查点；模型调用、候选写入、重试及发布均检查该标记。已在途的模型调用可以返回，但结果不能继续发布。
+
+删除请求立即停用该批次全部来源及 L2/派生记忆，并按引用移除 L1 段落，不调用模型。后台每 30 秒扫描待清理标记，获得用户处理租约后重试 L1 清理，再物理删除失效 L2、批次、候选和 Redis 运行态；失败保留待清理标记，重启后继续。清理完成的批次从列表消失，仅保留精简删除标记防止迟到写入重建。L3 原文、来源删除标记和已启动任务的 L1 历史快照沿用既有保留策略。
 
 升级时先停止旧版本 worker，再启动新版本，不能让 Mongo 租约和 Redis 租约两套 worker 并行运行。启动时合并旧配置：`long_memory_settings.config` → `retrieval`，旧 `long_memory_processing_settings` → `processing`，保留原 revision，确认目标保存后移除旧配置记录。旧 Mongo 租约记录在启动时清理。后台在获得 Redis 用户租约后，将旧非终态批次与候选复制到 Redis，确认后移除 Mongo 中间记录；旧完成/失败批次保留终态信息，移除运行态字段。迁移可重复执行，不重写 L3，也不修改已排队来源的配置快照。
 

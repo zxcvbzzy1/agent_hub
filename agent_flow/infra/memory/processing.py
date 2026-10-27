@@ -1,4 +1,4 @@
-"""Redis processing state and leases; MongoDB contains acknowledged terminal results."""
+"""Redis checkpoints and leases; MongoDB terminal results and absorbing deletion markers."""
 import hashlib
 import json
 import os
@@ -9,11 +9,12 @@ from pymongo.errors import DuplicateKeyError
 from redis import Redis
 from redis.exceptions import WatchError
 
-from domain.memory.long.processing import ProcessingConfig, ProcessingLeaseLost
+from domain.memory.long.processing import ProcessingConfig, ProcessingLeaseLost, validate_batch_transition
 from infra.memory.settings import MongoMemorySettings
 
 BATCHES = "long_memory_batches"
 CANDIDATES = "long_memory_candidates"
+DELETIONS = "long_memory_batch_deletions"
 TERMINAL = {"completed", "failed"}
 RUNTIME_FIELDS = {"owner", "steps", "extraction_groups", "publication_blocks", "outcome"}
 
@@ -42,10 +43,11 @@ class MemoryProcessingRepository:
         namespace = getattr(store, "event_namespace", "default")
         self.prefix = f"{prefix}:memory:{{{namespace}}}"
         self.live_key = f"{self.prefix}:batches"
-        for collection, key in ((BATCHES, "batch_id"), (CANDIDATES, "candidate_id")):
+        for collection, key in ((BATCHES, "batch_id"), (CANDIDATES, "candidate_id"), (DELETIONS, "batch_id")):
             store.ensure_index(collection, [(key, 1)], unique=True)
         store.ensure_index(BATCHES, [("user_id", 1), ("status", 1), ("created_at", -1)])
         store.ensure_index(CANDIDATES, [("batch_id", 1), ("source_id", 1)])
+        store.ensure_index(DELETIONS, [("cleanup_pending", 1), ("user_id", 1)])
 
     def close(self):
         if self._owns_client:
@@ -102,6 +104,7 @@ class MemoryProcessingRepository:
         """Fence every checkpoint/candidate write against user lease and batch owner."""
         key = self.candidate_key(batch_id)
         while True:
+            self.check_not_deleted(batch_id)
             with self.redis.pipeline() as pipe:
                 try:
                     pipe.watch(self.live_key, key)
@@ -109,12 +112,15 @@ class MemoryProcessingRepository:
                     row = json.loads(raw) if raw else dict(initial or {})
                     if not row:
                         raise ProcessingLeaseLost("批次运行态不存在")
+                    if row["status"] == "deleted":
+                        raise ProcessingLeaseLost("批次已删除，不可转移状态")
                     lease = self.lease_key(row["user_id"])
                     pipe.watch(lease)
                     if pipe.get(lease) != owner or (not claim and row.get("owner") != owner):
                         raise ProcessingLeaseLost("用户处理租约已失效或批次已转移")
                     if row["status"] == "finalizing" and not (claim or acknowledge):
                         raise ProcessingLeaseLost("批次终态已冻结，等待落库")
+                    validate_batch_transition(row["status"], (changes or {}).get("status", row["status"]))
                     row.update(changes or {})
                     row.update(owner=owner, updated_at=time.time())
                     writes = {}
@@ -147,8 +153,70 @@ class MemoryProcessingRepository:
         for raw in self.redis.hvals(self.live_key):
             row = json.loads(raw)
             rows[row["batch_id"]] = row
+        # Mongo's deletion marker wins over every Redis checkpoint, including a
+        # write that raced with the delete request across the two stores.
+        for deleted in self.store.find_many(DELETIONS, persisted_query):
+            bid = deleted["batch_id"]
+            if not deleted["cleanup_pending"]:
+                rows.pop(bid, None)
+            elif bid in rows:
+                rows[bid].update(status="deleted", deleted_at=deleted["deleted_at"], cleanup_pending=True)
         return sorted((row for row in rows.values() if matches(row, query)),
                       key=lambda row: (row["created_at"], row["batch_id"]))
+
+    def check_not_deleted(self, batch_id):
+        if self.store.find_one(DELETIONS, {"batch_id": batch_id}):
+            raise ProcessingLeaseLost("批次已删除，不可转移状态")
+
+    def mark_deleted(self, user_id, batch_id):
+        previous = self.store.find_one(DELETIONS, {"user_id": user_id, "batch_id": batch_id})
+        if previous:
+            return previous
+        rows = self.batches({"user_id": user_id, "batch_id": batch_id})
+        if not rows:
+            raise KeyError(batch_id)
+        batch = rows[0]
+        marker = {"batch_id": batch_id, "user_id": user_id, "source_ids": batch["source_ids"],
+                  "deleted_at": time.time(), "cleanup_pending": True, "status": "deleted"}
+        # Write the durable, absorbing state first. No user lease is required:
+        # deletion can interrupt a worker waiting for a model response.
+        self.store.update_operators(DELETIONS, {"batch_id": batch_id}, {"$setOnInsert": marker}, upsert=True)
+        self.store.update_operators(BATCHES, {"batch_id": batch_id}, {
+            "$setOnInsert": {k: v for k, v in batch.items() if k not in RUNTIME_FIELDS | {"status", "deleted_at"}},
+            "$set": {"status": "deleted", "deleted_at": marker["deleted_at"]}}, upsert=True)
+        result = self.store.find_one(DELETIONS, {"batch_id": batch_id})
+        if not result["cleanup_pending"]:
+            # Cleanup may have finished between marker insertion and the batch
+            # status write. Do not leave that final write behind.
+            self.store.delete_one(BATCHES, {"batch_id": batch_id})
+        return result
+
+    def pending_deletions(self, user_id=None):
+        query = {"cleanup_pending": True}
+        if user_id is not None:
+            query["user_id"] = user_id
+        rows = self.store.find_many(DELETIONS, query)
+        for row in rows:
+            # A waiting batch may have appended sources concurrently with the
+            # request's snapshot. Cleanup runs under the worker lease and drains
+            # that final checkpoint too.
+            raw = self.redis.hget(self.live_key, row["batch_id"])
+            if raw:
+                row["source_ids"] = list(dict.fromkeys(row.get("source_ids", []) + json.loads(raw)["source_ids"]))
+        return rows
+
+    def finish_deletion(self, marker, owner):
+        if not self.renew(marker["user_id"], owner):
+            raise ProcessingLeaseLost("删除清理时用户处理租约已失效")
+        bid = marker["batch_id"]
+        # The worker lease drains in-flight publication before physical cleanup.
+        self.redis.hdel(self.live_key, bid)
+        self.redis.delete(self.candidate_key(bid))
+        self.store.delete_many(CANDIDATES, {"batch_id": bid})
+        self.store.delete_one(BATCHES, {"batch_id": bid})
+        # Keep only the small tombstone after cleanup, never model inputs or results.
+        self.store.update_operators(DELETIONS, {"batch_id": bid}, {
+            "$set": {"cleanup_pending": False, "cleaned_at": time.time()}, "$unset": {"source_ids": ""}})
 
     def page_batches(self, user_id, page, page_size):
         rows = sorted(self.batches({"user_id": user_id}), key=lambda b: (-b["created_at"], b["batch_id"]))
@@ -180,13 +248,21 @@ class MemoryProcessingRepository:
 
     def _archive(self, collection, key, row):
         """An older finalizer cannot overwrite a later retry's terminal result."""
+        self.check_not_deleted(row["batch_id"] if collection == CANDIDATES else row[key])
         try:
             self.store.update_operators(collection, {key: row[key]}, {"$setOnInsert": row}, upsert=True)
         except DuplicateKeyError:
             pass
-        self.store.update_operators(collection, {key: row[key], "$or": [
+        self.store.update_operators(collection, {key: row[key], "status": {"$ne": "deleted"}, "$or": [
             {"attempt": {"$lt": row["attempt"]}}, {"attempt": {"$exists": False}},
         ]}, {"$set": row, "$unset": {field: "" for field in RUNTIME_FIELDS}})
+        try:
+            self.check_not_deleted(row["batch_id"] if collection == CANDIDATES else row[key])
+        except ProcessingLeaseLost:
+            # Covers deletion between the first check and the Mongo write,
+            # including a delayed worker whose lease expired during I/O.
+            self.store.delete_one(collection, {key: row[key]})
+            raise
 
     def finalize(self, batch_id, owner, memory_repository):
         batch = self.claim_batch(batch_id, owner)
@@ -195,6 +271,7 @@ class MemoryProcessingRepository:
         outcome = batch["outcome"]
 
         def guard():
+            self.check_not_deleted(batch_id)
             if not self.renew(batch["user_id"], owner):
                 raise ProcessingLeaseLost("落库时用户处理租约已失效")
 
@@ -224,6 +301,8 @@ class MemoryProcessingRepository:
         """
         rows = self.store.find_many(BATCHES, {"user_id": user_id, "schema_version": {"$ne": 2}})
         for row in rows:
+            if row["status"] == "deleted":
+                continue
             if not self.renew(user_id, owner):
                 raise ProcessingLeaseLost("迁移时处理租约已失效")
             candidates = self.store.find_many(CANDIDATES, {"batch_id": row["batch_id"]})
@@ -241,6 +320,8 @@ class MemoryProcessingRepository:
         rows = self.batches({"user_id": user_id, "batch_id": batch_id})
         if not rows:
             raise KeyError(batch_id)
+        if rows[0]["status"] == "deleted":
+            raise ValueError("已删除批次不能重试")
         owner = str(uuid.uuid4())
         if not self.acquire(user_id, owner):
             raise ValueError("当前用户已有处理任务，请稍后重试")

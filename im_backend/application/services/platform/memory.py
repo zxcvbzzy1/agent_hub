@@ -182,3 +182,6 @@ class MemoryManagementService:
     def retry_batch(self, user_id, batch_id):
         self._processing().repository.retry(user_id, batch_id)
         return self.batch_detail(user_id, batch_id)
+
+    def delete_batch(self, user_id, batch_id):
+        return self._processing().delete_batch(user_id, batch_id)

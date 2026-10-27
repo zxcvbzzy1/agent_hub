@@ -15,3 +15,4 @@ export const saveMemoryProcessingSettings = (config) => http.put(`${root}/proces
 export const listMemoryBatches = (params) => http.get(`${root}/batches`, { params })
 export const getMemoryBatch = (id) => http.get(`${root}/batches/${encodeURIComponent(id)}`)
 export const retryMemoryBatch = (id) => http.post(`${root}/batches/${encodeURIComponent(id)}/retry`)
+export const deleteMemoryBatch = (id) => http.delete(`${root}/batches/${encodeURIComponent(id)}`)

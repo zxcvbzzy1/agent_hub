@@ -305,7 +305,7 @@ class LongTermMemoryService:
         self._owned_block(user_id, block_id)
         return self._invalidate([block_id], "expired")
 
-    def _invalidate(self, block_ids: list[str], status: str) -> int:
+    def _invalidate(self, block_ids: list[str], status: str, *, purge=False) -> int:
         pending, visited = list(block_ids), set()
         users = set()
         now = time.time()
@@ -334,9 +334,30 @@ class LongTermMemoryService:
                 try:
                     self.documents.prune(user)
                 except Exception:
+                    if purge:
+                        raise
                     import logging
                     logging.getLogger(__name__).exception("L1 删除同步失败，将在读取或后台扫描时重试")
+        if purge:
+            self.repository.delete_blocks(list(visited))
         return len(visited)
+
+    def delete_batch_memories(self, user_id: str, batch_id: str, source_ids: list[str], *, purge=False) -> int:
+        """Invalidate batch evidence first; purge L2 only after L1 cleanup succeeds."""
+        for sid in source_ids:
+            source = self.repository.get_source(sid)
+            if not source or source["user_id"] != user_id:
+                continue
+            self.repository.update_source(sid, {"deleted_at": source.get("deleted_at") or time.time(),
+                                                "index_status": "deleted"})
+        blocks = self.repository.blocks({"user_id": user_id, "$or": [
+            {"batch_id": batch_id}, {"source_id": {"$in": source_ids}},
+            {"evidence_source_ids": {"$in": source_ids}}]})
+        count = self._invalidate([b["block_id"] for b in blocks], "deleted", purge=purge)
+        # Also retry cleanup for batches with no L2 left after a partial cleanup.
+        if self.documents:
+            self.documents.prune(user_id)
+        return count
 
     def delete_sources(self, **scope_filters: str) -> int:
         """Trusted application cleanup hook, independent of deleted chat/run records."""

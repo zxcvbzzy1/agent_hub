@@ -3,6 +3,7 @@ from __future__ import annotations
 import time
 
 from infra.db.mongodb import DocumentStore
+from domain.memory.long.processing import ProcessingLeaseLost
 
 SOURCES = "long_memory_sources"
 BLOCKS = "long_memory_blocks"
@@ -28,8 +29,9 @@ class MongoMemoryRepository:
         return self.store.find_one(SOURCES, {"source_id": source_id})
 
     def completed_batches(self, user_id: str) -> set[str]:
+        deleted = {b["batch_id"] for b in self.store.find_many("long_memory_batch_deletions", {"user_id": user_id})}
         return {b["batch_id"] for b in self.store.find_many("long_memory_batches",
-                {"user_id": user_id, "status": "completed"}, projection={"steps": False})}
+                {"user_id": user_id, "status": "completed"}, projection={"steps": False})} - deleted
 
     def sources(self, query: dict) -> list[dict]:
         return self.store.find_many(SOURCES, query)
@@ -45,11 +47,23 @@ class MongoMemoryRepository:
         return self.store.find_many(BLOCKS, query, projection={"_usage_run_ids": False})
 
     def put_block(self, document: dict) -> dict:
-        return self.store.update_operators(BLOCKS, {"block_id": document["block_id"]},
-                                           {"$setOnInsert": document}, upsert=True)
+        def deleted():
+            return document.get("batch_id") and self.store.find_one(
+                "long_memory_batch_deletions", {"batch_id": document["batch_id"]})
+        if deleted():
+            raise ProcessingLeaseLost("已删除批次不能发布记忆")
+        result = self.store.update_operators(BLOCKS, {"block_id": document["block_id"]},
+                                             {"$setOnInsert": document}, upsert=True)
+        if deleted():
+            self.delete_blocks([document["block_id"]])
+            raise ProcessingLeaseLost("已删除批次不能发布记忆")
+        return result
 
     def update_block(self, block_id: str, changes: dict) -> None:
         self.store.update_one(BLOCKS, {"block_id": block_id}, changes)
+
+    def delete_blocks(self, block_ids: list[str]) -> None:
+        self.store.delete_many(BLOCKS, {"block_id": {"$in": block_ids}})
 
     def mark_used(self, block_ids: list[str], run_id: str) -> None:
         # Atomic per block/run: multiple executors or repeated preparation count once.

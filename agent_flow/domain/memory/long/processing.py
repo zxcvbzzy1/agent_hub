@@ -7,6 +7,28 @@ from typing import Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 
+# Restarted classification/extraction reuses checkpoints; completed and deleted
+# batches must never return to processing. Deletion is valid from every state.
+BATCH_TRANSITIONS = {
+    "waiting": {"pending"},
+    "pending": {"classifying", "finalizing"},
+    "classifying": {"extracting", "finalizing"},
+    "extracting": {"classifying", "finalizing"},
+    "publishing": {"classifying", "finalizing"},  # Legacy checkpoint.
+    "finalizing": {"completed", "failed"},
+    "failed": {"pending"},
+    "completed": set(),
+    "deleted": set(),
+}
+
+
+def validate_batch_transition(current: str, target: str):
+    if current == "deleted" or current not in BATCH_TRANSITIONS or target not in BATCH_TRANSITIONS:
+        raise ProcessingLeaseLost("批次已删除或状态无效，不可转移状态")
+    if target != current and target != "deleted" and target not in BATCH_TRANSITIONS[current]:
+        raise ProcessingLeaseLost(f"批次状态已变化，不能从 {current} 转移为 {target}")
+
+
 @dataclass(frozen=True)
 class ProcessingConfig:
     mode: str = "jev"
@@ -150,6 +172,10 @@ class MemoryExtractor(Protocol):
 
 
 class ProcessingRepository(Protocol):
+    def mark_deleted(self, user_id: str, batch_id: str) -> dict: ...
+    def pending_deletions(self, user_id: str | None = None) -> list[dict]: ...
+    def finish_deletion(self, marker: dict, owner: str) -> None: ...
+    def check_not_deleted(self, batch_id: str) -> None: ...
     def settings(self, user_id: str) -> dict: ...
     def batches(self, query: dict) -> list[dict]: ...
     def put_batch(self, batch: dict) -> dict: ...

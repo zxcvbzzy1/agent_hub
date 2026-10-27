@@ -30,6 +30,23 @@ class MemoryProcessingService:
         return {"jev_ready": self.classifier.ready(), "extraction_ready": self.extractor.ready(),
                 "jev_model": self.classifier.model, "extraction_model": self.extractor.model}
 
+    def delete_batch(self, user_id, batch_id):
+        marker = self.repository.mark_deleted(user_id, batch_id)
+        if marker["cleanup_pending"]:
+            try:
+                self.memory.delete_batch_memories(user_id, batch_id, marker["source_ids"])
+            except Exception:
+                # Deletion is durable even if Mongo/files fail part way through.
+                logger.exception("批次已标记删除，关联记忆清理将在后台重试")
+        return {"batch_id": batch_id, "status": "deleted", "cleanup_pending": marker["cleanup_pending"]}
+
+    def _cleanup_deleted(self, user_id, owner):
+        for marker in self.repository.pending_deletions(user_id):
+            if not self.repository.renew(user_id, owner):
+                raise ProcessingLeaseLost("批次删除清理租约已失效")
+            self.memory.delete_batch_memories(user_id, marker["batch_id"], marker["source_ids"], purge=True)
+            self.repository.finish_deletion(marker, owner)
+
     async def start(self):
         if self._task is None or self._task.done():
             await asyncio.to_thread(self.repository.start)
@@ -58,7 +75,9 @@ class MemoryProcessingService:
             batches = await asyncio.to_thread(self.repository.batches,
                 {"status": {"$in": ["waiting", "pending", "classifying", "extracting", "publishing", "finalizing"]}})
             legacy_users = await asyncio.to_thread(self.repository.legacy_users)
-            users = sorted({s["user_id"] for s in sources} | {b["user_id"] for b in batches} | legacy_users)
+            deletions = await asyncio.to_thread(self.repository.pending_deletions)
+            users = sorted({s["user_id"] for s in sources} | {b["user_id"] for b in batches}
+                           | {d["user_id"] for d in deletions} | legacy_users)
             # Separate user workers prevent one slow model request blocking everyone.
             semaphore = asyncio.Semaphore(self.concurrency)
 
@@ -90,11 +109,14 @@ class MemoryProcessingService:
                     return
         pulse = asyncio.create_task(heartbeat())
         try:
+            await asyncio.to_thread(self._cleanup_deleted, user, owner)
             batches = await asyncio.to_thread(self._form_batches, user, owner, now)
             for batch in batches:
-                if batch["status"] in {"completed", "failed", "waiting"}:
+                if batch["status"] in {"completed", "failed", "waiting", "deleted"}:
                     continue
                 await self._process(batch, owner)
+        except ProcessingLeaseLost:
+            pass
         except asyncio.CancelledError:
             if not lease_lost:
                 raise
@@ -104,6 +126,11 @@ class MemoryProcessingService:
                 with contextlib.suppress(asyncio.CancelledError):
                     await pulse
             finally:
+                try:
+                    if await asyncio.to_thread(self.repository.renew, user, owner):
+                        await asyncio.to_thread(self._cleanup_deleted, user, owner)
+                except Exception:
+                    logger.exception("批次删除清理失败，将在后台重试")
                 try:
                     await asyncio.to_thread(self.repository.release, user, owner)
                 except Exception:
@@ -121,7 +148,7 @@ class MemoryProcessingService:
         for source in queued:
             if source["source_id"] in completed_sources:
                 self.memory.repository.update_source(source["source_id"], {"index_status": "ready", "error": ""})
-        free = [s for s in queued if s["source_id"] not in assigned]
+        free = [s for s in queued if s["source_id"] not in assigned and s.get("deleted_at") is None]
         waiting = [b for b in existing if b["status"] == "waiting"]
         for batch in waiting:
             self.repository.claim_batch(batch["batch_id"], owner)
@@ -149,7 +176,7 @@ class MemoryProcessingService:
                 self.repository.update_batch(batch["batch_id"], owner, {"status": "pending", "started_at": now})
         batches = self.repository.batches({"user_id": user})
         for batch in batches:
-            if batch["status"] not in {"failed", "completed", "waiting"}:
+            if batch["status"] not in {"failed", "completed", "waiting", "deleted"}:
                 self.repository.claim_batch(batch["batch_id"], owner)
         return batches
 
@@ -159,10 +186,13 @@ class MemoryProcessingService:
         await asyncio.to_thread(self.repository.update_batch, batch["batch_id"], owner, changes)
         batch.update(changes)
 
-    async def _retry_model(self, call):
+    async def _retry_model(self, call, batch_id):
         for attempt in range(3):
+            await asyncio.to_thread(self.repository.check_not_deleted, batch_id)
             try:
                 return await call()
+            except ProcessingLeaseLost:
+                raise
             except Exception:
                 if attempt == 2:
                     raise
@@ -200,7 +230,7 @@ class MemoryProcessingService:
                 if "noul_result" not in candidate:
                     async def gate():
                         return NoulResult.model_validate(await self.classifier.noul(candidate)).model_dump()
-                    candidate["noul_result"] = await self._retry_model(gate)
+                    candidate["noul_result"] = await self._retry_model(gate, batch["batch_id"])
                     await asyncio.to_thread(self.repository.update_candidate, candidate["candidate_id"],
                         {"noul_result": candidate["noul_result"]}, batch_id=batch["batch_id"], owner=owner)
                 if candidate["noul_result"]["noul"] < batch["config"]["noul_threshold"]:
@@ -208,7 +238,7 @@ class MemoryProcessingService:
                 else:
                     async def choose():
                         return ChoiceResult.model_validate(await self.classifier.choice(candidate)).validated()
-                    choice = await self._retry_model(choose)
+                    choice = await self._retry_model(choose, batch["batch_id"])
                     changes = {"status": "accepted", "choice_result": choice}
                 await asyncio.to_thread(self.repository.update_candidate, candidate["candidate_id"], changes,
                                        batch_id=batch["batch_id"], owner=owner)
@@ -260,7 +290,7 @@ class MemoryProcessingService:
                         response = await self.extractor.extract(category, group)
                         response["memories"] = validate_memories(response["memories"], category, group)
                         return response
-                    batch["steps"][key] = await self._retry_model(extract)
+                    batch["steps"][key] = await self._retry_model(extract, batch["batch_id"])
                     await self._save(batch, owner, {"steps": batch["steps"]})
                 response = batch["steps"][key]
                 rows.extend(validate_memories(response["memories"], category, group))
@@ -277,7 +307,7 @@ class MemoryProcessingService:
                         if not exact and self.memory.counter.count(json.dumps(pair, ensure_ascii=False)) > self.input_budget:
                             raise ValueError("归并输入超出提取预算，请提高服务端预算后重试")
                         batch["steps"][key] = exact or await self._retry_model(
-                            lambda: self.extractor.equivalent(category, previous, row))
+                            lambda: self.extractor.equivalent(category, previous, row), batch["batch_id"])
                         await self._save(batch, owner, {"steps": batch["steps"]})
                     if batch["steps"][key]:
                         previous["evidence_candidate_ids"] = list(dict.fromkeys(

@@ -313,7 +313,7 @@ onMounted(() => { loadList(); loadScopes(); loadSettings() })
         </div>
         </a-collapse-panel></a-collapse>
       </a-tab-pane>
-      <a-tab-pane key="generate" tab="记忆生成"><MemoryProcessingPanel :active="tab === 'generate'" /></a-tab-pane>
+      <a-tab-pane key="generate" tab="记忆生成"><MemoryProcessingPanel :active="tab === 'generate'" @deleted="loadList(); loadDocument()" /></a-tab-pane>
     </a-tabs>
 
     <a-drawer :open="drawer" title="记忆详情" width="min(760px, 100vw)" @close="closeDrawer">
