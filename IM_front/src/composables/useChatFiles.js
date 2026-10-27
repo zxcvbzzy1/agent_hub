@@ -1,11 +1,12 @@
 import { computed, reactive } from 'vue'
 import { message } from 'ant-design-vue'
 import { filesApi } from '@/api/files'
+import { createUUID } from '@/utils/uuid'
 
 export function useChatFiles(targetKey) {
   const drafts = reactive({})
   function forKey(key) {
-    return drafts[key] ||= { requestId: crypto.randomUUID(), text: '', items: [], mentions: [], reply: null, quote: null, selection: null }
+    return drafts[key] ||= { requestId: createUUID(), text: '', items: [], mentions: [], reply: null, quote: null, selection: null }
   }
   function moveDraft(from, key) { drafts[key] = from }
   const draft = computed(() => forKey(targetKey.value))
@@ -38,7 +39,7 @@ export function useChatFiles(targetKey) {
       return
     }
     for (const raw of selected) {
-      const item = reactive({ key: crypto.randomUUID(), name: raw.name, size: raw.size, raw, state: 'uploading', progress: 0, reused: false })
+      const item = reactive({ key: createUUID(), name: raw.name, size: raw.size, raw, state: 'uploading', progress: 0, reused: false })
       current.items.push(item)
       uploadItem(item)
     }
@@ -46,7 +47,7 @@ export function useChatFiles(targetKey) {
   function addExisting(file) {
     if (draft.value.items.some((item) => item.file?.file_id === file.file_id)) return
     if (draft.value.items.length >= 10) { message.warning('每条消息最多 10 个附件'); return }
-    draft.value.items.push({ key: crypto.randomUUID(), file, name: file.original_name, size: file.size, reused: true, state: 'ready' })
+    draft.value.items.push({ key: createUUID(), file, name: file.original_name, size: file.size, reused: true, state: 'ready' })
   }
   async function removeItem(item) {
     const current = draft.value

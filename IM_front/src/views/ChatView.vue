@@ -63,6 +63,7 @@ import { useChatRunSettings } from '@/composables/useChatRunSettings'
 import { mergeToolGroupSelection } from '@/utils/toolSelection'
 import { useComposerPlan } from '@/composables/useComposerPlan'
 import { renderMarkdown, looksLikeMarkdownDoc } from '@/utils/markdown'
+import { createUUID } from '@/utils/uuid'
 
 const im = useIMStore()
 const auth = useAuthStore()
@@ -794,7 +795,7 @@ async function send() {
           chatFiles.moveDraft(submittedDraft, `conversation:${conversationId}`)
         },
         onCommitted: () => {
-          submittedDraft.requestId = crypto.randomUUID()
+          submittedDraft.requestId = createUUID()
           submittedDraft.text = ''
           submittedDraft.items.splice(0)
           submittedDraft.mentions.splice(0)

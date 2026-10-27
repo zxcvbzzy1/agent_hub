@@ -1,5 +1,7 @@
 // Events and their checkpoint are committed in one IndexedDB transaction.
 // localStorage is a convenience mirror, never evidence that history is present.
+import { createUUID } from './uuid.js'
+
 const DB_NAME = 'agent-im-events-v3'
 const STORE = 'snapshots'
 const PREFIX = 'agent-im-stream-v3:'
@@ -65,7 +67,7 @@ export class EventSnapshot {
       if (existing?.complete && existing.updatedAt > Date.now() - TTL
           && Array.isArray(existing.events) && existing.events.every(event => event && typeof event.event_id === 'string' && typeof event.name === 'string')
           && /^[^/]+\/\d+-\d+$/.test(existing.cursor || '') && existing.revision) return existing
-      const fresh = { key: this.key, userId: this.userId, revision: crypto.randomUUID(),
+      const fresh = { key: this.key, userId: this.userId, revision: createUUID(),
         events: [], cursor: '', complete: false, updatedAt: Date.now() }
       // Keep an in-progress tab's revision so simultaneous cold tabs can merge.
       if (existing && !existing.complete && existing.updatedAt > Date.now() - TTL) fresh.revision = existing.revision
@@ -78,7 +80,7 @@ export class EventSnapshot {
   }
 
   async reset() {
-    const revision = crypto.randomUUID()
+    const revision = createUUID()
     await this.transaction((_, store) => store.put({ key: this.key, userId: this.userId,
       revision, events: [], cursor: '', complete: false, updatedAt: Date.now() }))
     this.revision = revision
