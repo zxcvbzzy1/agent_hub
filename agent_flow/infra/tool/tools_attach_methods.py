@@ -2,6 +2,7 @@ import inspect
 
 from domain.event import EventBusReturn, Event
 from domain.run_context import current_agent
+from infra.runtime.control import ensure_execution_active
 from domain.runtime_hooks import get_tool_event_observer
 from infra.event_bind import On_bind
 from infra.config import factory, agent_dict, bus
@@ -51,6 +52,14 @@ async def frontend_sse_bridge_middleware(event: Event, call_next):
 @on_tool.use()
 async def human_collaboration_middleware(event: Event, call_next):
     return await human_auditor.handle(event, call_next)
+
+
+# execution_guard middleware：放在人工审批之后，等待结束后再检查执行权限。
+@on_tool.use()
+async def execution_guard_middleware(event: Event, call_next):
+    if event.name.endswith('.called'):
+        await ensure_execution_active()
+    return await call_next()
 
 
 # 成功/失败返回事件

@@ -13,6 +13,7 @@ from domain.event import Event, EventBusPort
 from domain.run_context import current_run_id, current_execution_id
 from domain.memory.long.models import MemoryScope
 from infra.db.mongodb import DocumentStore
+from infra.runtime.control import ExecutionRevoked, ensure_execution_active
 
 from application.services.agents import AgentFactoryService
 from application.services.contexts import ContextService
@@ -130,23 +131,50 @@ class RunOrchestrationService:
         self.states = RunStateService(store, self.runtime, long_memory=long_memory,
                                       memory_coordinator=self.memory_coordinator)
         self.runtime.on_orphan = self.handle_orphan
+        self.runtime.on_health = self._publish_health
+
+    async def _publish_health(self, state):
+        record = await asyncio.to_thread(self._store.find_one, 'runs', {'run_id': state['run_id']})
+        if not record or record.get('status') not in {'pending', 'running'}:
+            return
+        await self._streams.publish(state['run_id'], 'task.updated', {
+            'run_id': state['run_id'], 'status': record['status'],
+            'execution_health': state['execution_health'],
+        })
 
     async def handle_orphan(self, state):
-        if state["kind"] != "orchestration":
+        if not state.get('revoked'):
             return
         record = self._store.find_one("runs", {"run_id": state["run_id"]})
         if record is None:
-            await self.runtime.delete_runtime(state["run_id"])
+            await self.runtime.delete_runtime(state["run_id"], kind=state['kind'])
             return
-        if record.get("status") not in {"pending", "running"}:
-            await self.states.finish_control(state["run_id"])
-            return
-        await self._mark_run_cancelled(state, "执行进程失联，运行中断", True)
-        for item in await self.runtime.confirmations(state["target_id"]):
-            resolved, changed = await self.runtime.resolve_confirmation(
-                item["run_id"], item["confirmation_id"], False, "执行进程失联")
-            if changed:
-                await self._streams.publish(item["run_id"], "human.confirmation.resolved", resolved)
+        run_id = state['run_id']
+        if record.get('status') in {'pending', 'running'}:
+            pending = await self.runtime.confirmations(run_id)
+            try:
+                record = await self.states.update(run_id, {
+                    'status': 'failed', 'error': '执行进程连续五次无响应，运行已停止',
+                    'error_code': 'execution_owner_lost', 'finished_at': time.time(),
+                    'orphan_confirmation_ids': [item['confirmation_id'] for item in pending],
+                })
+            except ExecutionRevoked:
+                record = self._store.find_one('runs', {'run_id': run_id}) or {}
+        if record.get('error_code') == 'execution_owner_lost':
+            # Reconcile after a crash between DB finalization and event/control
+            # publication. The journal deduplicates these stable event IDs.
+            identity = f"owner-lost:{run_id}:{state.get('execution_token', '')}"
+            await self._streams.publish(run_id, 'task.updated', {'run_id': run_id, 'status': 'failed'},
+                event_id=str(uuid.uuid5(uuid.NAMESPACE_URL, identity + ':task')))
+            await self._streams.publish(run_id, 'workflow.failed', {
+                'run_id': run_id, 'error': record['error'], 'error_code': 'execution_owner_lost',
+            }, event_id=str(uuid.uuid5(uuid.NAMESPACE_URL, identity + ':workflow')))
+        for confirmation_id in record.get('orphan_confirmation_ids', []):
+            resolved, _ = await self.runtime.resolve_confirmation(
+                run_id, confirmation_id, False, "执行进程失联")
+            if resolved.get('reason') == '执行进程失联':
+                await self._streams.publish(run_id, "human.confirmation.resolved", resolved,
+                    event_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f'owner-lost:{run_id}:approval:{confirmation_id}')))
         await self.states.finish_control(state["run_id"])
 
     async def create_run(
@@ -287,15 +315,21 @@ class RunOrchestrationService:
         # per-run 隔离：把 run_id 绑定到 contextvar，供工具事件镜像在缺失 run_id 时按当前 run 解析，
         # 避免并发 run 下 agent_id -> run_id 全局映射 last-writer-wins 串扰。finally 中 reset。
         token = current_run_id.set(run_id)
+        revoked = False
         try:
-            record["memory_snapshot"] = await self.memory_coordinator.prepare(record)
-            if record.get("mode") == "react":
-                await self._execute_react_run(record)
-            else:
-                await self._execute_plan_run(record)
-        except asyncio.CancelledError:
-            current = (await self.get_run(run_id)) or record
-            if current.get("status") != "cancelled":
+            with self.runtime.execution_context('orchestration', run_id):
+                await ensure_execution_active()
+                record["memory_snapshot"] = await self.memory_coordinator.prepare(record)
+                if record.get("mode") == "react":
+                    await self._execute_react_run(record)
+                else:
+                    await self._execute_plan_run(record)
+        except ExecutionRevoked:
+            revoked = True
+        except asyncio.CancelledError as exc:
+            revoked = exc.args in {('execution_revoked',), ('worker_shutdown',)}
+            current = self._store.find_one('runs', {'run_id': run_id}) or record
+            if not revoked and current.get("status") in {'pending', 'running'}:
                 await self._mark_run_cancelled(record, reason="用户中断", publish=True)
             raise
         except Exception as exc:
@@ -307,7 +341,8 @@ class RunOrchestrationService:
                 self._frontend_bridge.unregister_agent_run(executor_id, run_id)
             self._tasks.pop(run_id, None)
             current_run_id.reset(token)
-            await self.states.finish_control(run_id)
+            if not revoked:
+                await self.states.finish_control(run_id)
 
     async def _execute_react_run(self, record: dict[str, Any]) -> None:
         run_id = record["run_id"]

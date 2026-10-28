@@ -453,6 +453,12 @@ Plan 请求体：
 - `failed`
 - `cancelled`
 
+运行控制与 IM 共用同一套实现：worker 心跳每 5 秒续期、TTL 30 秒，心跳过期后按
+5、10、20、40、80 秒间隔确认，连续五次无响应才以 `failed` / `execution_owner_lost` 收尾。
+Redis 不可达不累计失联次数，任务保留运行位置，暂停后续动作并退避等待连接恢复；
+已完成工具不会重跑，持久化事件沿用原 ID 重试。查询可能附带 `execution_health` 描述连接健康状态。
+主动取消仍使用 `cancelled`；关闭页面或 SSE 连接不取消后台任务。
+
 ### `POST /api/runs/{run_id}/cancel`
 
 中断当前 run。中断后 run 状态会更新为 `cancelled`，并复用 `workflow.failed` SSE 终止事件，payload 中包含 `"cancelled": true`。

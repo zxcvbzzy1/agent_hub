@@ -21,6 +21,7 @@ from im_backend.application.services._shared.prompting import compose_prompt_wit
 from im_backend.domain.models import AgentRuntimeProfile, ContentPart, Conversation, Message, now_ts
 from im_backend.infra.agent_flow_bridge.bridge import AgentFlowBridge
 from domain.memory.long.models import MemoryScope
+from infra.runtime.control import ensure_execution_active, ExecutionRevoked
 
 
 class ConversationService:
@@ -488,43 +489,49 @@ class ConversationService:
     async def _run_reply_task(self, *, conversation_id, message_id, agent_id, run_id):
         from domain.run_context import current_run_id
         token = current_run_id.set(run_id)
+        revoked = False
         try:
-            agent = self._bridge.agents.build_run_agent(agent_id)
-            record = self._store.find_one("runs", {"run_id": run_id})
-            memory = await self._bridge.runs.memory_coordinator.prepare(record)
-            await self._bridge.runs.memory_coordinator.inject(agent, memory, run_id)
-            message = self._get_message(message_id)
-            self._rebuild_agent_history(agent, conversation_id=conversation_id, before_message_id=message_id)
-            prompt = self._compose_prompt(message)
-            # The per-run IM factory already applied the immutable workdir snapshot.
-            self._apply_pinned_context(agent, conversation_id)
-            await self._events.publish(conversation_id, "workflow.started", {
-                "scope_id": conversation_id, "conversation_id": conversation_id, "run_id": run_id,
-                "message_id": message_id, "agent_id": agent_id, "mode": "direct", "prompt": prompt})
-            started_at = time.time()
-            async with self._bridge.events.execution(run_id, agent):
-                await agent.start_with_history(prompt)
-            state = await self.runtime.get_state("dm_reply", run_id)
-            if state and state.get("cancel_requested"):
-                raise asyncio.CancelledError()
-            final = agent.states.get("final", "") or agent.states.get("finish_reason", "")
-            parts = [{"type": "text", "text": final or "Agent 已完成回复"}]
-            parts.extend(collect_inline_artifact_parts(
-                await self._bridge.list_run_events(run_id), since=started_at, run_id=run_id))
-            reply = await self.add_conversation_message(
-                conversation_id=conversation_id, sender_type="agent", sender_id=agent_id,
-                content_parts=parts, status="finished", run_id=run_id,
-                metadata={"source": "direct_agent_reply", "reply_to": message_id, "run_id": run_id})
-            await self._update_reply(message_id, {"status": "finished", "final": final,
-                                                   "finished_at": time.time(), "cancel_requested": False}, run_id=run_id)
-            await self._events.publish(conversation_id, "agent.reply.finished", {
-                "message_id": message_id, "agent_id": agent_id, "run_id": run_id, "reply": reply})
-            await self._events.publish(conversation_id, "workflow.finished", {
-                "scope_id": conversation_id, "conversation_id": conversation_id, "run_id": run_id,
-                "message_id": message_id, "agent_id": agent_id, "mode": "direct", "final": final})
-        except asyncio.CancelledError:
-            await self._mark_reply_cancelled(conversation_id=conversation_id, message_id=message_id,
-                                             agent_id=agent_id, publish=True, run_id=run_id)
+            with self.runtime.execution_context("dm_reply", run_id):
+                await ensure_execution_active()
+                agent = self._bridge.agents.build_run_agent(agent_id)
+                record = self._store.find_one("runs", {"run_id": run_id})
+                memory = await self._bridge.runs.memory_coordinator.prepare(record)
+                await self._bridge.runs.memory_coordinator.inject(agent, memory, run_id)
+                message = self._get_message(message_id)
+                self._rebuild_agent_history(agent, conversation_id=conversation_id, before_message_id=message_id)
+                prompt = self._compose_prompt(message)
+                # The per-run IM factory already applied the immutable workdir snapshot.
+                self._apply_pinned_context(agent, conversation_id)
+                await self._events.publish(conversation_id, "workflow.started", {
+                    "scope_id": conversation_id, "conversation_id": conversation_id, "run_id": run_id,
+                    "message_id": message_id, "agent_id": agent_id, "mode": "direct", "prompt": prompt})
+                started_at = time.time()
+                async with self._bridge.events.execution(run_id, agent):
+                    await agent.start_with_history(prompt)
+                await ensure_execution_active()
+                final = agent.states.get("final", "") or agent.states.get("finish_reason", "")
+                parts = [{"type": "text", "text": final or "Agent 已完成回复"}]
+                parts.extend(collect_inline_artifact_parts(
+                    await self._bridge.list_run_events(run_id), since=started_at, run_id=run_id))
+                await self._update_reply(message_id, {"status": "finished", "final": final,
+                                                       "finished_at": time.time(), "cancel_requested": False}, run_id=run_id)
+                reply = await self.add_conversation_message(
+                    conversation_id=conversation_id, sender_type="agent", sender_id=agent_id,
+                    content_parts=parts, status="finished", run_id=run_id,
+                    metadata={"source": "direct_agent_reply", "reply_to": message_id, "run_id": run_id})
+                await self._events.publish(conversation_id, "agent.reply.finished", {
+                    "message_id": message_id, "agent_id": agent_id, "run_id": run_id, "reply": reply})
+                await self._events.publish(conversation_id, "workflow.finished", {
+                    "scope_id": conversation_id, "conversation_id": conversation_id, "run_id": run_id,
+                    "message_id": message_id, "agent_id": agent_id, "mode": "direct", "final": final})
+        except ExecutionRevoked:
+            revoked = True
+        except asyncio.CancelledError as exc:
+            revoked = exc.args in {('execution_revoked',), ('worker_shutdown',)}
+            current = self._store.find_one('runs', {'run_id': run_id}) or {}
+            if not revoked and current.get('status') in {'pending', 'running'}:
+                await self._mark_reply_cancelled(conversation_id=conversation_id, message_id=message_id,
+                                                 agent_id=agent_id, publish=True, run_id=run_id)
             raise
         except Exception as exc:
             await self._update_reply(message_id, {"status": "failed", "error": str(exc),
@@ -535,7 +542,8 @@ class ConversationService:
             raise
         finally:
             current_run_id.reset(token)
-            await self._bridge.runs.states.finish_control(run_id)
+            if not revoked:
+                await self._bridge.runs.states.finish_control(run_id)
 
     async def _mark_reply_cancelled(self, *, conversation_id, message_id, agent_id, publish,
                                     reason="用户中断", run_id=None):

@@ -1,3 +1,5 @@
+import { executionHealthLabel } from './executionHealth.js'
+
 const terminal = new Set(['finished', 'failed', 'cancelled'])
 const planEvents = new Set([
   'plan.generated', 'plan.replanned', 'planner.plan.generated', 'planner.replan.reasoning',
@@ -65,8 +67,15 @@ export function buildComposerPlan(run, details = new Map()) {
   let steps = []
   let phase = 'generating'
   let status = ''
+  let health
+  let healthAt = -Infinity
+  let error = task?.error || ''
   for (const event of timeline) {
     const payload = event.payload || {}
+    if (payload.execution_health) {
+      const observed = payload.execution_health.observed_at || event.created_at || 0
+      if (observed >= healthAt) { health = payload.execution_health; healthAt = observed }
+    }
     const incoming = payload.plan?.steps || payload.steps
     if (Array.isArray(incoming)) {
       const previous = new Map(steps.map(step => [step.step_id, step]))
@@ -98,6 +107,7 @@ export function buildComposerPlan(run, details = new Map()) {
     if (event.name === 'task.updated') status = payload.status || status
     if (event.name === 'workflow.finished') status = 'finished'
     if (event.name === 'workflow.failed') status = payload.cancelled ? 'cancelled' : 'failed'
+    if (event.name === 'workflow.failed') error = payload.error || error
     if (event.name === 'run.cancelled') status = 'cancelled'
   }
   const counts = Object.fromEntries(['done', 'failed', 'skipped', 'in_progress'].map(state => [
@@ -107,13 +117,16 @@ export function buildComposerPlan(run, details = new Map()) {
   if (terminal.has(status)) phase = status
   else if (active.length) phase = 'executing'
   else if (phase === 'executing') phase = 'waiting'
+  const healthLabel = !terminal.has(status) && executionHealthLabel(health)
+  if (healthLabel) phase = 'connection_wait'
   const labels = {
     generating: '计划生成中', generated: '计划已生成', updating: '计划更新中', updated: '计划已更新',
     executing: '计划执行中', waiting: '等待下一步骤', summarizing: '计划汇总中',
     finished: steps.some(step => step.status !== 'done') ? '计划已结束' : '计划已完成',
     failed: '计划失败', cancelled: '计划已取消',
   }
-  const parts = [labels[phase]]
+  const parts = [healthLabel || labels[phase]]
+  if (status === 'failed' && error) parts.push(error)
   if (steps.length) parts.push(`已完成 ${counts.done}/${steps.length}`)
   if (counts.failed) parts.push(`失败 ${counts.failed} 项`)
   if (counts.skipped) parts.push(`跳过 ${counts.skipped} 项`)
@@ -121,8 +134,9 @@ export function buildComposerPlan(run, details = new Map()) {
     const unfinished = steps.filter(step => !['done', 'failed', 'skipped'].includes(step.status)).length
     if (unfinished) parts.push(`未完成 ${unfinished} 项`)
   }
-  if (!terminal.has(status) && active.length) {
+  if (!terminal.has(status) && !healthLabel && active.length) {
     parts.push(active.length > 1 ? `执行中 ${active.length} 项` : `正在${active[0].title || active[0].step_id}`)
   }
-  return { runId: run.runId, phase, steps, summary: parts.join(' · '), terminal: terminal.has(status) }
+  return { runId: run.runId, phase, steps, executionHealth: health,
+    summary: parts.join(' · '), terminal: terminal.has(status) }
 }

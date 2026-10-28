@@ -16,11 +16,19 @@ from .event_journal import EventJournal, encode, ordered
 
 
 class RedisRuntime(RedisExecutionControl):
-    def __init__(self, *, url=None, prefix=None, retention=86400, maxlen=100000):
+    def __init__(self, *, url=None, prefix=None, retention=86400, maxlen=100000,
+                 heartbeat_interval=5, heartbeat_ttl=30, probe_delays=(5, 10, 20, 40, 80),
+                 redis_retry_delays=(5, 10, 20, 40, 80)):
         self.url = url or os.getenv("REDIS_URL", "redis://localhost:6379/0")
         self.prefix = prefix or os.getenv("REDIS_KEY_PREFIX", "agenthub")
         self.retention = retention
         self.maxlen = maxlen
+        if heartbeat_interval <= 0 or heartbeat_ttl <= heartbeat_interval:
+            raise ValueError("心跳 TTL 必须大于正数心跳间隔")
+        if len(probe_delays) != 5 or not redis_retry_delays or any(v <= 0 for v in (*probe_delays, *redis_retry_delays)):
+            raise ValueError("需要五个正数探测间隔，重试间隔必须为非空正数序列")
+        self.heartbeat_interval, self.heartbeat_ttl = heartbeat_interval, heartbeat_ttl
+        self.probe_delays, self.retry_delays = tuple(probe_delays), tuple(redis_retry_delays)
         # XREAD blocks for up to 15 seconds while an SSE connection is idle.
         # redis-py 8 defaults to a 5-second read timeout, so explicitly allow
         # the blocking interval plus network/server scheduling headroom.
@@ -29,6 +37,11 @@ class RedisRuntime(RedisExecutionControl):
         )
         self.worker_id = str(uuid.uuid4())
         self._tasks = {}
+        self._claims = {}
+        self._finalizing = set()
+        self.on_health = None
+        self.redis_available = True
+        self.closing = False
         self._maintenance = None
         self.on_orphan = None
         self.cache = RunStateCache(self.redis, self.key)
@@ -40,6 +53,7 @@ class RedisRuntime(RedisExecutionControl):
     async def start(self):
         if self._maintenance is not None:
             return
+        self.closing = False
         try:
             await self.redis.ping()
             version = (await self.redis.info("server"))["redis_version"]
@@ -57,9 +71,10 @@ class RedisRuntime(RedisExecutionControl):
         self._maintenance = asyncio.create_task(self._maintain(), name="redis-runtime-controls")
 
     async def close(self):
+        self.closing = True
         tasks = list(self._tasks.values())
         for task in tasks:
-            task.cancel()
+            task.cancel("worker_shutdown")
         await asyncio.gather(*tasks, return_exceptions=True)
         if self._maintenance:
             self._maintenance.cancel()

@@ -135,3 +135,30 @@ test('detail loader limits concurrency and caches successful details', async () 
   await settle()
   assert.equal(finishes.length, 0)
 })
+
+test('suspected worker and Redis outage preserve steps without marking cancellation', () => {
+  const generated = event('plan.generated', 1, { steps: [step('a', 'done'), step('b', 'in_progress')] })
+  const suspected = event('task.updated', 2, { status: 'running', execution_health: { status: 'suspected', failed_probes: 3 } })
+  const value = model([generated, suspected])
+  assert.equal(value.terminal, false)
+  assert.equal(value.phase, 'connection_wait')
+  assert.match(value.summary, /执行连接异常，正在确认（3\/5）.*已完成 1\/2/)
+  assert.deepEqual(value.steps.map(s => s.status), ['done', 'in_progress'])
+  const outage = event('task.updated', 3, { status: 'running', execution_health: { status: 'unavailable' } })
+  assert.match(model([generated, suspected, outage]).summary, /运行状态暂不可确认，等待连接恢复/)
+  const recovered = event('task.updated', 4, { status: 'running', execution_health: { status: 'healthy' } })
+  assert.equal(model([generated, suspected, outage, recovered]).phase, 'executing')
+})
+
+test('fresh health query supersedes stale replay and failed runs show their reason', () => {
+  const task = { run_id: 'r1', mode: 'plan', status: 'running', created_at: 1, updated_at: 1,
+    plan: { steps: [step('a', 'in_progress')] }, execution_health: { status: 'unavailable', observed_at: 10 } }
+  const healthy = event('task.updated', 5, { status: 'running', execution_health: { status: 'healthy' } })
+  assert.match(buildComposerPlan(select([healthy], [task])).summary, /等待连接恢复/)
+  const failure = event('workflow.failed', 11, { error: '执行进程连续五次无响应，运行已停止', error_code: 'execution_owner_lost' })
+  const failed = buildComposerPlan(select([healthy, failure], [task]))
+  assert.equal(failed.phase, 'failed')
+  assert.equal(failed.terminal, true)
+  assert.match(failed.summary, /计划失败.*连续五次无响应/)
+  assert.doesNotMatch(failed.summary, /计划已取消|等待连接恢复/)
+})

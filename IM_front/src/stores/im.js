@@ -174,7 +174,14 @@ export const useIMStore = defineStore('im', {
     startActivityPolling() {
       this.stopActivityPolling()
       this.fetchActivity()
-      this._activityTimer = setInterval(() => this.fetchActivity(), 10000)
+      this._activityTimer = setInterval(() => {
+        this.fetchActivity()
+        // Health can change while SSE is unreachable; polling is read-only.
+        if (this.tasks.some(task => ['pending', 'running'].includes(task.status))) this.fetchTasks().catch(() => {})
+        if (this.messages.some(item => item.sender_type === 'user' && ['pending', 'running'].includes(item.status))) {
+          this.refreshMessages().catch(() => {})
+        }
+      }, 10000)
       this._activityVisHandler = () => {
         if (document.visibilityState === 'visible') this.fetchActivity()
       }
@@ -828,6 +835,15 @@ export const useIMStore = defineStore('im', {
       this.events.push(event)
       // Historical display data must not replay notifications or approvals.
       if (replay) return
+      if (event.name === 'task.updated') {
+        const runId = event.run_id || event.payload?.run_id
+        const health = event.payload?.execution_health
+        if (runId && health) {
+          this.tasks = this.tasks.map(item => item.run_id === runId ? { ...item, execution_health: health } : item)
+          this.messages = this.messages.map(item => item.run_id === runId ? { ...item, execution_health: health } : item)
+        }
+        if (this.currentRoom?.type === 'group') this.fetchTasks().catch(() => {})
+      }
       if (event.name === 'message.created') {
         const messageItem = event.payload?.message
         if (this.currentRoom?.type === 'group') {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -69,28 +70,30 @@ class IMService:
         # planner 的最终回复落库成房间消息，使其获得完整消息操作并可随群聊一起清理。
         self._planner_final_writer = PlannerFinalReplyWriter(store=store, messages=self.messages)
         bridge.events.subscribe(self._planner_final_writer.handle_event)
-        bridge.runtime.on_orphan = self._handle_orphan
+        bridge.events.subscribe(self._sync_run_message_states)
+        room_events.subscribe(self._sync_run_message_states)
 
-    async def _handle_orphan(self, state):
-        run_id = state["run_id"]
-        record = self._store.find_one("runs", {"run_id": run_id})
+    async def _sync_run_message_states(self, event):
+        if event.get('name') not in {
+            'task.updated', 'workflow.started', 'workflow.finished', 'workflow.failed',
+            'run.cancelled', 'agent.reply.started', 'agent.reply.finished',
+        }:
+            return
+        run_id = event.get('run_id') or event.get('payload', {}).get('run_id')
+        if not run_id:
+            return
+        # Read the fact, rather than trusting a delayed/repeated event's status.
+        record = await asyncio.to_thread(self._store.find_one, 'runs', {'run_id': run_id})
         if not record:
-            await self._bridge.runtime.delete_runtime(run_id, kind=state["kind"])
             return
-        if record.get("status") not in {"pending", "running"}:
-            await self._bridge.runs.states.finish_control(run_id)
-            return
-        if state["kind"] == "dm_reply":
-            await self.conversations._mark_reply_cancelled(
-                conversation_id=record["conversation_id"], message_id=record["message_id"],
-                agent_id=record["agent_id"], run_id=run_id,
-                publish=True, reason="执行进程失联，运行中断")
-            for item in await self._bridge.human_confirmations.list_pending(run_id):
-                await self._bridge.human_confirmations.resolve(
-                    run_id=run_id, confirmation_id=item["confirmation_id"], approved=False, reason="执行进程失联")
-            await self._bridge.runs.states.finish_control(run_id)
-        else:
-            await self._bridge.runs.handle_orphan(state)
+        messages = await asyncio.to_thread(self._store.find_many, 'im_messages', {
+            'run_id': run_id, 'sender_type': 'user',
+        })
+        for message in messages:
+            await asyncio.to_thread(self._store.update_one, 'im_messages', {
+                'message_id': message['message_id'], 'run_id': run_id,
+                'status': {'$in': ['pending', 'sent', 'running']},
+            }, {'status': record['status']})
 
     async def overlay_message_states(self, items):
         for item in items:
@@ -98,7 +101,8 @@ class IMService:
                 continue
             state = await self._bridge.runs.states.get(item["run_id"])
             if state:
-                item.update(status=state["status"], cancel_requested=state.get("cancel_requested", False))
+                item.update(status=state["status"], cancel_requested=state.get("cancel_requested", False),
+                            execution_health=state.get("execution_health"))
         return items
 
     def _hydrate(self, items):

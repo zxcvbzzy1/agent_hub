@@ -42,7 +42,7 @@ class RunStateCache:
                 return json.loads(raw)
         except (RedisError, OSError, ValueError, TimeoutError):
             available = False
-        value = loader()
+        value = await loader() if inspect.iscoroutinefunction(loader) else await asyncio.to_thread(loader)
         if inspect.isawaitable(value):
             value = await value
         if available and value is not None and time.monotonic() - started < self.ttl:

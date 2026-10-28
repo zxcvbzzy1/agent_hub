@@ -116,10 +116,48 @@ npm --prefix IM_front run build
   代次标记的 TTL 长于回填窗口，因此删除后不会永久遗留缓存元数据。
 - 缓存操作超时 0.5 秒，删除共尝试 3 次。失败时记录日志并依靠 TTL 收敛；查询回源。
   这不是强一致或崩溃补偿方案，数据库提交到缓存失效之间仍可能短暂旧读。
-- `RedisExecutionControl` 只维护 `control:v2:{kind}:{run_id}`、活跃索引、心跳、取消和审批。
+- IM 与独立 agent_flow 共享 `RedisRuntime`，维护 `control:v2:{kind}:{run_id}`、活跃索引、心跳、取消和审批。
   缓存删除不影响控制记录。kind 为 `orchestration` 或 `dm_reply`，两者均以 run ID 定位。
   取消依旧返回 202，所属 worker 每 500ms 检查信号。业务数据和最终事件处理完后才释放控制。
   启动和执行控制依赖 Redis；缓存降级不意味着允许绕过抢占启动任务。
+
+### 失联确认与网络恢复
+
+- 通用支持增量放在 agent_flow 原有运行时、事件、状态、审批和工具模块，两端共用一套实现；
+  Bridge 直接装配原服务，不维护对应 IM 子类。整个 domain、ReAct 与 Plan 算法保持不变；
+  如确需修改 domain，先说明原因并确认。执行上下文、撤销信号和权限检查位于现有 Redis 控制模块。
+- IM 在现有服务中订阅任务、流程和回复状态事件，用权威 run 状态同步用户消息；
+  通用状态服务不直接更新 `im_messages`。重复或迟到事件按当前 `run_id` 校验，事件断联时查询以 run 为准。
+- 统一使用原有键结构和 `REDIS_KEY_PREFIX`，撤掉 IM 专用 `im:` 控制键分支；不同部署配置不同前缀。
+  同一前缀的 worker 共用同一业务数据库及运行参数；使用不同数据库的独立 API 应配置不同前缀。
+  Mongo 历史记录与事件通道保持兼容；切换前排空旧执行，不迁移或复活旧控制记录。
+- 运行参数直接通过 `RedisRuntime` 的具名参数设置：`heartbeat_interval=5`、`heartbeat_ttl=30`、
+  `probe_delays=(5, 10, 20, 40, 80)`、`redis_retry_delays=(5, 10, 20, 40, 80)`；探测间隔需要五项。
+- 心跳每 5 秒续期，有效期 30 秒；心跳、取消检查和失联探测独立运行。
+  首次发现所属 worker 心跳缺失，仅标记执行健康状态 `suspected`，业务状态保持 `running`。
+  后续按 5、10、20、40、80 秒间隔探测，五次成功查询均确认心跳缺失后，撤销执行令牌并以
+  `failed` / `execution_owner_lost` 收尾；任一次恢复心跳即清零。多个 worker 共享原子探测记录。
+- Redis 请求超时不计为 worker 无响应。原进程保留运行位置，暂停后续模型、工具和步骤调度，
+  按上述退避重连，此后间隔保持 80 秒；重连后先检查执行权限。已完成工具不重新执行，
+  持久化事件保留原事件 ID 重试。流式 token 可中断展示，完整模型输出在恢复后继续发布。
+  已被撤销的旧执行不能继续调度或覆盖终态；`cancelled` 保留给主动取消。
+- run 查询、任务列表和 `task.updated` 提供可选 `execution_health`：`status` 为 `healthy`、
+  `suspected`、`lost` 或 `unavailable`，探测期间附 `failed_probes` 和 `next_probe_at`。
+  消息查询同样带健康信息；页面定期查询活跃任务，SSE 断开不改变业务状态。
+- 原 bash 处理器直接使用异步子进程，复用原审核规则，保留 30 秒超时，超时或取消时清理命令进程组。
+  权限中间件在现有工具模块、人工审批之后注册，不截获或重新发布 bash 结果；显式 deploy 的常驻服务不受影响。
+  暂停恢复依赖原进程仍存活，不自动接管、重跑或复活历史 cancelled 任务。
+- 升级时先停止接收新任务并等待现有执行结束，再整体切换 worker，避免旧版立即取消逻辑混跑。
+  日志包含 run、worker、探测进度及 Redis 异常/恢复信息。
+
+恢复回归测试使用随机 Redis 前缀，Mongo 集成测试创建独立临时数据库：
+
+```bash
+REDIS_URL=redis://100.82.31.1:6379/0 /Users/zxcvbzzy1/miniconda3/envs/MY_env/bin/python -m pytest im_backend/tests/test_execution_recovery.py im_backend/tests/test_shared_execution_support.py im_backend/tests/test_redis_runtime.py -v
+# 配置可用的 IM_MONGO_URL 后，再运行 test_redis_im_integration.py 和 test_event_journal.py。
+npm --prefix IM_front run test:events
+npm --prefix IM_front run build
+```
 
 ### 两条事件通道
 
@@ -131,8 +169,9 @@ npm --prefix IM_front run build
   `execution_id`，步骤开始、结束与工具事件精确关联。同一智能体重复执行不会合并轨迹。
 - Stream 默认保留最近 24 小时、约 100,000 条。SSE 使用带代次的 Redis ID 续传，`event_id` 去重，
   每 15 秒空闲心跳。摘要和 scope 重连优先使用完整缓存，仅冷缓存初始化回源 Mongo。
-- 持久化事件先进入 Redis，归档队列由消费组异步批量落库并 ACK；发布单次最多等待 5 秒，
-  共尝试 3 次。发布失败明确报错，未 ACK 事件持续保留，过期临时 token 不承诺恢复。
+- 持久化事件先进入 Redis，归档队列由消费组异步批量落库并 ACK；发布尝试限时 5 秒。
+  正在执行的任务遇到 Redis 故障会保留原事件 ID 并退避等待恢复，独立 API 请求仍最多尝试 3 次后报错。
+  未 ACK 事件持续保留，过期临时 token 不承诺恢复。
 
 ### 查询与界面
 

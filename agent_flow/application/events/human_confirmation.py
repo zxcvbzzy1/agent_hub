@@ -5,6 +5,7 @@ import time
 import uuid
 
 from application.services.events import EventStreamService
+from infra.runtime.control import current_execution_guard, ensure_execution_active, ExecutionRevoked
 
 
 class HumanConfirmationService:
@@ -18,21 +19,32 @@ class HumanConfirmationService:
         item = dict(confirmation_id=str(uuid.uuid4()), run_id=run_id, agent_id=agent_id,
                     tool_name=tool_name, called_event_name=called_event_name,
                     arguments=arguments, status="pending", created_at=time.time())
-        await self.runtime.save_confirmation(item)
         try:
+            await self.runtime.retry_redis(lambda: self.runtime.save_confirmation(item), revalidate=True)
             # Publication now awaits Redis queueing; cancellation in that window
             # must resolve the already-created shared approval as well.
             await self._streams.publish(run_id, "human.confirmation.requested", item)
             while True:
-                current = await self.runtime.get_confirmation(item["confirmation_id"])
+                await ensure_execution_active()
+                current = await self.runtime.retry_redis(lambda: self.runtime.get_confirmation(item["confirmation_id"]),
+                                                         revalidate=True)
                 if not current:
                     return {"approved": False, "reason": "确认请求已删除"}
                 if current["status"] != "pending":
                     return {"approved": current["approved"], "reason": current["reason"]}
                 await asyncio.sleep(0.5)
-        except asyncio.CancelledError:
-            await self.resolve(run_id=run_id, confirmation_id=item["confirmation_id"],
-                               approved=False, reason="运行已取消")
+        except asyncio.CancelledError as exc:
+            if not isinstance(exc, ExecutionRevoked) and exc.args not in {('execution_revoked',), ('worker_shutdown',)}:
+                binding = current_execution_guard.set(None)
+                try:
+                    try:
+                        await self.runtime.retry_redis(lambda: self.resolve(
+                            run_id=run_id, confirmation_id=item["confirmation_id"],
+                            approved=False, reason="运行已取消"))
+                    except KeyError:
+                        pass  # Cancellation may precede the initial save.
+                finally:
+                    current_execution_guard.reset(binding)
             raise
 
     async def request_approval(self, **kwargs):

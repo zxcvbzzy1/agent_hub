@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from domain.runtime_hooks import get_run_context_provider
+from infra.runtime.control import ensure_execution_active
 from domain.json_parse import robust_json_load
 from application.services.events import EventStreamService
 
@@ -28,6 +29,7 @@ class StreamingObservableLLMClient:
         self.max_tokens = getattr(base_llm, "max_tokens", None)
 
     async def chat(self, messages: list) -> str:
+        await ensure_execution_active()
         call_role = self._detect_call_role(messages)
         run_id = self._run_id()
         sequence = 0

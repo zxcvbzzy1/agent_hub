@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 from redis.exceptions import RedisError
 from domain.run_context import current_execution_id
 from infra.runtime import RedisRuntime
+from infra.runtime.control import current_execution_guard, ensure_execution_active, ExecutionRevoked
 
 DELTAS = {'llm.delta'}
 BUSINESS_EVENTS = {
@@ -32,7 +33,7 @@ def scope_delivery(event):
     if event.get('trace'):
         # Status consumers still need these small identifiers, never execution bodies.
         return {**event_summary(event), 'payload': {k: v for k, v in event.get('payload', {}).items()
-                if k in {'run_id', 'message_id', 'agent_id', 'status', 'cancelled', 'run', 'conversation_id'}}}
+                if k in {'run_id', 'message_id', 'agent_id', 'status', 'cancelled', 'run', 'conversation_id', 'execution_health', 'error', 'error_code'}}}
     return event
 
 
@@ -48,7 +49,27 @@ class EventStreamService:
     def subscribe(self, callback):
         self._subscribers.append(callback)
 
+    async def _notify_subscribers(self, event):
+        for callback in self._subscribers:
+            result = callback(event)
+            if inspect.isawaitable(result):
+                await result
+
     async def _broadcast(self, category, scope_id, event, *, durable=False):
+        if not durable:
+            # A lost token chunk must not abort or restart the model's stream.
+            if not self.runtime.redis_available:
+                return None
+            try:
+                return await asyncio.wait_for(self.runtime.append(category, scope_id, event), 0.5)
+            except (RedisError, OSError, TimeoutError):
+                self.runtime.redis_failed()
+                return None
+        if current_execution_guard.get() is not None:
+            async def append():
+                await current_execution_guard.get()(publication=True)
+                return await self.runtime.append(category, scope_id, event, durable=True)
+            return await self.runtime.retry_redis(append)
         for attempt in range(3):
             try:
                 return await asyncio.wait_for(self.runtime.append(category, scope_id, event, durable=durable), 5)
@@ -68,25 +89,26 @@ class EventStreamService:
                     agent_id=payload.get('agent_id') or payload.get('executor_id') or payload.get('planner_id', ''),
                     name=name, payload=payload, created_at=time.time())
 
-    async def publish(self, run_id, name, payload):
+    async def publish(self, run_id, name, payload, *, event_id=None):
         if name in BUSINESS_EVENTS:
             base = self._event(run_id, name, payload)
-            event = await self.publish_scope(base['scope_id'], name, payload, context=base)
+            event = await self.publish_scope(base['scope_id'], name, payload, context=base,
+                                             event_id=event_id, notify=False)
         else:
             event = self._event(run_id, name, payload)
+            if event_id is not None:
+                event['event_id'] = event_id
             await self._broadcast('run', run_id, event, durable=True)
             # Only explicit product notifications are projected, never raw traces.
             if name.startswith(('artifacts.', 'human.confirmation.')):
                 notification = dict(payload)
                 notification.pop('arguments', None)
-                await self.publish_scope(event['scope_id'], name, notification, context=event, trace=False)
-        for callback in self._subscribers:
-            result = callback(event)
-            if inspect.isawaitable(result):
-                await result
+                await self.publish_scope(event['scope_id'], name, notification, context=event, trace=False,
+                    event_id=str(uuid.uuid5(uuid.NAMESPACE_URL, event['event_id'] + ':scope')), notify=False)
+        await self._notify_subscribers(event)
         return event
 
-    async def publish_scope(self, scope_id, name, payload, *, context=None, trace=None):
+    async def publish_scope(self, scope_id, name, payload, *, context=None, trace=None, event_id=None, notify=True):
         context = context or {}
         run_id = context.get('run_id') or payload.get('run_id') or (payload.get('run') or {}).get('run_id', '')
         run = self._store.find_one('runs', {'run_id': run_id}) if run_id else None
@@ -99,6 +121,7 @@ class EventStreamService:
             body = {k: v for k, v in body.items() if k in {
                 'run_id', 'message_id', 'agent_id', 'conversation_id', 'scope_id', 'status',
                 'cancelled', 'error', 'reason', 'mode', 'phase', 'step_id', 'execution_id',
+                'execution_health', 'error_code',
             }}
             if name == 'run.created':
                 body['run'] = {k: v for k, v in payload.get('run', {}).items() if k in {'run_id', 'status'}}
@@ -109,7 +132,7 @@ class EventStreamService:
             if isinstance(payload.get('step'), dict):
                 body['step'] = {k: v for k, v in payload['step'].items()
                                 if k in {'step_id', 'title', 'executor_id', 'status', 'status_reason'}}
-        event = dict(event_id=str(uuid.uuid4()), version=2, category='scope',
+        event = dict(event_id=event_id or str(uuid.uuid4()), version=2, category='scope',
                      scope_id=scope_id, room_id=scope_id, name=name, payload=body,
                      run_id=run_id, execution_id=context.get('execution_id') or current_execution_id.get(),
                      agent_id=context.get('agent_id') or payload.get('agent_id', ''),
@@ -123,6 +146,8 @@ class EventStreamService:
         if event['message_id']:
             body.setdefault('message_id', event['message_id'])
         await self._broadcast('scope', scope_id, event, durable=True)
+        if notify:
+            await self._notify_subscribers(event)
         return event
 
     async def no_store_publish(self, run_id, name, payload):
@@ -132,16 +157,22 @@ class EventStreamService:
 
     @asynccontextmanager
     async def execution(self, run_id, agent, *, phase='execute', step_id='', execution_id=None):
+        await ensure_execution_active()
         token = current_execution_id.set(execution_id or str(uuid.uuid4()))
         payload = {'run_id': run_id, 'agent_id': agent.id, 'agent_name': getattr(agent, 'name', agent.id),
                    'phase': phase, 'step_id': step_id}
-        context = self._event(run_id, 'agent.execution.started', payload)
         try:
+            context = self._event(run_id, 'agent.execution.started', payload)
             await self.publish_scope(context['scope_id'], 'agent.execution.started', payload, context=context)
             try:
                 yield
-            except asyncio.CancelledError:
-                await self.publish_scope(context['scope_id'], 'agent.execution.cancelled', payload, context=context)
+            except asyncio.CancelledError as exc:
+                if not isinstance(exc, ExecutionRevoked) and exc.args not in {('execution_revoked',), ('worker_shutdown',)}:
+                    binding = current_execution_guard.set(None)
+                    try:
+                        await self.publish_scope(context['scope_id'], 'agent.execution.cancelled', payload, context=context)
+                    finally:
+                        current_execution_guard.reset(binding)
                 raise
             except Exception as exc:
                 await self.publish_scope(context['scope_id'], 'agent.execution.failed', {**payload, 'error': str(exc)}, context=context)
@@ -154,6 +185,9 @@ class EventStreamService:
             current_execution_id.reset(token)
 
     async def list_events(self, run_id, *, user_id='service'):
+        if current_execution_guard.get() is not None:
+            return await self.runtime.retry_redis(
+                lambda: self.runtime.journal.events('run', run_id, user_id=user_id), revalidate=True)
         return await self.runtime.journal.events('run', run_id, user_id=user_id)
 
     async def summaries(self, run_id, *, execution_id=None, after=None, limit=100, user_id='service'):

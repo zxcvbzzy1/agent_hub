@@ -13,6 +13,9 @@ class RoomEventStreamService:
         self._events = EventStreamService(store, runtime)
         self.runtime = self._events.runtime
 
+    def subscribe(self, callback):
+        self._events.subscribe(callback)
+
     async def publish(self, room_id, name, payload):
         return await self._events.publish_scope(room_id, name, payload)
 

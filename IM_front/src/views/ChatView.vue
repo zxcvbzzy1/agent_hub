@@ -48,6 +48,7 @@ import {
 import { useAuthStore } from '@/stores/auth'
 import { useIMStore } from '@/stores/im'
 import { imApi } from '@/api/im'
+import { executionHealthLabel } from '@/utils/executionHealth'
 import ArtifactCard from '@/components/ArtifactCard.vue'
 import ScopeTrace from '@/components/ScopeTrace.vue'
 import { TraceClient } from '@/utils/traceClient'
@@ -297,6 +298,9 @@ const runningConversationMessage = computed(() => {
 
 const cancellationPending = computed(() => Boolean(
   (im.currentRoom?.type === 'group' ? runningGroupTask.value : runningConversationMessage.value)?.cancel_requested,
+))
+const executionWarning = computed(() => executionHealthLabel(
+  (im.currentRoom?.type === 'group' ? runningGroupTask.value : runningConversationMessage.value)?.execution_health,
 ))
 const canInterrupt = computed(() => {
   const task = im.currentRoom?.type === 'group' ? runningGroupTask.value : runningConversationMessage.value
@@ -1579,6 +1583,7 @@ onUnmounted(() => {
     </aside>
 
     <section class="chat-main">
+      <a-alert v-if="executionWarning" type="warning" show-icon :message="executionWarning" />
       <a-alert v-if="im.streamStatus === 'error'" type="error" show-icon message="实时连接已断开">
         <template #action><a-button size="small" @click="im.retryStream()">重新连接</a-button></template>
       </a-alert>

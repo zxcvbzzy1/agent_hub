@@ -1,7 +1,9 @@
 from domain.run_context import current_agent
 from domain.event import Event
 from domain.tool import Tool, Tool_respond
-import subprocess
+import asyncio
+import signal
+from contextlib import suppress
 import os
 import bashlex
 from pathlib import Path
@@ -270,46 +272,56 @@ class SystemTool():
         return True, "", self.working_directory
 
 
-    def exec_bash(self, command: str):
+    async def exec_bash(self, command: str):
         allowed, reason, target_dir = self.audit_bash(command)
         if not allowed:
-            return {
-                "stdout": "",
-                "stderr": reason,
-                "returncode": 126
-            }
+            return {"stdout": "", "stderr": reason, "returncode": 126}
+        return await run_shell(command, cwd=target_dir, env=os.environ, timeout=30)
 
-        result = subprocess.run(
-            command,
-            capture_output=True, # 捕获输出
-            text=True,           # 转为字符串
-            check=False,          # 不抛出异常，自己处理
-            shell=True,         # 使用 shell 解析命令
-            env=os.environ,     # 继承环境变量
-            cwd=target_dir,
-            timeout=30          # 防止挂死
-        )
-        if result.returncode != 0:
-            print(f"Command failed with return code {result.returncode}")
-            print(f"stderr: {result.stderr}")
-        return {
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "returncode": result.returncode
-        }
-    
+
+async def run_shell(command, *, cwd, env=None, timeout=30):
+    process = await asyncio.create_subprocess_shell(
+        command, cwd=cwd, env=env, stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE, start_new_session=True,
+    )
+    output = asyncio.create_task(process.communicate())
+
+    async def stop():
+        # Kill the group even if the shell exited before its children.
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGTERM)
+        try:
+            await asyncio.wait_for(asyncio.shield(output), 2)
+        except TimeoutError:
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            await output
+
+    try:
+        stdout, stderr = await asyncio.wait_for(asyncio.shield(output), timeout)
+    except asyncio.CancelledError:
+        await stop()
+        raise
+    except TimeoutError:
+        await stop()
+        stdout, stderr = output.result()
+        return {'stdout': stdout.decode(errors='replace'),
+                'stderr': stderr.decode(errors='replace') + f'\n命令执行超时（{timeout} 秒）', 'returncode': 124}
+    return {'stdout': stdout.decode(errors='replace'), 'stderr': stderr.decode(errors='replace'),
+            'returncode': process.returncode}
+
 
 on_tool = On_bind()
 factory._build_and_register_list([BASH], bus)
 
 
 @on_tool.on(factory.tool("bash").called())
-def exec_bash(**kwargs)->Event:
+async def exec_bash(**kwargs)->Event:
     command = kwargs["command"]
     agent_id = kwargs["agent_id"]
     work_path = (current_agent.get() or agent_dict[agent_id]).work_path
     tool = SystemTool(working_directory=work_path)
-    respond = tool.exec_bash(command)
+    respond = await tool.exec_bash(command)
     if respond["returncode"] != 0:
         tool_respond = Tool_respond(
                 agent_id=agent_id,

@@ -64,6 +64,7 @@ class On_bind():
     def use(self,):
         def decorator(fn:CallBack):
             self._bus.use(fn)
+            return fn
         return decorator
     
     def get_handlers_events(self):

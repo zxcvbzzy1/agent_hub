@@ -1,6 +1,8 @@
 """Database-owned run state; Redis only caches snapshots and controls execution."""
 import asyncio
 import logging
+import time
+from infra.runtime.control import ExecutionRevoked, current_execution_guard, ensure_execution_active
 from redis.exceptions import RedisError
 
 
@@ -20,8 +22,11 @@ class RunStateService:
         try:
             control = await asyncio.wait_for(self.runtime.get_state(record.get('kind', 'orchestration'), run_id), 0.5)
         except (RedisError, OSError, TimeoutError):
-            control = None
-        return {**record, 'cancel_requested': bool(control and control.get('cancel_requested'))}
+            return {**record, 'cancel_requested': False,
+                    'execution_health': {'status': 'unavailable', 'observed_at': time.time()}}
+        health = (control or {}).get('execution_health', {'status': 'healthy', 'failed_probes': 0})
+        return {**record, 'cancel_requested': bool(control and control.get('cancel_requested')),
+                'execution_health': {**health, 'observed_at': time.time()}}
 
     async def create(self, record):
         item = self.store.insert_one('runs', record)
@@ -29,15 +34,22 @@ class RunStateService:
         return item
 
     async def update(self, run_id, changes):
-        item = self.store.update_one('runs', {'run_id': run_id}, changes)
+        guard = current_execution_guard.get()
+        if guard is not None and not guard.finalizing:
+            await ensure_execution_active()
+        # Terminal states are absorbing. Even a delayed owner cannot overwrite
+        # another finalizer or mutate the finished plan of an old attempt.
+        item = await asyncio.to_thread(self.store.update_one, 'runs',
+            {'run_id': run_id, 'status': {'$in': ['pending', 'running']}}, changes)
         if item is None:
+            if self.store.find_one('runs', {'run_id': run_id}) is not None:
+                raise ExecutionRevoked(f'Run 已结束: {run_id}')
             raise KeyError(f'Run 不存在: {run_id}')
+        guard = current_execution_guard.get()
+        if (changes.get('status') in {'finished', 'failed', 'cancelled'} and
+                guard is not None and guard.target_id == run_id):
+            guard.commit_terminal()
         await self.runtime.cache.invalidate(run_id)
-        if 'status' in changes:
-            # Guarded by run_id: an older attempt cannot overwrite a regenerated message.
-            for message in self.store.find_many('im_messages', {'run_id': run_id, 'sender_type': 'user'}):
-                self.store.update_one('im_messages', {'message_id': message['message_id'], 'run_id': run_id},
-                                      {'status': changes['status']})
         return item
 
     async def delete(self, run_id):

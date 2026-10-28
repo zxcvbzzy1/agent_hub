@@ -20,7 +20,7 @@ const rows = computed(() => (props.plan?.steps || []).map(step => {
   const [label, icon] = interrupted ? ['已中断', MinusCircleOutlined]
     : props.plan.terminal && step.status === 'pending' ? ['未执行', ClockCircleOutlined]
       : (statuses[step.status] || ['状态未知', ClockCircleOutlined])
-  return { ...step, label, icon, running: !props.plan.terminal && step.status === 'in_progress' }
+  return { ...step, label, icon, running: !props.plan.terminal && props.plan.phase !== 'connection_wait' && step.status === 'in_progress' }
 }))
 </script>
 
