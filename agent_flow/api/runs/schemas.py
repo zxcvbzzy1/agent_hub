@@ -21,3 +21,7 @@ class RunCreateRequest(BaseModel):
 class ConfirmationResolveRequest(BaseModel):
     approved: bool
     reason: str = ""
+
+
+class QuestionAnswerRequest(BaseModel):
+    answers: list[dict] = Field(min_length=1, max_length=3)

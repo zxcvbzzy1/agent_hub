@@ -104,6 +104,8 @@ class GroupRunService:
             raise ValueError("message 不属于该 room")
         if message.get("sender_type") != "user":
             raise ValueError("只能派发 user 消息")
+        if message.get('metadata', {}).get('source') == 'human_answer':
+            raise ValueError('问答回答不能派发为新任务')
 
         conversation_id = message.get("conversation_id") or ""
         prompt = compose_prompt_with_references(

@@ -173,7 +173,8 @@ class RunOrchestrationService:
             resolved, _ = await self.runtime.resolve_confirmation(
                 run_id, confirmation_id, False, "执行进程失联")
             if resolved.get('reason') == '执行进程失联':
-                await self._streams.publish(run_id, "human.confirmation.resolved", resolved,
+                public = {key: value for key, value in resolved.items() if key not in {'execution_token', 'execution_kind'}}
+                await self._streams.publish(run_id, "human.confirmation.resolved", public,
                     event_id=str(uuid.uuid5(uuid.NAMESPACE_URL, f'owner-lost:{run_id}:approval:{confirmation_id}')))
         await self.states.finish_control(state["run_id"])
 

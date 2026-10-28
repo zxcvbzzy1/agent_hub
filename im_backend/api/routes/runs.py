@@ -3,6 +3,10 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, Header, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+from pydantic import Field
+from redis.exceptions import RedisError
+from pymongo.errors import PyMongoError
+from im_backend.api.routes.files import file_error
 
 from im_backend.api.core import get_sse_user, get_current_user, get_im_service
 from im_backend.application.services.facade import IMService
@@ -14,6 +18,11 @@ router = APIRouter()
 class ConfirmationResolveRequest(BaseModel):
     approved: bool
     reason: str = ""
+
+
+class QuestionAnswerRequest(BaseModel):
+    answers: list[dict] = Field(min_length=1, max_length=3)
+    file_ids: list[str] = Field(default_factory=list, max_length=10)
 
 
 @router.get("/runs/active")
@@ -51,7 +60,25 @@ async def list_run_confirmations(
 ):
     """列出该 run 待处理的人工确认（前端重连后可补拉，避免错过 SSE）。"""
     _ = current_user
-    return {"items": await service._bridge.human_confirmations.list_pending(run_id)}
+    try:
+        return {"items": await service.list_human_confirmations(run_id)}
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (RedisError, OSError, PyMongoError) as exc:
+        raise HTTPException(status_code=503, detail="连接暂时不可用，请重试") from exc
+
+
+@router.post("/runs/{run_id}/confirmations/{confirmation_id}/answer")
+async def answer_run_question(run_id: str, confirmation_id: str, request: QuestionAnswerRequest,
+                              service: IMService = Depends(get_im_service),
+                              current_user: dict = Depends(get_current_user)):
+    try:
+        return await service.answer_question(run_id=run_id, confirmation_id=confirmation_id,
+            user_id=current_user['user_id'], answers=request.answers, file_ids=request.file_ids)
+    except (RedisError, OSError) as exc:
+        raise HTTPException(status_code=503, detail="连接暂时不可用，已保存的回答可重试提交") from exc
+    except (ValueError, KeyError, PyMongoError) as exc:
+        raise file_error(exc) from exc
 
 
 @router.post("/runs/{run_id}/confirmations/{confirmation_id}")
@@ -65,6 +92,9 @@ async def resolve_run_confirmation(
     """解析一条人工确认（允许/拒绝），唤醒在 agent_flow 侧等待的工具调用。"""
     _ = current_user
     try:
+        item = await service._bridge.runtime.get_confirmation(confirmation_id)
+        if item and item.get('kind') == 'question':
+            raise ValueError('问题必须通过答案接口提交')
         return await service._bridge.human_confirmations.resolve(
             run_id=run_id,
             confirmation_id=confirmation_id,
@@ -73,6 +103,8 @@ async def resolve_run_confirmation(
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail="确认请求不存在或已处理") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def require_run(service, run_id):

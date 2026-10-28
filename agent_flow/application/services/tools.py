@@ -23,6 +23,7 @@ class ToolRegistryService:
         self._apply_persisted_runtime_config()
 
     def load_builtin_tools(self) -> None:
+        import infra.tool.builtin.ask_user  # noqa: F401
         import infra.tool.builtin.system  # noqa: F401
         import infra.tool.builtin.artifacts  # noqa: F401
         import infra.tool.builtin.deploy  # noqa: F401

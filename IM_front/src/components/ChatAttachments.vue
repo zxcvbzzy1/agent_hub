@@ -35,7 +35,7 @@ function selected(event) {
       <input ref="input" type="file" multiple hidden @change="selected" />
       <a-button :disabled="disabled" @click="input.click()"><CloudUploadOutlined /> 上传文件</a-button>
       <a-button :disabled="disabled" @click="pick"><FileTextOutlined /> 选择已上传文件</a-button>
-      <span class="attachment-limit">最多 10 个，每个 20 MiB</span>
+      <span class="attachment-limit">最多 10 个，每个 100 MiB</span>
     </a-space>
     <div class="big-box">
       <div v-for="item in items" :key="item.key" class="draft-file">

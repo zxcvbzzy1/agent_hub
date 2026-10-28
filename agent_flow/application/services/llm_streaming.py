@@ -154,6 +154,10 @@ class StreamingObservableLLMClient:
         if data is None:
             return
 
+        if data.get("tool_calls"):
+            # Exploration is not a completed plan or a replan decision.
+            return
+
         if call_role == "plan_replan":
             await self._publish(
                 run_id,

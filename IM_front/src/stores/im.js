@@ -635,6 +635,17 @@ export const useIMStore = defineStore('im', {
       this.humanConfirmations = this.humanConfirmations.filter((c) => c.confirmation_id !== confirmationId)
       return imApi.resolveConfirmation(runId, confirmationId, { approved, reason })
     },
+    async answerHumanQuestion(runId, confirmationId, payload) {
+      const revision = this.selectionRevision
+      const response = await imApi.answerQuestion(runId, confirmationId, payload)
+      if (revision === this.selectionRevision) {
+        this.mergeMessage(response.message)
+        this.messages = this.messages.map(item => item.metadata?.question?.confirmation_id === confirmationId
+          ? { ...item, metadata: { ...item.metadata, question: response.item } } : item)
+        this.humanConfirmations = this.humanConfirmations.filter(item => item.confirmation_id !== confirmationId)
+      }
+      return response
+    },
     async fetchTools() {
       if (this.tools.length) return this.tools
       const r = await imApi.toolsCatalog()
@@ -800,6 +811,10 @@ export const useIMStore = defineStore('im', {
       const responses = await Promise.all(ids.map(id => imApi.listRunConfirmations(id)))
       if (this.source === source && selectionMatches(this, revision, roomId, conversationId)) {
         this.humanConfirmations = responses.flatMap(r => r.items || [])
+        if (this.humanConfirmations.some(item => item.kind === 'question') ||
+            this.messages.some(item => item.metadata?.source === 'human_question')) {
+          await this.refreshMessages()
+        }
       }
     },
     flushPendingEvents() {
@@ -873,6 +888,12 @@ export const useIMStore = defineStore('im', {
         this.humanConfirmations = this.humanConfirmations.filter(
           (c) => c.confirmation_id !== event.payload.confirmation_id,
         )
+        const item = event.payload
+        this.messages = this.messages.map(message => message.metadata?.question?.confirmation_id === item.confirmation_id
+          ? { ...message, metadata: { ...message.metadata, question: item } } : message)
+      }
+      if (['workflow.failed', 'workflow.finished', 'run.cancelled', 'agent.reply.finished'].includes(event.name)) {
+        this.syncHumanConfirmations().catch(() => {})
       }
       if (event.name === 'file.deleted') this.markFileDeleted(event.payload?.file_id)
       if (event.name === 'message.regenerated') {

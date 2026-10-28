@@ -187,6 +187,9 @@ export const imApi = {
   listRunConfirmations(runId) {
     return http.get(`/api/im/runs/${runId}/confirmations`)
   },
+  answerQuestion(runId, confirmationId, payload) {
+    return http.post(`/api/im/runs/${runId}/confirmations/${confirmationId}/answer`, payload)
+  },
   // 工具详情 + 运行时参数配置
   toolDetail(toolName) {
     return http.get(`/api/im/tools/${toolName}`)

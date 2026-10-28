@@ -180,7 +180,7 @@ class RedisExecutionControl:
                 result.append(item)
         return result
 
-    async def resolve_confirmation(self, run_id, confirmation_id, approved, reason):
+    async def resolve_confirmation(self, run_id, confirmation_id, approved, reason, *, answer=None):
         key = self.key(f"confirmation:{confirmation_id}")
         while True:
             async with self.redis.pipeline() as pipe:
@@ -192,8 +192,21 @@ class RedisExecutionControl:
                         raise KeyError(f"confirmation not found: {confirmation_id}")
                     if item["status"] != "pending":
                         return item, False
-                    item.update(status="resolved", approved=approved, reason=reason,
+                    if answer is not None:
+                        # Answer and lease are checked in one transaction. A peer
+                        # may revoke the old worker while the browser is submitting.
+                        control_key = self.key(f"control:v2:{item['execution_kind']}:{run_id}")
+                        await pipe.watch(control_key)
+                        control = {k: json.loads(v) for k, v in (await pipe.hgetall(control_key)).items()}
+                        if (not control or control.get('revoked') or control.get('cancel_requested') or
+                                control.get('status') not in ACTIVE or
+                                control.get('execution_token') != item.get('execution_token')):
+                            raise ValueError("执行已结束或权限已撤销，不能提交答案")
+                    status = "cancelled" if item.get('kind') == 'question' and answer is None else "resolved"
+                    item.update(status=status, approved=approved, reason=reason,
                                 resolved_at=time.time())
+                    if answer is not None:
+                        item['answer'] = answer
                     pipe.multi()
                     pipe.set(key, encode(item), ex=self.retention)
                     pipe.srem(self.key(f"confirmations:{run_id}"), confirmation_id)

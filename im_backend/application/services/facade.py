@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -71,7 +73,172 @@ class IMService:
         self._planner_final_writer = PlannerFinalReplyWriter(store=store, messages=self.messages)
         bridge.events.subscribe(self._planner_final_writer.handle_event)
         bridge.events.subscribe(self._sync_run_message_states)
+        bridge.events.subscribe(self._sync_human_question)
         room_events.subscribe(self._sync_run_message_states)
+
+    @staticmethod
+    def _question_message_id(confirmation_id, role):
+        return str(uuid.uuid5(uuid.NAMESPACE_URL, f'human-question:{confirmation_id}:{role}'))
+
+    async def _question_source(self, run_id):
+        run = await asyncio.to_thread(self._store.find_one, 'runs', {'run_id': run_id})
+        if not run:
+            raise KeyError('运行不存在')
+        source_id = run.get('source_message_id') or run.get('message_id')
+        source = await asyncio.to_thread(self._store.find_one, 'im_messages', {'message_id': source_id}) if source_id else None
+        if not source or source.get('sender_type') != 'user':
+            raise KeyError('运行的发起消息不存在')
+        return run, source
+
+    async def _sync_human_question(self, event):
+        if event.get('name') not in {'human.confirmation.requested', 'human.confirmation.resolved'}:
+            return
+        item = event.get('payload') or {}
+        if item.get('kind') != 'question':
+            return
+        # Consult the shared fact; a delayed requested event must not reopen a card.
+        current = await self._bridge.runtime.get_confirmation(item['confirmation_id'])
+        await self._save_question_message(current or item)
+
+    async def _save_question_message(self, item):
+        try:
+            run, source = await self._question_source(item['run_id'])
+        except KeyError:
+            return None
+        question = self._bridge.human_confirmations.public_item(item)
+        if question['status'] == 'pending' and (run.get('status') not in {'pending', 'running'} or
+                                                source.get('run_id') != item['run_id']):
+            question = {**question, 'status': 'cancelled', 'reason': '本次执行已结束'}
+        metadata = {'source': 'human_question', 'question': question,
+                    'owner_user_id': source['sender_id'], 'related_run_id': item['run_id']}
+        message_id = self._question_message_id(item['confirmation_id'], 'question')
+        metadata['question_key'] = message_id
+        text = '\n\n'.join(q['question'] for q in item['questions'])
+        record = dict(message_id=message_id, sender_type='agent', sender_id=item['agent_id'],
+            content_parts=[{'type': 'text', 'text': text}], room_id=source.get('room_id', ''),
+            conversation_id=source.get('conversation_id', ''), run_id=item['run_id'], status='sent',
+            reply_to=source['message_id'], mentions=[], quote_of='', metadata=metadata,
+            created_at=item['created_at'])
+        # Insert once, then update only metadata so history order stays stable.
+        await asyncio.to_thread(self._store.update_operators, 'im_messages', {'metadata.question_key': message_id},
+                                {'$setOnInsert': record}, upsert=True)
+        query = {'message_id': message_id}
+        if question['status'] == 'pending':
+            query['metadata.question.status'] = 'pending'
+        record = await asyncio.to_thread(self._store.update_one, 'im_messages', query, {'metadata': metadata})
+        if record is None:
+            record = await asyncio.to_thread(self._store.find_one, 'im_messages', {'message_id': message_id})
+        await self._events.publish(source.get('room_id') or source['conversation_id'],
+            'message.created', {'message': record},
+            event_id=self._question_message_id(item['confirmation_id'], 'card:' + record['metadata']['question']['status']))
+        return record
+
+    async def _check_question_execution(self, item, run, source):
+        if run.get('status') not in {'pending', 'running'} or source.get('run_id') != item['run_id']:
+            raise ValueError('本次执行已结束或已有新的执行，不能回答')
+        control = await self._bridge.runtime.get_state(item['execution_kind'], item['run_id'])
+        if (not control or control.get('revoked') or control.get('cancel_requested') or
+                control.get('status') not in {'pending', 'running'} or
+                control.get('execution_token') != item.get('execution_token')):
+            raise ValueError('执行已取消或权限已撤销，不能回答')
+
+    def _question_attachments(self, message):
+        attachments = []
+        for part in message.get('content_parts', []):
+            if not part.get('file_id'):
+                continue
+            record = self.files.get(part['file_id'])
+            info = {key: record[key] for key in ('file_id', 'original_name', 'mime_type', 'size')}
+            try:
+                self.files._available(record)
+                info['path'] = str(self.files.storage.path(record))
+            except (ValueError, OSError):
+                info['unavailable'] = True
+            attachments.append(info)
+        return attachments
+
+    async def _deliver_question_answer(self, item, message):
+        attachments = await asyncio.to_thread(self._question_attachments, message)
+        result = await self._bridge.human_confirmations.answer(run_id=item['run_id'],
+            confirmation_id=item['confirmation_id'], answers=message['metadata']['answers'], attachments=attachments)
+        scope = message.get('room_id') or message['conversation_id']
+        await self._events.publish(scope, 'message.created', {'message': self._hydrate([message])[0]},
+            event_id=self._question_message_id(item['confirmation_id'], 'answer-event'))
+        return result
+
+    async def answer_question(self, *, run_id, confirmation_id, user_id, answers, file_ids):
+        from infra.tool.common_func import validate_question_answers
+        from im_backend.application.services.file.service import FileAccessError
+
+        run, source = await self._question_source(run_id)
+        if source['sender_id'] != user_id:
+            raise FileAccessError('只有发起本次任务的用户可以回答')
+        item = await self._bridge.runtime.get_confirmation(confirmation_id)
+        if not item or item.get('run_id') != run_id or item.get('kind') != 'question':
+            raise KeyError('问题不存在')
+        mid = self._question_message_id(confirmation_id, 'answer')
+        saved = await asyncio.to_thread(self._store.find_one, 'im_messages', {'message_id': mid})
+        if item.get('answer') is not None and saved:
+            result = await self._deliver_question_answer(item, saved)
+            return {'item': result, 'message': self._hydrate([saved])[0]}
+        await self._check_question_execution(item, run, source)
+        if item['status'] != 'pending':
+            raise ValueError('问题已取消或已处理')
+        if saved is None:
+            canonical = validate_question_answers(item['questions'], answers)
+            if len(file_ids) > 10 or len(set(file_ids)) != len(file_ids):
+                raise ValueError('每次最多 10 个不同附件')
+            text = '\n\n'.join(a['question'] + '\n回答：' + '；'.join(filter(None, [
+                '、'.join(a['selected_options']), a['text']])) for a in canonical)
+            message = dict(message_id=mid, sender_type='user', sender_id=user_id,
+                room_id=source.get('room_id', ''), conversation_id=source.get('conversation_id', ''),
+                content_parts=[{'type': 'text', 'text': text}] + [{'type': 'file', 'file_id': fid} for fid in file_ids],
+                # Correlation lives in metadata: this is not another dispatchable task.
+                run_id='', status='sent', reply_to=self._question_message_id(confirmation_id, 'question'),
+                mentions=[], quote_of='', created_at=time.time(),
+                metadata={'source': 'human_answer', 'confirmation_id': confirmation_id,
+                          'related_run_id': run_id, 'answers': canonical, 'question_key': mid})
+            saved = await asyncio.to_thread(self.files.save_message, message, user_id, first_write_wins=True)
+        result = await self._deliver_question_answer(item, saved)
+        return {'item': result, 'message': self._hydrate([saved])[0]}
+
+    async def list_human_confirmations(self, run_id):
+        """Reconcile saved answers and cards before the browser resumes its subscription."""
+        try:
+            run, source = await self._question_source(run_id)
+        except KeyError:
+            # Keep the pre-existing approval lookup usable for runs without IM messages.
+            return await self._bridge.human_confirmations.list_pending(run_id)
+        runtime = self._bridge.runtime
+        for item in await runtime.confirmations(run_id):
+            if item.get('kind') != 'question':
+                continue
+            saved = await asyncio.to_thread(self._store.find_one, 'im_messages', {
+                'message_id': self._question_message_id(item['confirmation_id'], 'answer')})
+            try:
+                await self._check_question_execution(item, run, source)
+            except ValueError:
+                await self._bridge.human_confirmations.resolve(run_id=run_id,
+                    confirmation_id=item['confirmation_id'], approved=False, reason='本次执行已结束')
+            else:
+                if saved:
+                    await self._deliver_question_answer(item, saved)
+            current = await runtime.get_confirmation(item['confirmation_id'])
+            await self._save_question_message(current or item)
+        # Resolved cards also need refreshing when a terminal event was missed.
+        cards = await asyncio.to_thread(self._store.find_many, 'im_messages',
+            {'run_id': run_id, 'metadata.source': 'human_question'})
+        for card in cards:
+            prior = card['metadata']['question']
+            if prior.get('status') == 'pending':
+                current = await runtime.get_confirmation(prior['confirmation_id'])
+                if current and current.get('answer') is not None:
+                    saved = await asyncio.to_thread(self._store.find_one, 'im_messages', {
+                        'message_id': self._question_message_id(prior['confirmation_id'], 'answer')})
+                    if saved:
+                        await self._deliver_question_answer(current, saved)
+                await self._save_question_message(current or prior)
+        return await self._bridge.human_confirmations.list_pending(run_id)
 
     async def _sync_run_message_states(self, event):
         if event.get('name') not in {

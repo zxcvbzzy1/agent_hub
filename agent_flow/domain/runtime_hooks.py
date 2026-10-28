@@ -26,6 +26,17 @@ class HumanApprovalProviderPort(Protocol):
     ) -> dict[str, Any]:
         ...
 
+    async def request_question(
+        self,
+        *,
+        run_id: str,
+        agent_id: str,
+        tool_name: str,
+        called_event_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        ...
+
 
 class RunContextProviderPort(Protocol):
     """Optional provider for resolving application run context."""

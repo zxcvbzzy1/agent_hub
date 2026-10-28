@@ -59,6 +59,7 @@ import { sseEventNames } from '@/utils/runtimeEvents'
 import ComposerExtensions from '@/components/ComposerExtensions.vue'
 import ComposerPlan from '@/components/ComposerPlan.vue'
 import ChatFileCard from '@/components/ChatFileCard.vue'
+import HumanQuestionCard from '@/components/HumanQuestionCard.vue'
 import { useChatFiles } from '@/composables/useChatFiles'
 import { useChatRunSettings } from '@/composables/useChatRunSettings'
 import { mergeToolGroupSelection } from '@/utils/toolSelection'
@@ -874,6 +875,7 @@ function quoteRefSummary(item) {
 }
 
 function isRegenerable(item) {
+  if (['human_question', 'human_answer'].includes(item.metadata?.source)) return false
   if (im.currentRoom?.type === 'group') return item.sender_type === 'user' && ['sent', 'failed', 'cancelled'].includes(item.status)
   // agent 回复：随时可重新生成。
   if (item.sender_type === 'agent') return true
@@ -975,7 +977,7 @@ function clearSelectionEditTarget() {
 }
 
 // —— 危险命令人工确认（弹窗）——
-const pendingConfirmation = computed(() => im.humanConfirmations[0] || null)
+const pendingConfirmation = computed(() => im.humanConfirmations.find(item => item.kind !== 'question') || null)
 const resolvingConfirmation = ref(false)
 async function resolveDangerCommand(approved) {
   const c = pendingConfirmation.value
@@ -1644,7 +1646,7 @@ onUnmounted(() => {
             :class="messageClass(entry.message)"
           >
             <a-avatar class="message-avatar" :src="messageAvatar(entry.message)">{{ avatarText(messageTitle(entry.message)) }}</a-avatar>
-            <div class="message-bubble">
+            <div class="message-bubble" :class="{ 'human-question-bubble': entry.message.metadata?.source === 'human_question' }">
               <div
                 v-if="messageById(entry.message.reply_to) || messageById(entry.message.quote_of)"
                 class="message-quote-ref"
@@ -1707,7 +1709,11 @@ onUnmounted(() => {
                 </div>
               </div>
 
-              <div v-for="(part, index) in entry.message.content_parts" :key="`${entry.message.message_id}-${index}`" class="part">
+              <HumanQuestionCard v-if="entry.message.metadata?.source === 'human_question'"
+                :question="entry.message.metadata.question"
+                :can-answer="entry.message.metadata.owner_user_id === auth.user?.user_id"
+                :submit="payload => im.answerHumanQuestion(entry.message.run_id, entry.message.metadata.question.confirmation_id, payload)" />
+              <div v-for="(part, index) in (entry.message.metadata?.source === 'human_question' ? [] : entry.message.content_parts)" :key="`${entry.message.message_id}-${index}`" class="part">
                 <!-- eslint-disable-next-line vue/no-v-html -->
                 <div v-if="part.type === 'text'" class="text-part md-body" v-html="renderMarkdown(part.text)"></div>
                 <pre v-else-if="part.type === 'code'" class="code-part"><code>{{ part.text }}</code></pre>
@@ -2373,6 +2379,11 @@ onUnmounted(() => {
 }
 .message-actions .is-favorited {
   color: #faad14;
+}
+
+.human-question-bubble {
+  width: fit-content;
+  max-width: 100%;
 }
 
 .agent-tags {

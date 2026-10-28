@@ -54,6 +54,16 @@ class ContextService:
                     provider_config=self.default_template(kind),
                     context_id=context_id,
                 )
+        planner = self._store.find_one("contexts", {"context_id": "default_planner"})
+        if planner and not any(p.get('provider_id') == 'available_tools' for p in planner.get('provider_config', [])):
+            providers = [*planner.get('provider_config', []), self._planner_tools()]
+            self._store.update_one('contexts', {'context_id': 'default_planner',
+                'provider_config': planner.get('provider_config', [])}, {'provider_config': providers})
+
+    @staticmethod
+    def _planner_tools():
+        return {"provider_id": "available_tools", "enabled": True,
+                "params": {"available_fields": [], "available_tools": ["ask_user"]}}
 
     def catalog(self) -> dict[str, Any]:
         return {
@@ -110,6 +120,7 @@ class ContextService:
                 },
             ],
             "planner": [
+                self._planner_tools(),
                 {"provider_id": "pinned_context", "enabled": True, "params": {}},
                 {"provider_id": "state", "enabled": True, "params": {}},
                 {"provider_id": "available_executors", "enabled": True, "params": {}},

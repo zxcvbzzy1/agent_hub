@@ -6,7 +6,7 @@ from uuid import UUID
 from pathlib import Path
 from typing import BinaryIO
 
-MAX_FILE_SIZE = 20 * 1024 * 1024
+MAX_FILE_SIZE = 100 * 1024 * 1024
 
 
 class FileTooLarge(ValueError):
@@ -33,7 +33,7 @@ class LocalFileStorage:
                 while chunk := stream.read(1024 * 1024):
                     size += len(chunk)
                     if size > MAX_FILE_SIZE:
-                        raise FileTooLarge('单文件不能超过 20 MiB')
+                        raise FileTooLarge('单文件不能超过 100 MiB')
                     output.write(chunk)
             return str(target), size
         except BaseException:

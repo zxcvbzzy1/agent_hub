@@ -40,13 +40,14 @@ providers = [
     MemoryDocumentProvider(),
     StateProvider(),
     ErrorProvider(memory),
-    AvailableToolsProvider(["system", "search", "memory", "write_agent"]),
+    AvailableToolsProvider(["system", "search", "memory", "write_agent", "human"]),
     HistoryProvider(memory, "agent_history", FullHistoryStrategy()),
     ReActToolFeedbackProvider(memory, "tool_respond", FullHistoryStrategy() | RecencyStrategy(10) | ChunkToFileStrategy("./mid",4000,4000)),
 ]
 
 # PlanAgent编排上下文提供类
 plan_providers = [
+    AvailableToolsProvider(available_tools=["ask_user"]),
     UserPromptProvider(),
     MemoryDocumentProvider(),
     StateProvider(),

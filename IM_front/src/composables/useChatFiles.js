@@ -34,8 +34,8 @@ export function useChatFiles(targetKey) {
       message.warning('每条消息最多 10 个附件')
       return
     }
-    if (selected.some((file) => file.size > 20 * 1024 * 1024)) {
-      message.warning('单文件不能超过 20 MiB')
+    if (selected.some((file) => file.size > 100 * 1024 * 1024)) {
+      message.warning('单文件不能超过 100 MiB')
       return
     }
     for (const raw of selected) {

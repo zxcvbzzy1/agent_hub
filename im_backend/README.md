@@ -62,13 +62,47 @@ IM_SSE_COOKIE_SECURE=false PYTHONPATH=. \
 - `POST /api/im/artifacts/upload`
 - `GET /api/im/artifacts/{artifact_id}`
 
+## 运行中向用户提问
+
+内置 `ask_user` 工具属于 `human` 分组，沿用标准 Tool 定义和事件装饰器注册。
+它通过现有 `HumanApprovalProviderPort.request_question` 和 `HumanConfirmationService`
+保存请求、等待答案及处理取消；IM 只负责消息、附件和用户权限，不复制运行服务。
+
+工具输入示例：
+
+```json
+{"questions":[{"question":"采用哪个方案？","type":"single","options":["方案 A","方案 B"]},{"question":"补充要求","type":"text"}]}
+```
+
+一次 1～3 题，题型为 `single`、`multiple`、`text`。选择题提供 2～4 个不同选项，系统自动追加“其他”；
+全部题目必答，纯文本及“其他”不能为空。每组题共用一个附件区。
+
+- `GET /api/im/runs/{run_id}/confirmations` 补拉待处理请求，`kind=question` 区分问答与审批，旧记录按审批处理。
+- `POST /api/im/runs/{run_id}/confirmations/{confirmation_id}/answer` 接收
+  `{"answers":[{"question_id":"q1","selected_option_ids":["o1"],"text":""}],"file_ids":[]}`；
+  ID 取自服务端返回的题目，`other` 表示“其他”。只有原任务发起人可以提交。
+- 原允许／拒绝接口仍用于工具审批，不能回答问题。独立 agent_flow API 提供同路径的文字答案接口，不接收 IM 文件 ID。
+- 问题卡片、原题与回答、附件均留在会话历史。先保存回答及文件关联再唤醒工具，第一份保存成功的答案生效，
+  重复提交不新增消息，也不启动新任务。回答不能作为新任务派发或重新生成。
+- 回答保存后 Redis 断联，可重试原提交，刷新／SSE 重连时也会补齐未完成交付；事件使用稳定 ID。
+  刷新不会取消问题，任务被取消、撤权或已进入新执行时，旧问题不能恢复推进。
+- 只阻塞提问调用，其他并行任务继续；无自动超时，使用原任务取消入口结束等待。
+  恢复仍依赖原执行进程存活，不增加进程退出后的断点接管。
+- 无网页问答上下文时仅在交互终端逐题输入；无终端返回工具失败。附件上传仅网页支持。
+
+Planner 的生成与重规划阶段使用通用工具探索循环，复用 AgentBase 的工具解析、执行和观察回灌。
+探索输出沿用 `tool_calls`，最终结果沿用原计划／重规划 JSON，由编排器直接 await 并应用；
+不在工具里修改计划或执行计划任务，AgentBase、编排器和最终总结流程保持不变。
+默认 Planner 仅注入 `ask_user`，其他探索工具仍由原上下文配置选择。
+启动时只补充默认 Planner 缺失的工具配置，显式配置和自定义上下文不会被覆盖。
+
 ## 聊天文件上传
 
 聊天附件由 `application/services/file/` 管理，实体默认保存在仓库根目录
 `upload/<file_id>/<安全文件名>`，`im_files.storage_path` 保存绝对路径。
 后端与 native Agent 共享本机文件系统；移动仓库后需迁移数据库内的绝对路径。
 
-- `POST /api/im/files/upload`：Bearer 登录，multipart 字段 `file`；单文件最大 20 MiB。
+- `POST /api/im/files/upload`：Bearer 登录，multipart 字段 `file`；单文件最大 100 MiB，普通聊天与问答共用。每条消息最多 10 个附件。
 - `GET /api/im/files?limit=50&before=<file_id>`：分页查询自己的已发送文件，返回
   `items`、`has_more`、`next_cursor`。
 - `GET /api/im/files/{file_id}/download`：已发送文件允许所有登录用户下载，暂存文件仅上传者可下载。

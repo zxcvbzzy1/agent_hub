@@ -165,6 +165,8 @@ class ConversationService:
             raise ValueError("message 不属于该 conversation")
         if message.get("sender_type") != "user":
             raise ValueError("只能对用户消息重新生成回复")
+        if message.get('metadata', {}).get('source') == 'human_answer':
+            raise ValueError('问答回答不能作为新任务重新生成')
 
         # 取消可能仍在运行的旧回复任务，并等它完全结算（状态写回 cancelled、回调 pop）后再继续，
         # 否则被取消的旧任务会在新任务注册后才把用户消息改回 cancelled，并把新任务从 _reply_tasks 中 pop 掉。
@@ -394,6 +396,8 @@ class ConversationService:
             raise ValueError("message 不属于该 conversation")
         if message.get("sender_type") != "user":
             raise ValueError("只能回复 user 消息")
+        if message.get('metadata', {}).get('source') == 'human_answer':
+            raise ValueError('问答回答不能作为新任务执行')
 
         agent_id = conversation.get("agent_id", "")
         # 触发前先校验 agent 存在（缺失会抛 KeyError），再决定是否启动回复任务。

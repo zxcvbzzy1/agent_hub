@@ -22,13 +22,7 @@ class PlanAgent(AgentBase):
         super().__init__(id, name, llm, context)
 
     async def generate_plan(self, state: dict, executor_ids: list[str]) -> Plan:
-        context = self.context_engine.build(state)
-        messages = [
-            {"role": "system", "content": self._build_plan_prompt(executor_ids)},
-            {"role": "user", "content": context},
-        ]
-        raw = await self._llm.chat(messages)
-        data = self._parse_json(raw)
+        data = await self._explore(state, self._build_plan_prompt(executor_ids), result_key="steps")
         raw_steps = data.get("steps", [])
 
         plan = Plan()
@@ -36,16 +30,49 @@ class PlanAgent(AgentBase):
         return plan
 
     async def replan_after_observation(self, plan: Plan, state: dict) -> dict[str, Any]:
-        context = self.context_engine.build(state)
-        messages = [
-            {"role": "system", "content": self._build_replan_prompt()},
-            {"role": "user", "content": context},
-        ]
-        raw = await self._llm.chat(messages)
         try:
-            return self._parse_json(raw)
+            return await self._explore(state, self._build_replan_prompt(), result_key="action")
         except json.JSONDecodeError:
             return {"action": "continue", "reason": "replan JSON 解析失败"}
+
+    async def _explore(self, state: dict, prompt: str, *, result_key: str) -> dict[str, Any]:
+        """Explore with configured tools, then return the original planning contract."""
+        while True:
+            context = self.context_engine.build({**self.states, **state})
+            raw = await self._llm.chat([
+                {"role": "system", "content": prompt + self._exploration_prompt()},
+                {"role": "user", "content": context},
+            ])
+            data = self._parse_json(raw)
+            if data.get("tool_calls"):
+                if "steps" in data or "action" in data or data.get("is_finished"):
+                    self._record_parse_error(raw, "工具探索与最终规划结果必须分开输出")
+                    continue
+                decision = self._parse_decision(raw)
+                if decision.think:
+                    self.states["think"] += decision.think + "\n"
+                if decision.tool_calls:
+                    await self._execute_tools(decision)
+                continue
+            if result_key in data:
+                return data
+            self._record_parse_error(raw, f"请返回 tool_calls 或包含 {result_key} 的最终规划 JSON")
+
+    @staticmethod
+    def _exploration_prompt() -> str:
+        return '''
+
+## 规划前探索
+信息不足时，可调用上下文列出的工具进行探索或向用户澄清。工具可配置，按实际可用工具选择。
+此阶段不能直接更改当前计划，也不能代替执行者执行计划任务；最终计划由编排器应用和分发。
+需要工具时只输出如下 JSON，工具结果会在下一轮上下文中提供：
+{
+  "think": "需要澄清或查找的信息",
+  "tool_calls": [{"tool_name": "工具名", "arguments": {}, "reasoning": "调用原因"}],
+  "is_finished": false
+}
+获得足够信息后，严格按前述原始计划/重规划格式输出。不要把 tool_calls 与 steps/action 混在同一响应中。
+'''
 
     async def summarize_result(self, state: dict) -> str:
         context = self.context_engine.build(state)

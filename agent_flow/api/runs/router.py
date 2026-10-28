@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import Header, APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -8,7 +10,7 @@ from api.core.dependencies import (
     get_human_confirmation_service,
     get_run_service,
 )
-from api.runs.schemas import ConfirmationResolveRequest, RunCreateRequest
+from api.runs.schemas import ConfirmationResolveRequest, RunCreateRequest, QuestionAnswerRequest
 from application.events.human_confirmation import HumanConfirmationService
 from application.services.events import EventStreamService
 from application.services.runs import RunOrchestrationService
@@ -100,6 +102,9 @@ async def resolve_run_confirmation(
     service: HumanConfirmationService = Depends(get_human_confirmation_service),
 ):
     try:
+        item = await service.runtime.get_confirmation(confirmation_id)
+        if item and item.get('kind') == 'question':
+            raise ValueError('问题必须通过答案接口提交')
         item = await service.resolve(
             run_id=run_id,
             confirmation_id=confirmation_id,
@@ -108,6 +113,23 @@ async def resolve_run_confirmation(
         )
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"item": item}
+
+
+@router.post("/{run_id}/confirmations/{confirmation_id}/answer")
+async def answer_run_question(run_id: str, confirmation_id: str, request: QuestionAnswerRequest,
+                              service: HumanConfirmationService = Depends(get_human_confirmation_service)):
+    try:
+        run = await asyncio.to_thread(service._streams._store.find_one, 'runs', {'run_id': run_id})
+        if run and (run.get('im_conversation_id') or run.get('source_message_id') or run.get('kind') == 'dm_reply'):
+            raise HTTPException(status_code=403, detail='IM 问答必须通过登录后的 IM 答案接口提交')
+        item = await service.answer(run_id=run_id, confirmation_id=confirmation_id, answers=request.answers)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"item": item}
 
 

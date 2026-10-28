@@ -16,8 +16,8 @@ class RoomEventStreamService:
     def subscribe(self, callback):
         self._events.subscribe(callback)
 
-    async def publish(self, room_id, name, payload):
-        return await self._events.publish_scope(room_id, name, payload)
+    async def publish(self, room_id, name, payload, *, event_id=None):
+        return await self._events.publish_scope(room_id, name, payload, event_id=event_id)
 
     async def no_store_publish(self, room_id, name, payload):
         # Business events are durable; transient model deltas belong to run streams.

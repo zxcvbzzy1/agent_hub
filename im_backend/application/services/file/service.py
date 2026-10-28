@@ -31,6 +31,8 @@ class FileService:
         self._lock = threading.RLock()
 
     def ensure_indexes(self):
+        self.store.ensure_index('im_messages', [('metadata.question_key', 1)], unique=True,
+                                partialFilterExpression={'metadata.question_key': {'$type': 'string'}})
         for collection, keys, unique in [
             ('im_files', [('file_id', 1)], True),
             ('im_files', [('owner_user_id', 1), ('status', 1), ('created_at', -1), ('file_id', -1)], False),
@@ -104,13 +106,22 @@ class FileService:
                     url=f"/api/im/files/{record['file_id']}/download",
                     metadata={'owner_user_id': record['owner_user_id'], 'file_status': record['status']})
 
-    def save_message(self, message: dict, user_id: str) -> dict:
+    def save_message(self, message: dict, user_id: str, *, first_write_wins: bool = False) -> dict:
         """Persist attachment references before publishing a message; compensate failed writes.
 
         expires_at stays set until the message commits. The sweeper can reconcile a
         process crash without a Mongo replica set / multi-document transactions.
         """
         with self._lock:
+            metadata = message.get('metadata') or {}
+            if not first_write_wins and ('question_key' in metadata or
+                    metadata.get('source') in ('human_question', 'human_answer')):
+                raise ValueError('问答消息元数据只能由问答接口生成')
+            if first_write_wins:
+                previous = self.store.find_one('im_messages', {'message_id': message['message_id']})
+                if previous:
+                    self._retain_message_files(previous)
+                    return self.hydrate([previous])[0]
             retry_query = None
             client_id = (message.get('metadata') or {}).get('client_message_id')
             if client_id is not None:
@@ -147,9 +158,15 @@ class FileService:
             committed = False
             try:
                 for record in files.values():
-                    self.store.insert_one('im_conversation_files', dict(
+                    relation = dict(
                         relation_id=str(uuid4()), file_id=record['file_id'], message_id=message['message_id'],
-                        conversation_id=message.get('conversation_id', ''), room_id=message.get('room_id', '')))
+                        conversation_id=message.get('conversation_id', ''), room_id=message.get('room_id', ''))
+                    if first_write_wins:
+                        self.store.update_operators('im_conversation_files',
+                            {'file_id': record['file_id'], 'message_id': message['message_id']},
+                            {'$setOnInsert': relation}, upsert=True)
+                    else:
+                        self.store.insert_one('im_conversation_files', relation)
                     claimed = self.store.update_one('im_files',
                         {'file_id': record['file_id'], 'status': {'$in': ['pending', 'attached']}},
                         {'status': 'attached'})
@@ -168,6 +185,10 @@ class FileService:
                 if existing:
                     result, committed = existing, True
                 else:
+                    if first_write_wins:
+                        # Another submitter may be committing the same deterministic
+                        # message ID. Leave references for retry/sweeper reconciliation.
+                        raise
                     self.store.delete_many('im_conversation_files', {'message_id': message['message_id']})
                     for record in files.values():
                         if record['status'] == 'pending':
@@ -177,6 +198,10 @@ class FileService:
                                                       {'status': 'pending', 'expires_at': record['expires_at']})
                     raise
             if committed:
+                if first_write_wins:
+                    self._retain_message_files(result)
+                    retained = {p.get('file_id') for p in result.get('content_parts', [])}
+                    files = {key: value for key, value in files.items() if key in retained}
                 for record in files.values():
                     try:
                         self.store.update_one('im_files', {'file_id': record['file_id'], 'status': 'attached'},
@@ -184,6 +209,17 @@ class FileService:
                     except Exception:
                         logger.exception('File activation will be recovered: %s', record['file_id'])
                 return result
+
+    def _retain_message_files(self, message):
+        """Remove losing concurrent submissions' references, keeping the saved answer."""
+        retained = {p.get('file_id') for p in message.get('content_parts', [])}
+        for relation in self.store.find_many('im_conversation_files', {'message_id': message['message_id']}):
+            if relation['file_id'] in retained:
+                continue
+            self.store.delete_one('im_conversation_files', {'relation_id': relation['relation_id']})
+            if not self.store.find_one('im_conversation_files', {'file_id': relation['file_id']}):
+                self.store.update_one('im_files', {'file_id': relation['file_id'], 'status': 'attached'},
+                                      {'status': 'pending', 'expires_at': time.time() + 86400})
 
     def _check_retry(self, previous: dict, message: dict):
         def shape(item):
