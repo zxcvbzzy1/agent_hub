@@ -67,6 +67,11 @@ async def execution_guard_middleware(event: Event, call_next):
 async def on_tool_success(**kwargs):
     agent_id = kwargs.get("agent_id")
     event = kwargs.get("_event")
+    if event is not None:
+        try:
+            factory.get_spec(event.name)
+        except KeyError:
+            return  # Other lifecycle events are not tool observations.
     # per-run 隔离：优先用 contextvar 里的“本实例”，回退到全局 agent_dict[agent_id]（向后兼容）。
     agent = current_agent.get() or agent_dict.get(agent_id)
     if agent is None:
@@ -83,9 +88,14 @@ async def on_tool_success(**kwargs):
 @on_tool.on_pattern("*.failed")
 async def on_tool_fail(**kwargs):  # event.playload为Tool_respond类，kwargs为Tool_respond类解构可字典调用
     agent_id = kwargs.get("agent_id")
+    event = kwargs.get("_event")
+    if event is not None:
+        try:
+            factory.get_spec(event.name)
+        except KeyError:
+            return
     # per-run 隔离：优先用 contextvar 里的“本实例”，回退到全局 agent_dict[agent_id]（向后兼容）。
     agent = current_agent.get() or agent_dict.get(agent_id)
-    event = kwargs.get("_event")
     if agent is None:
         print(f"[tool] 无法定位 agent，跳过 failed 回调: agent_id={agent_id}")
         return EventBusReturn(agent_id=agent_id, src_object=event, results="工具调用失败事件处理完成", success=False)
