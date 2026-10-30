@@ -35,9 +35,12 @@ AgentHub 是一个以 IM 聊天为交互入口的多 Agent 协作平台。用户
 | `AGENT_FLOW_MONGO_URL` | Agent Flow API MongoDB 地址 | `mongodb://localhost:27017/` |
 | `AGENT_FLOW_MONGO_DB` | Agent Flow API 数据库名 | `agent_flow` |
 | `LLM_BASE_URL` | LLM 服务地址 | `https://api.deepseek.com` |
+| `DEEPSEEK_BASE_URL` | VLM 与 Files API 共用的 DeepSeek 地址 | `https://api.deepseek.com` |
 | `DEEPSEEK_API` / `GLM_API` / `MINIMAX_API` | LLM API Key | 无 |
 
 `im_backend` 启动时会按顺序读取 `.env`、`im_backend/.env`、`agent_flow/.env`。
+
+Executor 支持在创建和编辑时切换 LLM/VLM；VLM 使用 `deepseek-flash`，需要配置 `DEEPSEEK_API`。图片上传、按需查看和临时智能体委托的用法见 [VLM 与临时委托](agent_flow/README.md#vlm-与临时委托)。
 
 ### 启动 IM 后端
 

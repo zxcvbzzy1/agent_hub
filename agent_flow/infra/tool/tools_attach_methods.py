@@ -55,6 +55,16 @@ async def tool_exception_middleware(event: Event, call_next):
         _current_tool_completion.reset(token)
 
 
+@on_tool.use()
+async def temporary_tool_permission_middleware(event: Event, call_next):
+    agent = current_agent.get()
+    if event.name.endswith('.called') and agent is not None and hasattr(agent, 'permitted_tool_names'):
+        tool_name = factory.get_spec(event.name).tool_name
+        if tool_name not in agent.permitted_tool_names:
+            raise PermissionError(f'临时智能体不可使用工具: {tool_name}')
+    return await call_next()
+
+
 async def _record_tool_result(agent, tool_name, success, respond, event):
     completion = _current_tool_completion.get()
     if completion is not None and (completion['agent_id'], completion['tool_name']) != (agent.id, tool_name):
