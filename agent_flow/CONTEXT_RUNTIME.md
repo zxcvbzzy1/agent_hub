@@ -25,3 +25,13 @@
 | MINMAX | MiniMax-M2.7 | 204800 | https://huggingface.co/MiniMaxAI/MiniMax-M2.7/raw/main/config.json |
 
 输入框共用 `ContextUsage.vue`：饼图显示输入／容量，点击显示模块横向堆叠图、token 数和占比。群聊默认 Planner，切换执行者时展示独立统计，不跨智能体相加。没有业务调用时显示暂无统计。ECharts 按官方按需导入方式注册饼图、柱状图、Tooltip、Grid 和 SVGRenderer：https://echarts.apache.org/handbook/en/basics/import/。
+
+## 工具执行异常
+
+最外层工具异常中间件仅捕获已注册工具调用中的普通执行异常，复用标准 `failed` 事件回灌工具名、异常类型和信息。单次调用使用上下文标记避免重复完成；并行同名工具相互隔离，已经回灌后再发生异常时直接向上传播，不再追加失败结果。工具不会被自动重跑。
+
+`publish()` 保持广播收集结果的行为；`publish_one()` 对收集到的异常重新抛出。`On_bind` 返回事件的投递和工具结果回调异常以 `ToolResultDeliveryError` 向上传播，避免失败回灌自身失败时递归补发或静默等待。正常无订阅、空返回及没有完成反馈的行为不变；取消和执行撤权原样传播，不增加等待超时策略。
+
+工具调用异常由原有 `logging_middleware` 统一记录堆栈及运行、智能体和工具标识；异常回灌中间件不再额外打印。总线只兜底记录尚未记录的异常，沿显式异常原因链避免包装后重复打印；执行失败后发生的新回调错误仍单独记录。
+
+异步 bash 子进程显式接收的环境映射会复制为普通 `dict`，兼容 uvloop；`None` 保持环境继承，现有审核与 30 秒执行上限不变。
